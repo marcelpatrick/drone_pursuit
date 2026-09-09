@@ -878,7 +878,20 @@ copy yolov8n.onnx C:\projects\drone_pursuit\drone_pursuit\models\yolov8n.onnx
 
 > **Environment:** `env_drone` — this is the crossing point: the file made in `drone_vision` is opened in `env_drone`.
 
-Opens the ONNX file from the *other* environment and runs one frame of random numbers through it. This is the boundary the whole two-environment design exists to protect, so proving it now with a toy model means Chapter 6 will work with your real one.
+This test opens the ONNX file from the *other* environment and runs one frame of random numbers through it. It is required because:
+
+You have two separate Python installations on your machine — `drone_vision` and `env_drone`. Each has its own copy of every library.
+
+They're separate because they need conflicting versions. `env_drone` runs Isaac Lab, which requires torch 2.7. `drone_vision` runs Ultralytics, which installed torch 2.11. If both lived in one environment, pip would install a single torch, and whichever version it picked would break the other tool.
+
+That creates a problem. Chapter 5 trains the detector in `drone_vision`. Chapter 6 needs that detector running *inside the Isaac Lab simulation*, in `env_drone` — it looks at each rendered camera frame and finds the attacker. So the detector has to get from one environment to the other, and you can't just install Ultralytics on the other side.
+
+ONNX is the answer. It's a file format that stores the trained model with nothing framework-specific attached. `onnxruntime` opens it, and `onnxruntime` needs no torch — which is why adding it to `env_drone` is safe.
+
+**This test confirms that path works**, using a throwaway pre-trained model rather than your own. It loads the file `drone_vision` created, feeds it one frame of random numbers, and checks something sensible comes back.
+
+
+Create a Notepad file with a script to run this test:
 
 Create the file and open it in Notepad:
 
@@ -922,7 +935,7 @@ output: (1, 84, 8400)
 ONNX round-trip works inside env_drone
 ```
 
-Two things to understand here, because they matter in Chapter 6:
+Basically, what this whole script does it: it takes a dummy input `images [1, 3, 640, 640]` in the expected shape, passes it through the model and verifies that the model produces an output `output: (1, 84, 8400)`  in the expected shape
 - **`(1, 3, 640, 640)`** = (batch, channels, height, width). YOLO wants RGB, values 0–1, channels-first. Isaac Lab's camera gives (batch, H, W, channels) uint8, so a small conversion is needed — written in Chapter 6.1. (This smoke test uses the stock square model; your own detector is exported at 480×640 in Chapter 5.2, to match the drone's 4:3 camera.)
 - **`(1, 84, 8400)`** = for each of 8400 candidate boxes: 4 box coordinates + 80 class scores. Our custom model will have **1 class**, so its output will be `(1, 5, 6300)`.
 
