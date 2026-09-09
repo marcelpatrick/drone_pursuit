@@ -549,6 +549,9 @@ Two things in this file matter more than the rest.
 
 ## 1.2 Create the external project: `drone_pursuit` (≤1.5h)
 
+<details>
+     <summary>Expand</summary>
+
 > **What / Why / How it contributes:** We scaffold a clean external project with the template wizard, then copy Isaac Lab's quadcopter task folder into it and point the project at that task instead of the wizard's cartpole. Working in an external project means our code survives Isaac Lab updates, lives in its own git repository, and leaves the Isaac Lab source untouched. By the end, your own copy of the hover task trains under your own task name: the stage on which the pursuit is built.
 
 ### Step 1 — Run the template wizard
@@ -810,10 +813,14 @@ git push -u origin main
 ```
 
 ---
+</details>
 
 ## 1.3 Build the vision env and test every tool boundary (≤1.5h)
 
 > **What / Why / How it contributes:** We create the second conda env (`drone_vision`) that will train YOLOv8 in Chapter 5, and — critically — we run ALL the cross-tool compatibility tests NOW, before investing hours in data generation. We prove: (1) Ultralytics trains on your GPU, (2) a YOLO model exports to ONNX, (3) that ONNX file runs inside `env_drone` via onnxruntime. If the full round trip works with a toy model today, it will work with your real model in Chapter 6.
+
+<details>
+     <summary>Expand</summary>
 
 ### Step 1 — Create the vision env
 
@@ -965,10 +972,14 @@ We only need 5 iterations — success = it runs without a rendering/VRAM error. 
 > **Every tool now provably talks to every other tool it needs to.** Nothing in Chapters 2–6 introduces a new compatibility risk.
 
 ---
+</details>
 
 ## 1.4 Set up the Tello and measure it (≤1.5h)
 
 > **What / Why / How it contributes:** You measure the real drone **before** designing the policy, not after. Three numbers come out of this subchapter — how late its video arrives, how fast it accepts commands, and which telemetry it can report — and all three go straight into Chapter 3. Measuring first means you train once. Measuring afterwards would mean training, discovering a mismatch, and training again.
+
+<details>
+     <summary>Expand</summary>
 
 ### Step 1 — Install the SDK
 
@@ -1167,6 +1178,7 @@ Section 11 of the report should now show `djitellopy` and `opencv-python` instal
 
 
 ---
+</details>
 
 # Chapter 2 — The Arena: Two Drones, One Scene
 
