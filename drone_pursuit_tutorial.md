@@ -263,7 +263,7 @@ Some steps only edit files and need no environment; those say so. Commands use `
 ---
 </details>
 
-# Chapter 1 — Foundations: Environments & Compatibility
+# Chapter 1 — Create Virtual Environments and Perform Compatibility Tests Among Libraries
 
 ## 1.0 Isolate the project before installing anything (≤1.5h)
 
@@ -271,7 +271,7 @@ Some steps only edit files and need no environment; those say so. Commands use `
 
 <summary>Expand: </summary>
 
-> **What / Why / How it contributes:** Every later subchapter installs packages or edits code. This one sets up three protections first: a private copy of the conda environment, a pinned Isaac Lab commit, and a frozen package list. Together they mean a later breakage can be traced to a specific change instead of guessing, and a ruined environment can be restored in minutes instead of hours.
+> **What / Why / How it contributes:** This chapter installs the necessary libraries and makes sure that they are compatible among themselves, inside the same environments. It also sets up three protections first: a private copy of the conda environment, a pinned Isaac Lab commit, and a frozen package list. So that if something breaks, we can easily restore the initial state. 
 
 ### Why the order in this subchapter matters
 
@@ -974,7 +974,7 @@ We only need 5 iterations — success = it runs without a rendering/VRAM error. 
 ---
 </details>
 
-## 1.4 Set up the Tello and measure it (≤1.5h)
+## 1.4 Set up the Tello and measure it (≤1.5h) - DRONE HARDWARE NEEDED
 
 > **What / Why / How it contributes:** You measure the real drone **before** designing the policy, not after. Three numbers come out of this subchapter — how late its video arrives, how fast it accepts commands, and which telemetry it can report — and all three go straight into Chapter 3. Measuring first means you train once. Measuring afterwards would mean training, discovering a mismatch, and training again.
 
@@ -1180,11 +1180,13 @@ Section 11 of the report should now show `djitellopy` and `opencv-python` instal
 ---
 </details>
 
-# Chapter 2 — The Arena: Two Drones, One Scene
+# Chapter 2 — Editing IsaacLab's Simulation Files. 
 
 ## 2.1 Add the attacker to the scene (≤1.5h)
 
-> **What / Why / How it contributes:** We put a second Crazyflie into every cloned environment. The defender stays a physics-driven articulation (RL will fly it); the attacker becomes a scene actor whose position WE control. This subchapter is pure scene-building — no rewards or motion yet. It matters because everything later (chasing, seeing, detecting) needs two drones reliably spawning in all 2048 parallel envs without physics explosions.
+> **What / Why / How it contributes:**
+> Edits the template files in Isaaclab's custom drone task to include an attacker drone and makes it move in a randomized way. Then, we render the scene on IsaacSim — just the simulation, no Reinforcement Learning runs or rewards calculation yet.
+
 
 ### Concept first: two robots in the Direct workflow
 
@@ -1423,7 +1425,7 @@ Run 16 envs without `--headless` again. Now the attackers sweep circles at diffe
 
 ---
 
-# Chapter 3 — Closing the Distance: The Pursuit Policy
+# Chapter 3 — Closing the Distance: The Pursuit Policy - DRONE HARDWARE NEEDED
 
 ## 3.1 What the defender commands, and what it senses (≤1.5h)
 
