@@ -9,6 +9,7 @@ import gymnasium as gym
 import torch
 
 import isaaclab.sim as sim_utils
+from isaaclab_assets import CRAZYFLIE_CFG 
 from isaaclab.assets import Articulation, ArticulationCfg
 from isaaclab.envs import DirectRLEnv, DirectRLEnvCfg
 from isaaclab.envs.ui import BaseEnvWindow
@@ -85,14 +86,26 @@ class QuadcopterEnvCfg(DirectRLEnvCfg):
     )
 
     # scene
+    # NEW: bumped env_spacing in the scene cfg to 2 * arena_radius (16.0) so neighboring envs' drones never visually overlap into each other's future camera views.
     scene: InteractiveSceneCfg = InteractiveSceneCfg(
-        num_envs=4096, env_spacing=2.5, replicate_physics=True, clone_in_fabric=True
+        num_envs=4096, env_spacing=2.3, replicate_physics=True, clone_in_fabric=True
     )
 
     # robot
     robot: ArticulationCfg = CRAZYFLIE_CFG.replace(prim_path="/World/envs/env_.*/Robot")
+
+    # NEW: attacker — same drone, different prim path, spawned 4 m away at 1.5 m altitude
+    attacker: ArticulationCfg = CRAZYFLIE_CFG.replace(
+        prim_path="/World/envs/env_.*/Attacker",
+        init_state=ArticulationCfg.InitialStateCfg(pos=(4.0, 0.0, 1.5)),
+    )
+
     thrust_to_weight = 1.9
     moment_scale = 0.01
+    # NEW: pursuit geometry knobs (plain attributes, like the reward scales you know)
+    capture_radius = 0.35        # meters — "caught" if closer than this
+    arena_radius = 8.0           # meters — episode fails if defender strays this far
+    attacker_speed = 0.6         # m/s along its path (we'll tune this in Ch. 3)
 
     # reward scales
     lin_vel_reward_scale = -0.05
@@ -136,7 +149,9 @@ class QuadcopterEnv(DirectRLEnv):
     # adds a floor and a light, and then duplicates the whole arrangement thousands of times
     def _setup_scene(self):
         self._robot = Articulation(self.cfg.robot)
+        self._attacker = Articulation(self.cfg.attacker)               # NEW: register the attacker on the scene
         self.scene.articulations["robot"] = self._robot
+        self.scene.articulations["attacker"] = self._attacker          # NEW: register the attacker on the scene
 
         self.cfg.terrain.num_envs = self.scene.cfg.num_envs
         self.cfg.terrain.env_spacing = self.scene.cfg.env_spacing
@@ -160,6 +175,11 @@ class QuadcopterEnv(DirectRLEnv):
     # which happens more often than the network decides — so one decision gets applied several times.
     def _apply_action(self):
         self._robot.set_external_force_and_torque(self._thrust, self._moment, body_ids=self._body_id)
+        # NEW: attacker: hold pose (temporary — replaced by trajectory in 2.2)
+        hold = self._attacker.data.default_root_state.clone()
+        hold[:, :3] += self.scene.env_origins            # local spawn pos → world coords
+        self._attacker.write_root_pose_to_sim(hold[:, :7])
+        self._attacker.write_root_velocity_to_sim(torch.zeros_like(hold[:, 7:]))
 
     def _get_observations(self) -> dict:
         desired_pos_b, _ = subtract_frame_transforms(
@@ -201,6 +221,7 @@ class QuadcopterEnv(DirectRLEnv):
         died = torch.logical_or(self._robot.data.root_pos_w[:, 2] < 0.1, self._robot.data.root_pos_w[:, 2] > 2.0)
         return died, time_out
 
+    #  restarts only the environments whose episode just ended.
     def _reset_idx(self, env_ids: torch.Tensor | None):
         if env_ids is None or len(env_ids) == self.num_envs:
             env_ids = self._robot._ALL_INDICES
@@ -233,7 +254,8 @@ class QuadcopterEnv(DirectRLEnv):
         self._desired_pos_w[env_ids, :2] = torch.zeros_like(self._desired_pos_w[env_ids, :2]).uniform_(-2.0, 2.0)
         self._desired_pos_w[env_ids, :2] += self._terrain.env_origins[env_ids, :2]
         self._desired_pos_w[env_ids, 2] = torch.zeros_like(self._desired_pos_w[env_ids, 2]).uniform_(0.5, 1.5)
-        # Reset robot state
+        
+        # Reset robot state: Defender
         joint_pos = self._robot.data.default_joint_pos[env_ids]
         joint_vel = self._robot.data.default_joint_vel[env_ids]
         default_root_state = self._robot.data.default_root_state[env_ids]
@@ -241,6 +263,12 @@ class QuadcopterEnv(DirectRLEnv):
         self._robot.write_root_pose_to_sim(default_root_state[:, :7], env_ids)
         self._robot.write_root_velocity_to_sim(default_root_state[:, 7:], env_ids)
         self._robot.write_joint_state_to_sim(joint_pos, joint_vel, None, env_ids)
+
+        # NEW: Reset robot state: Attacker
+        a_state = self._attacker.data.default_root_state[env_ids].clone()
+        a_state[:, :3] += self.scene.env_origins[env_ids]
+        self._attacker.write_root_pose_to_sim(a_state[:, :7], env_ids)
+        self._attacker.write_root_velocity_to_sim(a_state[:, 7:], env_ids)
 
     def _set_debug_vis_impl(self, debug_vis: bool):
         # create markers if necessary for the first time
