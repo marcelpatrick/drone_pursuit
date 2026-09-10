@@ -16,6 +16,43 @@
 **One training run, not two.** Chapter 1.4 measures the Tello *before* Chapter 3 designs the policy, so the policy is built around your actual drone from the start. This is the main reason the chapters are ordered as they are.
 
 ---
+
+## How this tutorial is organised: seven blocks
+
+The project is seven self-contained pieces of work. Each block below produces one finished artifact, and the last block combines them. The block titles say what you do; the chapters inside them say how.
+
+| Block | What you do in it | Chapters | Drone in hand? | What comes out |
+|---|---|---|---|---|
+| **A** | Install and isolate the software, then measure the real drone | 0–1 | 🔌 **YES — in 1.4 only** | Two working conda environments, three hardware measurements |
+| **B** | Build the two-drone chase scene in Isaac Sim | 2 | 💻 No | A rendering arena with a defender and a moving attacker |
+| **C** | Train the reinforcement learning policy that flies the chase | 3 | 💻 No — but needs the 1.4 numbers | `best_agent.pt` — a checkpoint that intercepts |
+| **D** | Generate labelled synthetic images of a drone | 4 | 💻 No | ~2500 images with YOLO-format labels |
+| **E** | Train the object detection model | 5 | 💻 No | `drone_detector.onnx` |
+| **F** | Connect detector to policy and run the whole loop in simulation | 6 | 💻 No | A chase driven entirely by rendered camera frames |
+| **G** | Put both models on the real drone and fly | 7 | 🔌 **YES — every subchapter** | `policy.onnx` plus recorded real flights |
+
+**The two hardware markers used throughout this tutorial:**
+
+| Marker | Meaning |
+|---|---|
+| 🔌 **DRONE HARDWARE REQUIRED** | You cannot complete this part without the Tello (and, from 7.3, the target drone) physically in front of you |
+| 💻 **NO HARDWARE — simulation only** | Runs entirely on your laptop; the drone can stay in its box |
+
+Blocks C and D/E are independent of each other — if a training run is cooking overnight, start Block D in a second terminal. Block F is the first point that needs both.
+
+---
+
+# ██ BLOCK A — Install the Software Stack and Measure the Real Drone ██
+
+> 🔌 **DRONE HARDWARE REQUIRED — in subchapter 1.4 only.** Chapters 0, 1.0, 1.1, 1.2 and 1.3 are 💻 simulation and setup only.
+
+<details>
+<summary>Expand Block A</summary>
+
+**What this block produces:** two conda environments that provably work together, a pinned Isaac Lab commit you can return to, and three measurements taken from the Tello (control rate, video delay, available telemetry) that Chapter 3 builds the policy around. Nothing here trains anything or flies a chase — it removes the two failure classes that would otherwise surface later as unexplainable bugs: package conflicts, and a policy designed for a drone that behaves differently.
+
+---
+
 # Chapter 0 — The Big Picture (read this first, ~30 min)
 <details>
      
@@ -1180,17 +1217,50 @@ Section 11 of the report should now show `djitellopy` and `opencv-python` instal
 ---
 </details>
 
-# Chapter 2 — Editing IsaacLab's Simulation Files. 
+---
 
-## 2.1 Add the attacker to the scene (≤1.5h)
+</details>
 
-> **What / Why / How it contributes:**
+---
+
+# ██ BLOCK B — Build the Two-Drone Chase Scene in Isaac Sim ██
+
+> 💻 **NO HARDWARE — simulation only.** The drone can stay in its box for the whole of this block.
+
+<details>
+<summary>Expand Block B</summary>
+
+**What this block produces:** an Isaac Lab environment containing two aircraft per arena — a defender flown by physics forces, and an attacker whose position you write directly along a circular path — cloned across every parallel environment and confirmed by eye in the viewport. No reward function, no observations about the attacker, and no training happens here. The only artifact is a scene that renders correctly, which is what Block C then attaches a reward and a policy to.
+
+**Why this comes before the policy.** A reward function that reads `self._attacker.data.root_pos_w` cannot be debugged until an attacker exists and moves predictably. Building the scene first means that when Chapter 3's training misbehaves, the scene is already known-good and only the reward or the observations are in question.
+
+**Every file edited in this block is the same one:**
+
+```
+C:\projects\drone_pursuit\drone_pursuit\source\drone_pursuit\drone_pursuit\tasks\direct\quadcopter\quadcopter_env.py
+```
+
+---
+
+# Chapter 2 — Add a Second Drone to the Isaac Lab Task and Give It a Flight Path
+
+> 💻 **NO HARDWARE — simulation only.**
+
+<details>
+<summary>Expand Chapter 2</summary>
+
 > Edits the template files in Isaaclab's custom drone task to include an attacker drone and makes it move in a randomized way. Then, we render the scene on IsaacSim — just the simulation, no Reinforcement Learning runs or rewards calculation yet.
 
+## 2.1 Spawn the Attacker Drone in Every Parallel Environment (≤1.5h)
 
-### Concept first: two robots in the Direct workflow
+<details>
+<summary>Expand 2.1</summary>
 
-You know the pattern for one robot: an `ArticulationCfg` in the env cfg, instantiated in `_setup_scene`, registered in `self.scene.articulations`. Two robots = literally the same pattern twice, with two different prim paths under each env namespace:
+> **What this subchapter does:** your task file currently spawns one Crazyflie, the defender, and gives it a fixed hover goal. A pursuit needs a second aircraft. This subchapter adds an attacker to the config class, creates and registers it in `_setup_scene`, holds it in place by writing its pose every step, and resets it alongside the defender. At the end you render 16 environments and confirm both drones appear in each. Chapter 2.2 replaces the fixed pose with motion, and Chapter 3 reads the attacker's position to compute observations and reward.
+
+### How two robots coexist in one Direct-workflow environment
+
+You already know the pattern for one robot: an `ArticulationCfg` in the env cfg, instantiated in `_setup_scene`, registered in `self.scene.articulations`. Two robots is the same pattern twice, with two different prim paths under each env namespace:
 
 ```
 /World/envs/env_0/
@@ -1202,139 +1272,244 @@ You know the pattern for one robot: an `ArticulationCfg` in the env cfg, instant
    ...
 ```
 
-The cloning system (`clone_environments`) replicates *everything* under `env_.*`, so the attacker rides along for free — the same mechanism that replicates goal markers and other scene objects.
+`clone_environments` replicates everything under `env_.*`, so the attacker is copied into all 2048 environments by the same mechanism that already copies the defender and the goal markers. You write the attacker once.
 
-### Step 1 — Extend the env cfg
+### Step 1 — Add the attacker's spawn recipe and the pursuit constants to the config class
+
+<details>
+<summary>Expand Step 1</summary>
 
 > **Environment:** none needed — you are editing files.
 
-Adds a second Crazyflie to the configuration — the attacker — plus the pursuit settings (capture distance, arena size, attacker speed). One line reuses the same spawn recipe as the defender, with a different address in the scene.
+The config class currently describes one drone. This step adds a second `ArticulationCfg` that reuses `CRAZYFLIE_CFG` — the same spawn recipe as the defender, since a Crazyflie is the only quadcopter asset Isaac Lab ships — changing only the prim path and the starting position. It also adds three plain numbers the pursuit needs: how close counts as a capture, how far the defender may stray, and how fast the attacker flies. Chapters 3.1 and 3.2 read all three.
 
-In your task file, add a second articulation config next to the existing `robot` one. The Crazyflie asset config is reused; only the prim path and spawn position change:
+*File to edit:* `C:\projects\drone_pursuit\drone_pursuit\source\drone_pursuit\drone_pursuit\tasks\direct\quadcopter\quadcopter_env.py`
 
 ```python
-# quadcopter_env.py — the config class near the top of the file
-from isaaclab_assets import CRAZYFLIE_CFG          # the spawn recipe you already use
-from isaaclab.assets import ArticulationCfg
+# ── FILE: ...\tasks\direct\quadcopter\quadcopter_env.py ─────────────────────
+# ── SECTION: the imports at the very top of the file ────────────────────────
+
+from isaaclab.assets import Articulation, ArticulationCfg     # ← ArticulationCfg
+from isaaclab.envs import DirectRLEnv, DirectRLEnvCfg         #   may already be
+from isaaclab.utils import configclass                        #   imported; if so,
+from isaaclab_assets import CRAZYFLIE_CFG                     #   leave as-is
+# ... the rest of the existing imports, unchanged ...
+
+
+# ── SECTION: the config class, roughly 30 lines down ────────────────────────
 
 @configclass
 class QuadcopterEnvCfg(DirectRLEnvCfg):
-    # ... keep everything from the quadcopter cfg (sim, scene, action_space=4, etc.)
+    # --- EXISTING CODE (leave everything above and below untouched) ---
+    episode_length_s = 10.0
+    decimation = 2
+    action_space = 4
+    observation_space = 12
+    # ... sim cfg, scene cfg, reward scales, etc. ...
 
-    # defender — unchanged from the hover task
+    # defender — EXISTING LINE, unchanged
     robot: ArticulationCfg = CRAZYFLIE_CFG.replace(prim_path="/World/envs/env_.*/Robot")
 
-    # NEW: attacker — same drone, different prim path, spawned 4 m away at 1.5 m altitude
+    # ▼▼▼ INSERT HERE! — add these lines directly BELOW the `robot:` line ▼▼▼
+
+    # attacker — same drone asset, different prim path, spawned 4 m away at 1.5 m
     attacker: ArticulationCfg = CRAZYFLIE_CFG.replace(
         prim_path="/World/envs/env_.*/Attacker",
         init_state=ArticulationCfg.InitialStateCfg(pos=(4.0, 0.0, 1.5)),
     )
 
-    # NEW: pursuit geometry knobs (plain attributes, like the reward scales you know)
+    # pursuit geometry knobs (plain attributes, like the reward scales you know)
     capture_radius = 0.35        # meters — "caught" if closer than this
     arena_radius = 8.0           # meters — episode fails if defender strays this far
-    attacker_speed = 0.6         # m/s along its path (we'll tune this in Ch. 3)
+    attacker_speed = 0.6         # m/s along its path (tuned in Ch. 3.3)
+
+    # ▲▲▲ END OF INSERT — the existing reward-scale lines continue below ▲▲▲
+
+    lin_vel_reward_scale = -0.05          # ← EXISTING, unchanged
+    ang_vel_reward_scale = -0.01          # ← EXISTING, unchanged
 ```
 
-**Why 0.35 m?** A Crazyflie is ~9 cm rotor-to-rotor. 0.35 m means the two airframes are roughly overlapping. Requiring actual mesh contact would mean the capture bonus is almost never triggered during early training.
+**Why 0.35 m for the capture radius.** A Crazyflie is about 9 cm rotor to rotor, so 0.35 m means the two airframes roughly overlap. Requiring actual mesh contact would make the capture bonus in 3.2 fire so rarely during early training that the policy would never learn what earns it.
 
-Also bump `env_spacing` in the scene cfg to at least `2 * arena_radius` (e.g. 16.0) so neighboring envs' drones never visually overlap into each other's future camera views.
+**Also raise `env_spacing`.** In the same config class, find the scene cfg line and change one number:
 
-### Step 2 — Instantiate it in `_setup_scene`
+```python
+# ── FILE: ...\tasks\direct\quadcopter\quadcopter_env.py ─────────────────────
+# ── SECTION: inside QuadcopterEnvCfg, the scene line ────────────────────────
+
+    # BEFORE:
+    # scene: InteractiveSceneCfg = InteractiveSceneCfg(num_envs=4096, env_spacing=2.5, ...)
+
+    # AFTER — env_spacing must be at least 2 * arena_radius:
+    scene: InteractiveSceneCfg = InteractiveSceneCfg(num_envs=4096, env_spacing=16.0,
+                                                     replicate_physics=True)
+```
+
+With smaller spacing, a neighbouring environment's drones sit inside this environment's arena volume, and the camera you attach in 5.2 would photograph them.
+
+</details>
+
+### Step 2 — Create and register the attacker in `_setup_scene`
+
+<details>
+<summary>Expand Step 2</summary>
 
 > **Environment:** none needed — you are editing files.
 
-Creates the attacker object and registers it with the scene. Registration is what keeps its position readings refreshed each step; without it the drone appears on screen but its data never updates.
+`_setup_scene` builds the world once before simulation starts. The config from Step 1 is only a description; this step turns it into a live object and adds it to `self.scene.articulations`. Registration is what makes the scene refresh the attacker's position and velocity buffers each step — without it the drone renders but `root_pos_w` never changes, and Chapter 3's reward would read a frozen number with no error.
+
+*File to edit:* `C:\projects\drone_pursuit\drone_pursuit\source\drone_pursuit\drone_pursuit\tasks\direct\quadcopter\quadcopter_env.py`
 
 ```python
-def _setup_scene(self):
-    self._robot = Articulation(self.cfg.robot)
-    self._attacker = Articulation(self.cfg.attacker)               # NEW
-    self.scene.articulations["robot"] = self._robot
-    self.scene.articulations["attacker"] = self._attacker          # NEW
-    # ... rest unchanged: terrain/ground, clone_environments, lights
+# ── FILE: ...\tasks\direct\quadcopter\quadcopter_env.py ─────────────────────
+# ── SECTION: class QuadcopterEnv, method _setup_scene ───────────────────────
+
+    def _setup_scene(self):
+        self._robot = Articulation(self.cfg.robot)                    # ← EXISTING
+
+        # ▼▼▼ INSERT HERE! — one line, directly below the defender ▼▼▼
+        self._attacker = Articulation(self.cfg.attacker)
+        # ▲▲▲ END OF INSERT ▲▲▲
+
+        self.scene.articulations["robot"] = self._robot               # ← EXISTING
+
+        # ▼▼▼ INSERT HERE! — one line, directly below the defender's registration ▼▼▼
+        self.scene.articulations["attacker"] = self._attacker
+        # ▲▲▲ END OF INSERT ▲▲▲
+
+        # --- EXISTING CODE BELOW, unchanged: ground plane, clone_environments, lights ---
+        self.cfg.terrain.num_envs = self.scene.cfg.num_envs
+        self.cfg.terrain.env_spacing = self.scene.cfg.env_spacing
+        self._terrain = self.cfg.terrain.class_type(self.cfg.terrain)
+        self.scene.clone_environments(copy_from_source=False)
+        # ... lights ...
 ```
 
-### Step 3 — Freeze the attacker (for now)
+⚠️ Both inserted lines must appear **before** `clone_environments`, because cloning copies whatever exists under `env_.*` at the moment it runs.
+
+</details>
+
+### Step 3 — Hold the attacker in place by writing its pose every step
+
+<details>
+<summary>Expand Step 3</summary>
 
 > **Environment:** none needed — you are editing files.
 
-Pins the attacker in place by writing its pose every step, so it does not simply fall. This is temporary scaffolding — 2.2 replaces the fixed pose with a moving path — but it lets you verify the scene before adding motion.
+The attacker is a physics body with nothing driving it, so PhysX will drop it to the floor. Until 2.2 gives it a path, this step pins it at its spawn point by overwriting its root pose and zeroing its velocity on every step. It is temporary scaffolding, but it lets you confirm spawning and cloning work before motion adds a second thing that could be wrong.
 
-The attacker is a physics object, so with no controller it will simply fall. Until 2.2 gives it a scripted path, pin it in place by re-writing its root state every step. Add to `_apply_action` (or a small helper called from it):
+*File to edit:* `C:\projects\drone_pursuit\drone_pursuit\source\drone_pursuit\drone_pursuit\tasks\direct\quadcopter\quadcopter_env.py`
 
 ```python
-def _apply_action(self):
-    # defender: unchanged (thrust + moments)
-    self._robot.set_external_force_and_torque(self._thrust, self._moment, body_ids=self._body_id)
-    # attacker: hold pose (temporary — replaced by trajectory in 2.2)
-    hold = self._attacker.data.default_root_state.clone()
-    hold[:, :3] += self.scene.env_origins            # local spawn pos → world coords
-    self._attacker.write_root_pose_to_sim(hold[:, :7])
-    self._attacker.write_root_velocity_to_sim(torch.zeros_like(hold[:, 7:]))
+# ── FILE: ...\tasks\direct\quadcopter\quadcopter_env.py ─────────────────────
+# ── SECTION: class QuadcopterEnv, method _apply_action ──────────────────────
+
+    def _apply_action(self):
+        # EXISTING LINE — the defender's thrust and moments, unchanged
+        self._robot.set_external_force_and_torque(
+            self._thrust, self._moment, body_ids=self._body_id
+        )
+
+        # ▼▼▼ INSERT HERE! — everything below, at the END of the method ▼▼▼
+        # attacker: hold pose. TEMPORARY — replaced by _move_attacker() in 2.2
+        hold = self._attacker.data.default_root_state.clone()
+        hold[:, :3] += self.scene.env_origins            # local spawn pos → world coords
+        self._attacker.write_root_pose_to_sim(hold[:, :7])
+        self._attacker.write_root_velocity_to_sim(torch.zeros_like(hold[:, 7:]))
+        # ▲▲▲ END OF INSERT — nothing else in this method ▲▲▲
 ```
 
-**Flag — this is different from what you know:** for the defender we apply *forces* and let PhysX integrate motion (dynamic control). For the attacker we *write the pose directly* every step (kinematic control — from Greek *kinema*, "motion": describing motion without the forces causing it). Teleporting a body each step means PhysX doesn't simulate it falling — which is exactly what we want for a scripted actor. The trade-off: a kinematic attacker won't get knocked around on contact. Fine for us — "capture" is a distance check, not a physical collision.
+**Flag — this is different from the control you know.** The defender is *dynamic*: you apply forces and PhysX integrates them into motion. The attacker is *kinematic* (from Greek *kinema*, "motion" — describing motion without the forces producing it): you write its pose directly, and PhysX never computes gravity or collision response for it. The trade-off is that a kinematic attacker is not pushed around on contact. That costs nothing here, because "capture" in 3.2 is a distance comparison, not a collision event.
 
-### Step 4 — Reset logic
+</details>
+
+### Step 4 — Return the attacker to its spawn point on every reset
+
+<details>
+<summary>Expand Step 4</summary>
 
 > **Environment:** none needed — you are editing files.
 
-Returns the attacker to its start position whenever an episode restarts, mirroring what already happens for the defender. Without it, the attacker would stay wherever the last episode left it.
+`_reset_idx` restarts only the environments whose episode just ended. The defender is already reset there; the attacker needs the same treatment or it will begin the new episode at whatever pose the last one left it in, which makes the starting distance differ unpredictably between episodes.
 
-In `_reset_idx`, reset the attacker alongside the defender (mirror the existing robot-reset lines):
+*File to edit:* `C:\projects\drone_pursuit\drone_pursuit\source\drone_pursuit\drone_pursuit\tasks\direct\quadcopter\quadcopter_env.py`
 
 ```python
-def _reset_idx(self, env_ids):
-    # ... existing defender reset ...
-    a_state = self._attacker.data.default_root_state[env_ids].clone()
-    a_state[:, :3] += self.scene.env_origins[env_ids]
-    self._attacker.write_root_pose_to_sim(a_state[:, :7], env_ids)
-    self._attacker.write_root_velocity_to_sim(a_state[:, 7:], env_ids)
+# ── FILE: ...\tasks\direct\quadcopter\quadcopter_env.py ─────────────────────
+# ── SECTION: class QuadcopterEnv, method _reset_idx ─────────────────────────
+
+    def _reset_idx(self, env_ids):
+        # --- EXISTING CODE, unchanged: logging, super()._reset_idx, goal resampling ---
+        # ... existing defender reset, which ends with lines like these: ---
+        default_root_state = self._robot.data.default_root_state[env_ids]
+        default_root_state[:, :3] += self._terrain.env_origins[env_ids]
+        self._robot.write_root_pose_to_sim(default_root_state[:, :7], env_ids)
+        self._robot.write_root_velocity_to_sim(default_root_state[:, 7:], env_ids)
+
+        # ▼▼▼ INSERT HERE! — mirror the four lines above, for the attacker ▼▼▼
+        a_state = self._attacker.data.default_root_state[env_ids].clone()
+        a_state[:, :3] += self.scene.env_origins[env_ids]
+        self._attacker.write_root_pose_to_sim(a_state[:, :7], env_ids)
+        self._attacker.write_root_velocity_to_sim(a_state[:, 7:], env_ids)
+        # ▲▲▲ END OF INSERT ▲▲▲
 ```
 
-### Step 5 — Look at it
+Every line indexes by `env_ids`. Writing the whole table instead would teleport the environments still mid-flight back to their start.
+
+</details>
+
+### Step 5 — Render 16 environments and confirm both drones appear
+
+<details>
+<summary>Expand Step 5</summary>
 
 > **Environment:** `env_drone`
 
-Runs a few iterations with the viewport open, so you can see both drones in the scene. This is the checkpoint for Chapter 2.1: two drones spawning correctly across every parallel environment, before any rewards or motion exist.
+Nothing has been trained, so there is nothing to play back. The quickest way to see the scene is to run training for a few iterations *without* `--headless`, which opens the viewport while an untrained policy emits random actions. What you are checking is that the attacker exists in every cloned environment and that the defender's force pipeline still works.
 
-Don't train — just *render* the scene with random actions using the play script's `--headless`-off mode on an untrained checkpoint, or quickest: run training for 5 iterations **without** `--headless`:
-
-*Run from:* `any folder`
+*Run from:* `any folder` — *the script lives in:* `C:\projects\drone_pursuit\drone_pursuit\scripts\skrl\`
 ```bat
 python C:\projects\drone_pursuit\drone_pursuit\scripts\skrl\train.py --task Template-Drone-Pursuit-Direct-v0 --num_envs 16
 ```
 
 You should see 16 arenas, each with a jittering defender (random policy) and an attacker hovering frozen at (4, 0, 1.5).
 
+</details>
+
 > ✅ **Checkpoint 2.1**
 > 1. No spawn errors across 16 envs
 > 2. Attacker visibly present and motionless at its spawn point in every env
 > 3. Defender still jitters under the (untrained) policy — proving you didn't break its force pipeline
 
+</details>
+
 ---
 
-## 2.2 Give the attacker a life: scripted evasive motion (≤1.5h)
+## 2.2 Move the Attacker Along a Randomised Circular Path (≤1.5h)
 
-> **What / Why / How it contributes:** A frozen target teaches a policy to fly to a POINT — that's just the hover task with extra steps. A moving target forces the policy to learn interception. We give the attacker a parametric 3D path (circle + vertical bobbing) with per-env randomized phase and direction, so every parallel env presents a different chase. This is also our difficulty dial: one number (attacker_speed) takes us from "training wheels" to "genuinely hard."
+<details>
+<summary>Expand 2.2</summary>
 
-### Concept: why a parametric path (and not attacker RL)?
+> **What this subchapter does:** a frozen attacker turns the pursuit into the hover task with a different goal position — the policy would learn to fly to one point. This subchapter replaces the held pose from 2.1 with a parametric path (a horizontal circle plus a vertical bob), and randomises each environment's starting angle and direction of travel so no two chases are identical. The path's speed, `attacker_speed`, becomes the difficulty dial that Chapter 3.3's curriculum turns from 0.3 to 1.0 m/s.
 
-Three candidate attackers (the thing being chased), in order of complexity:
-1. **Parametric path** (sin/cos waypoint loop) — deterministic, tunable, zero training. ← **us**
-2. Reactive script (flee from defender) — better, but can create degenerate loops early in training.
-3. RL attacker (adversarial / MARL) — a research-scale problem. Chen, Yu et al. (Tsinghua, arXiv:2409.15866) do this with MAPPO and curriculum generation. See Chapter 6.3 for how to get there.
+### Why a scripted path rather than a second RL agent
 
-A useful rule: **change one hard thing at a time.** The hard thing in Chapter 3 is the pursuit reward. So the attacker stays simple.
+Three ways to drive an attacker, in order of cost:
 
-### Step 1 — The trajectory math (visual, no trig anxiety)
+1. **Parametric path** (sin/cos loop) — deterministic, tunable by one number, needs no training. ← **what we use**
+2. Reactive script (flee from the defender) — a harder target, but early in training a random defender and a fleeing attacker can lock into loops that produce no useful experience.
+3. RL attacker (adversarial / MARL) — a research-scale problem. Chen, Yu et al. (Tsinghua, arXiv:2409.15866) do this with MAPPO plus a generated curriculum.
 
-> **Environment:** none needed — this step is explanation only.
+The rule the whole tutorial follows is **change one hard thing at a time**. The hard thing in Chapter 3 is the pursuit reward, so the attacker stays simple until that works.
 
-Explains the path the attacker will fly — a circle with a vertical bob — and the two lines of arithmetic that produce it. Its speed becomes your difficulty dial in Chapter 3.3.
+### Step 1 — Understand the path the attacker will fly
 
-Picture a point moving around a circle of radius `R` while gently bobbing up and down:
+<details>
+<summary>Expand Step 1</summary>
+
+> **Environment:** none needed — this step is explanation only, nothing is edited.
+
+The path is a point travelling around a horizontal circle of radius 3 m while rising and falling by 0.4 m. Two lines of arithmetic produce it, and one constant — `attacker_speed` — controls how hard the chase is.
 
 ```
       TOP VIEW                        SIDE VIEW
@@ -1346,94 +1521,202 @@ Picture a point moving around a circle of radius `R` while gently bobbing up and
    R = 3 m circle                horizontal loop + vertical wave
 ```
 
-`sin` and `cos` are just "the x and y coordinates of a point walking around a circle" — that's all the math we need:
+`sin` and `cos` here are just the x and y coordinates of a point walking around a circle — that is the whole of the maths involved. This is pseudocode for understanding, not code to paste:
 
-```python
-# angle grows over time → point moves around the circle
-theta = phase + direction * (attacker_speed / R) * t     # radians
+```
+theta = phase + direction * (attacker_speed / R) * t     # angle grows over time
 x = R * cos(theta);  y = R * sin(theta)                  # the circle
 z = 1.5 + 0.4 * sin(0.7 * t + phase)                     # the bob
 ```
 
-`attacker_speed / R` converts "meters per second along the path" into "radians per second," so the speed knob means what it says.
+`attacker_speed / R` converts metres per second along the path into radians per second, so raising `attacker_speed` from 0.3 to 0.6 in Chapter 3.3 genuinely doubles the target's ground speed rather than changing an abstract rate.
 
-### Step 2 — Implement it
+</details>
+
+### Step 2 — Write the trajectory method and randomise it per environment
+
+<details>
+<summary>Expand Step 2</summary>
 
 > **Environment:** none needed — you are editing files.
 
-Replaces the frozen pose from 2.1 with the moving path, and randomises where each attacker starts and which way it circles. Randomising stops the policy memorising one specific chase instead of learning to intercept movement.
+This step replaces the "hold pose" block from 2.1 with a new method, `_move_attacker`, which computes a new position each physics tick and writes it to the simulator. It also allocates three per-environment buffers — starting angle, direction of travel, and an episode clock — and re-randomises the first two on every reset. Without that randomisation, every environment presents the identical chase and the policy can memorise one manoeuvre sequence instead of learning to intercept a moving target.
 
-In `__init__`, allocate per-env randomization buffers:
+Three separate edits to the same file follow. Make them in order.
+
+**Edit 1 of 3 — allocate the buffers in `__init__`:**
+
+*File to edit:* `C:\projects\drone_pursuit\drone_pursuit\source\drone_pursuit\drone_pursuit\tasks\direct\quadcopter\quadcopter_env.py`
 
 ```python
-self._atk_phase = torch.zeros(self.num_envs, device=self.device)
-self._atk_dir = torch.ones(self.num_envs, device=self.device)     # +1 or -1 (CW/CCW)
-self._atk_t = torch.zeros(self.num_envs, device=self.device)      # per-env clock
-self._atk_radius = 3.0
+# ── FILE: ...\tasks\direct\quadcopter\quadcopter_env.py ─────────────────────
+# ── SECTION: class QuadcopterEnv, method __init__ ───────────────────────────
+# ── (at the top of the file, add `import math` if it is not already there)  ──
+
+    def __init__(self, cfg: QuadcopterEnvCfg, render_mode: str | None = None, **kwargs):
+        super().__init__(cfg, render_mode, **kwargs)
+
+        # --- EXISTING CODE, unchanged: action/thrust/moment buffers, logging dict ---
+        self._actions = torch.zeros(self.num_envs, gym.spaces.flatdim(self.single_action_space), device=self.device)
+        self._thrust = torch.zeros(self.num_envs, 1, 3, device=self.device)
+        self._moment = torch.zeros(self.num_envs, 1, 3, device=self.device)
+        self._desired_pos_w = torch.zeros(self.num_envs, 3, device=self.device)
+
+        # ▼▼▼ INSERT HERE! — attacker trajectory state, one row per environment ▼▼▼
+        self._atk_phase = torch.zeros(self.num_envs, device=self.device)   # start angle
+        self._atk_dir = torch.ones(self.num_envs, device=self.device)      # +1 or -1 (CW/CCW)
+        self._atk_t = torch.zeros(self.num_envs, device=self.device)       # per-env clock
+        self._atk_radius = 3.0                                             # metres
+        # ▲▲▲ END OF INSERT ▲▲▲
+
+        # --- EXISTING CODE BELOW, unchanged: self._body_id, self._robot_mass, etc. ---
 ```
 
-Replace the "hold pose" block from 2.1 with the trajectory (called every `_apply_action`, which runs at physics rate — advance the clock by the physics dt):
+**Edit 2 of 3 — add the new method and call it from `_apply_action`:**
 
 ```python
-def _move_attacker(self):
-    self._atk_t += self.physics_dt
-    w = self.cfg.attacker_speed / self._atk_radius
-    theta = self._atk_phase + self._atk_dir * w * self._atk_t
-    pos = torch.zeros(self.num_envs, 3, device=self.device)
-    pos[:, 0] = self._atk_radius * torch.cos(theta)
-    pos[:, 1] = self._atk_radius * torch.sin(theta)
-    pos[:, 2] = 1.5 + 0.4 * torch.sin(0.7 * self._atk_t + self._atk_phase)
-    pos += self.scene.env_origins                                   # local → world
+# ── FILE: ...\tasks\direct\quadcopter\quadcopter_env.py ─────────────────────
+# ── SECTION: class QuadcopterEnv, method _apply_action ──────────────────────
 
-    pose = self._attacker.data.root_pose_w.clone()
-    pose[:, :3] = pos                                               # keep orientation as-is
-    self._attacker.write_root_pose_to_sim(pose)
+    def _apply_action(self):
+        self._robot.set_external_force_and_torque(          # ← EXISTING, unchanged
+            self._thrust, self._moment, body_ids=self._body_id
+        )
 
-    # also store the attacker's velocity (finite difference) — Chapter 3 puts it in the obs
-    if not hasattr(self, "_atk_prev_pos"):
+        # ▼▼▼ DELETE the four "hold pose" lines you added in 2.1 Step 3: ▼▼▼
+        #   hold = self._attacker.data.default_root_state.clone()
+        #   hold[:, :3] += self.scene.env_origins
+        #   self._attacker.write_root_pose_to_sim(hold[:, :7])
+        #   self._attacker.write_root_velocity_to_sim(torch.zeros_like(hold[:, 7:]))
+        # ▲▲▲ and REPLACE them with this single call: ▲▲▲
+        self._move_attacker()
+
+
+    # ▼▼▼ INSERT HERE! — a brand-new method, directly BELOW _apply_action ▼▼▼
+    def _move_attacker(self):
+        """Kinematic attacker: circle + vertical bob, written to sim each physics tick."""
+        self._atk_t += self.physics_dt
+        w = self.cfg.attacker_speed / self._atk_radius            # m/s → rad/s
+        theta = self._atk_phase + self._atk_dir * w * self._atk_t
+
+        pos = torch.zeros(self.num_envs, 3, device=self.device)
+        pos[:, 0] = self._atk_radius * torch.cos(theta)
+        pos[:, 1] = self._atk_radius * torch.sin(theta)
+        pos[:, 2] = 1.5 + 0.4 * torch.sin(0.7 * self._atk_t + self._atk_phase)
+        pos += self.scene.env_origins                             # local → world
+
+        pose = self._attacker.data.root_pose_w.clone()
+        pose[:, :3] = pos                                         # keep orientation as-is
+        self._attacker.write_root_pose_to_sim(pose)
+
+        # attacker velocity by finite difference — Chapter 3 uses it
+        if not hasattr(self, "_atk_prev_pos"):
+            self._atk_prev_pos = pos.clone()
+        self._atk_vel = (pos - self._atk_prev_pos) / self.physics_dt
         self._atk_prev_pos = pos.clone()
-    self._atk_vel = (pos - self._atk_prev_pos) / self.physics_dt
-    self._atk_prev_pos = pos.clone()
+    # ▲▲▲ END OF INSERT ▲▲▲
+
+
+    def _get_observations(self) -> dict:      # ← EXISTING method, continues below
+        ...
 ```
 
-Everything is a **batched torch tensor across all envs** — no Python loops. The same vectorisation applies to every reward and observation function in this project.
-
-In `_reset_idx`, randomize the chase each episode (this is domain randomization for *behavior*, the same philosophy as your visual domain randomization in SDG):
+**Edit 3 of 3 — re-randomise the chase on reset:**
 
 ```python
-n = len(env_ids)
-self._atk_phase[env_ids] = torch.rand(n, device=self.device) * 2 * math.pi
-self._atk_dir[env_ids] = torch.where(torch.rand(n, device=self.device) > 0.5, 1.0, -1.0)
-self._atk_t[env_ids] = 0.0
+# ── FILE: ...\tasks\direct\quadcopter\quadcopter_env.py ─────────────────────
+# ── SECTION: class QuadcopterEnv, method _reset_idx ─────────────────────────
+
+    def _reset_idx(self, env_ids):
+        # --- EXISTING CODE, unchanged, including the attacker reset from 2.1 Step 4 ---
+        self._attacker.write_root_velocity_to_sim(a_state[:, 7:], env_ids)
+
+        # ▼▼▼ INSERT HERE! — directly below the attacker pose reset ▼▼▼
+        n = len(env_ids)
+        self._atk_phase[env_ids] = torch.rand(n, device=self.device) * 2 * math.pi
+        self._atk_dir[env_ids] = torch.where(
+            torch.rand(n, device=self.device) > 0.5, 1.0, -1.0
+        )
+        self._atk_t[env_ids] = 0.0
+        # ▲▲▲ END OF INSERT ▲▲▲
 ```
 
-Why randomize phase and direction? If every env's attacker started at the same spot going the same way, the policy could memorize "always bank left at t=3 s" instead of learning "intercept whatever moves." Randomization forces the general skill — exactly why you randomized lighting and textures for the pallet jack.
+Every quantity here is a batched torch tensor covering all environments at once — no Python loop over envs. Every reward and observation function you write in Chapter 3 follows the same rule, because a per-env loop at 2048 environments would dominate step time.
 
-### Step 3 — Watch the attackers move
+This is domain randomisation applied to behaviour rather than appearance — the same reasoning that made you randomise lighting and textures in the pallet-jack SDG pipeline, moved from what the scene looks like to what the target does.
+
+</details>
+
+### Step 3 — Render the scene and confirm the attackers orbit
+
+<details>
+<summary>Expand Step 3</summary>
 
 > **Environment:** `env_drone`
 
-Renders the scene again to confirm the attackers orbit smoothly and differently in each environment. Smooth motion matters because the camera readings in Chapter 3 are computed from it.
+Run 16 environments without `--headless` again. Motion has to be smooth here because Chapter 3.1 computes the attacker's apparent size and bearing from this position each step, and a stuttering path would produce jumpy readings that the policy learns to distrust.
 
-Run 16 envs without `--headless` again. Now the attackers sweep circles at different phases/directions while defenders jitter randomly.
+*Run from:* `any folder` — *the script lives in:* `C:\projects\drone_pursuit\drone_pursuit\scripts\skrl\`
+```bat
+python C:\projects\drone_pursuit\drone_pursuit\scripts\skrl\train.py --task Template-Drone-Pursuit-Direct-v0 --num_envs 16
+```
+
+You should see attackers sweeping circles at different starting angles and in both directions, while the defenders jitter under the random policy.
+
+</details>
 
 > ✅ **Checkpoint 2.2**
-> 1. Attackers orbit smoothly (no teleport-stutter — if stuttery, confirm `_move_attacker` runs every physics step, not every env step)
+> 1. Attackers orbit smoothly — if the motion stutters, confirm `_move_attacker` is called from `_apply_action` (physics rate) and not from `_get_observations` (env-step rate)
 > 2. Different envs show different phases and directions
-> 3. After a forced reset (let episodes time out), trajectories re-randomize
-> 4. Commit to git: "arena complete"
+> 3. After episodes time out, the trajectories re-randomise
+> 4. Commit to git: "attacker added and moving — scene complete"
+
+</details>
+
+</details>
+
+</details>
+
+---
+# ██ BLOCK C — Train the Reinforcement Learning Policy That Flies the Chase ██
+
+> 💻 **NO HARDWARE — simulation only.** The drone stays in its box, but this block cannot start until the three measurements from 🔌 subchapter 1.4 are written in `project_notes.txt`.
+
+<details>
+<summary>Expand Block C</summary>
+
+**What this block produces:** `best_agent.pt`, a skrl checkpoint holding a neural network that takes 17 numbers describing the defender's own motion and what its camera reports, and emits 4 stick commands that close on the attacker. It also produces one measured constant, `capture_ang_size`, which Block F needs to declare a capture without a simulator.
+
+**What it does not use:** rendered images. Every observation in this block is computed arithmetically from ground-truth positions, using the same equations a camera would obey. That is what keeps training as fast as the plain hover task while producing a policy that runs unchanged on real camera data in Blocks F and G.
+
+**Every file edited in this block is the same one:**
+
+```
+C:\projects\drone_pursuit\drone_pursuit\source\drone_pursuit\drone_pursuit\tasks\direct\quadcopter\quadcopter_env.py
+```
 
 ---
 
-# Chapter 3 — Closing the Distance: The Pursuit Policy - DRONE HARDWARE NEEDED
+# Chapter 3 — Define the Policy's Inputs and Outputs, Write the Reward, and Train with PPO
 
-## 3.1 What the defender commands, and what it senses (≤1.5h)
+> 💻 **NO HARDWARE — simulation only**, but every number in 3.1 comes from the 🔌 1.4 measurements.
 
-> **What / Why / How it contributes:** This defines the two interfaces between the policy and the world — the four numbers it outputs and the seventeen it receives — using the measurements you took in 1.4. Every choice here is dictated by what a Tello can actually do and report. Getting them right now means the policy you train in 3.3 is the policy you fly in Chapter 7, with no second training run.
+<details>
+<summary>Expand Chapter 3</summary>
 
-### Part A — The four outputs: stick commands
+## 3.1 Define the Four Commands the Policy Sends and the Seventeen Numbers It Receives (≤1.5h)
 
-> **Environment:** none needed — Parts A to G are all file edits. You run nothing until the sanity check at the end of 3.1.
+<details>
+<summary>Expand 3.1</summary>
+
+> **What this subchapter does:** a policy is defined by two interfaces — what it emits and what it is given. This subchapter sets both, using the three measurements you took from the Tello in 1.4. The four outputs become normalised stick commands instead of forces; the seventeen inputs contain only quantities a Tello can actually supply, arrive delayed by the video latency you measured, and describe the attacker purely in camera terms. Getting these right now is what lets the checkpoint you train in 3.3 fly the real drone in Chapter 7 without a second training run.
+
+> **Environment for Parts A to G:** none needed — they are all edits to `quadcopter_env.py`. You run nothing until the sanity check at the end of 3.1.
+
+### Part A — Replace force outputs with the four stick commands a Tello accepts
+
+<details>
+<summary>Expand Part A</summary>
 
 Isaac Lab's hover task outputs one thrust and three torques. **A Tello does not accept forces.** It accepts four normalised channels and runs its own stabiliser underneath:
 
@@ -1444,52 +1727,95 @@ Isaac Lab's hover task outputs one thrust and three torques. **A Tello does not 
    channel 3   turn (yaw rate)
 ```
 
-That built-in stabiliser is a large amount of balancing work you no longer have to learn — and a large amount of behaviour the simulation must now imitate.
+That built-in stabiliser is a large amount of balancing work the policy no longer has to learn — and a large amount of behaviour the simulation must now imitate, because the policy will be trained against whatever the simulation does.
 
-Replace the thrust-and-torque conversion in `_pre_physics_step` with one that treats the actions as **desired velocities** and applies whatever force reaches them:
-
-```python
-def _pre_physics_step(self, actions):
-    self._actions = actions.clone().clamp(-1.0, 1.0)
-
-    desired_vel_b = self._actions[:, :3] * self.cfg.max_speed        # m/s
-    desired_yaw_rate = self._actions[:, 3] * self.cfg.max_yaw_rate   # rad/s
-
-    # stands in for the Tello's own stabiliser
-    vel_error = desired_vel_b - self._robot.data.root_lin_vel_b
-    force_b = self.cfg.vel_gain * vel_error * self._robot_mass
-    force_b[:, 2] += self._robot_weight                              # hold altitude
-
-    self._thrust[:, 0, :] = quat_apply(self._robot.data.root_quat_w, force_b)
-    yaw_error = desired_yaw_rate - self._robot.data.root_ang_vel_b[:, 2]
-    self._moment[:, 0, 2] = self.cfg.yaw_gain * yaw_error
-```
+*File to edit:* `C:\projects\drone_pursuit\drone_pursuit\source\drone_pursuit\drone_pursuit\tasks\direct\quadcopter\quadcopter_env.py`
 
 ```python
-max_speed = 2.0          # m/s — conservative; a Tello can do more
-max_yaw_rate = 1.5       # rad/s
-vel_gain = 3.0           # how hard the stand-in stabiliser corrects
-yaw_gain = 0.05
+# ── FILE: ...\tasks\direct\quadcopter\quadcopter_env.py ─────────────────────
+# ── SECTION: class QuadcopterEnv, method _pre_physics_step ──────────────────
+
+    def _pre_physics_step(self, actions: torch.Tensor):
+
+        # ▼▼▼ DELETE the hover task's force conversion — these three lines: ▼▼▼
+        #   self._actions = actions.clone().clamp(-1.0, 1.0)
+        #   self._thrust[:, 0, 2] = self.cfg.thrust_to_weight * self._robot_weight * (self._actions[:, 0] + 1.0) / 2.0
+        #   self._moment[:, 0, :] = self.cfg.moment_scale * self._actions[:, 1:]
+        # ▲▲▲ and REPLACE the whole method body with the code below ▲▲▲
+
+        # ▼▼▼ INSERT HERE! ▼▼▼
+        self._actions = actions.clone().clamp(-1.0, 1.0)
+
+        desired_vel_b = self._actions[:, :3] * self.cfg.max_speed        # m/s
+        desired_yaw_rate = self._actions[:, 3] * self.cfg.max_yaw_rate   # rad/s
+
+        # stands in for the Tello's own stabiliser
+        vel_error = desired_vel_b - self._robot.data.root_lin_vel_b
+        force_b = self.cfg.vel_gain * vel_error * self._robot_mass
+        force_b[:, 2] += self._robot_weight                              # hold altitude
+
+        self._thrust[:, 0, :] = quat_apply(self._robot.data.root_quat_w, force_b)
+        yaw_error = desired_yaw_rate - self._robot.data.root_ang_vel_b[:, 2]
+        self._moment[:, 0, 2] = self.cfg.yaw_gain * yaw_error
+        # ▲▲▲ END OF INSERT ▲▲▲
 ```
 
-**Why approximate rather than model the real stabiliser.** The Tello's control law is undocumented. What must match is the *interface* — four normalised numbers in, roughly velocity-like behaviour out. Section 3.3's randomisation covers the gap between this approximation and reality, and 7.4 corrects it from real flight logs.
+`quat_apply` comes from `isaaclab.utils.math` — add it to the imports at the top of the file if it is not already there.
+
+The four constants it reads go in the config class:
+
+```python
+# ── FILE: ...\tasks\direct\quadcopter\quadcopter_env.py ─────────────────────
+# ── SECTION: class QuadcopterEnvCfg, next to the 2.1 pursuit knobs ──────────
+
+    capture_radius = 0.35        # ← EXISTING, from 2.1
+    arena_radius = 8.0           # ← EXISTING, from 2.1
+    attacker_speed = 0.6         # ← EXISTING, from 2.1
+
+    # ▼▼▼ INSERT HERE! — the stick-command model ▼▼▼
+    max_speed = 2.0          # m/s — conservative; a Tello can do more
+    max_yaw_rate = 1.5       # rad/s
+    vel_gain = 3.0           # how hard the stand-in stabiliser corrects
+    yaw_gain = 0.05
+    # ▲▲▲ END OF INSERT ▲▲▲
+```
+
+**Why approximate rather than model the real stabiliser.** The Tello's control law is undocumented, so no amount of effort reproduces it exactly. What must match is the *interface* — four normalised numbers in, roughly velocity-like behaviour out. Section 3.3's randomisation of mass, thrust and drift covers the remaining gap, and 7.4 narrows `vel_gain` using real flight logs.
 
 **After this change the simulated airframe stops being a Crazyflie** in any meaningful sense. It is a generic hovering body that responds to velocity commands, which is what a Tello is from your code's point of view.
 
-### Part B — The control rate matches your measurement
+</details>
+
+### Part B — Set the control rate to the value you measured in 1.4
+
+<details>
+<summary>Expand Part B</summary>
 
 From 1.4, Step 6. If you measured 20 commands per second:
 
+*File to edit:* `C:\projects\drone_pursuit\drone_pursuit\source\drone_pursuit\drone_pursuit\tasks\direct\quadcopter\quadcopter_env.py`
+
 ```python
-# sim.dt = 1/100, so decimation 5 gives 20 Hz control
-decimation = 5
+# ── FILE: ...\tasks\direct\quadcopter\quadcopter_env.py ─────────────────────
+# ── SECTION: class QuadcopterEnvCfg, the first few lines of the class ───────
+
+    episode_length_s = 10.0
+
+    # BEFORE:  decimation = 2      ← the hover task's value, gives 50 Hz control
+    # AFTER:   sim.dt = 1/100, so decimation 5 gives 20 Hz — YOUR measured rate
+    decimation = 5               # ◄── CHANGE THIS ONE NUMBER
 ```
 
 **This cannot be skipped.** At 20 Hz each command persists two and a half times longer than at 50 Hz, so identical policy output produces much larger movement. A policy trained at 50 Hz and flown at 20 Hz overshoots consistently.
 
-### Part C — The seventeen inputs
+</details>
 
-Defines everything the policy is allowed to know: its own motion, the seven camera readings, and the command it issued last step. Every entry is something a Tello can actually supply, which is what makes the same list usable in Chapter 7 without retraining.
+### Part C — List the seventeen numbers the policy receives
+
+<details>
+<summary>Expand Part C</summary>
+
+Every entry below is something a Tello can supply in flight, or something computed from the camera. That constraint is what makes the same seventeen assemblable in Chapter 7.2 from real hardware, with the policy unchanged.
 
 ```
 obs (17 numbers per env):
@@ -1505,70 +1831,148 @@ obs (17 numbers per env):
  [13:17] previous action — the four commands issued last step
 ```
 
-Set `observation_space = 17`.
+*File to edit:* `C:\projects\drone_pursuit\drone_pursuit\source\drone_pursuit\drone_pursuit\tasks\direct\quadcopter\quadcopter_env.py`
+
+```python
+# ── FILE: ...\tasks\direct\quadcopter\quadcopter_env.py ─────────────────────
+# ── SECTION: class QuadcopterEnvCfg, near decimation ────────────────────────
+
+    action_space = 4             # ← EXISTING, unchanged
+
+    # BEFORE:  observation_space = 12     ← the hover task's twelve
+    observation_space = 17       # ◄── CHANGE THIS ONE NUMBER
+```
 
 **Three things are absent, each for a reason from 1.4:**
 
-**No angular rates.** A Tello reports attitude angles but not how fast they are changing. Training on a number the drone cannot supply would produce a policy that fails on hardware in a way you could not diagnose. The policy can fly without them: rotating the drone sweeps the attacker across the frame, so the camera readings already reveal rotation.
+**No angular rates.** A Tello reports attitude angles but not how fast they are changing. Training on a number the drone cannot supply would produce a policy that fails on hardware in a way you could not diagnose. The policy can fly without them: rotating the drone sweeps the attacker across the frame, so `d_bearing_x` already reveals rotation.
 
-**No positions in metres, anywhere.** Recovering metres from a photograph requires knowing the attacker's true width. Bearings and frame-share make no such claim, so a different target drone changes nothing.
+**No positions in metres, anywhere.** Recovering metres from a photograph requires knowing the attacker's true width. Bearings and frame-share make no such claim, so a target drone of different size changes nothing.
 
 **No instantaneous readings.** They arrive late, on purpose — see Part D.
 
-### Part D — The readings arrive late, and the policy is told its last command
+</details>
 
-**The delay.** A Tello's video reaches your laptop 99–219 ms after it was captured. At 20 Hz control that is 2 to 5 decisions of staleness. A policy trained on instant readings has no reason to account for this, and on hardware it oscillates: it steers toward where the target was, finds it has moved, over-corrects, repeats.
+### Part D — Delay the camera readings and feed the previous command back
 
-Training with the delay present teaches the policy to **lead** the target rather than track it.
+<details>
+<summary>Expand Part D</summary>
 
-```python
-# from project_notes.txt — YOUR measurement, converted to control steps
-obs_delay_min = 2
-obs_delay_max = 5
-```
+**The delay.** A Tello's video reaches your laptop 99–219 ms after it was captured. At 20 Hz control that is 2 to 5 decisions of staleness. A policy trained on instant readings has no reason to account for this, and on hardware it oscillates: it steers toward where the target was, finds it has moved, over-corrects, repeats. Training with the delay present teaches the policy to **lead** the target rather than track it.
 
-In `__init__`:
+Three edits to the same file.
 
-```python
-self._reading_history = torch.zeros(
-    self.num_envs, self.cfg.obs_delay_max + 1, 7, device=self.device
-)
-self._delay_steps = torch.randint(
-    self.cfg.obs_delay_min, self.cfg.obs_delay_max + 1,
-    (self.num_envs,), device=self.device
-)
-```
+**Edit 1 of 3 — the two constants, from your own measurement:**
 
-Each step, push fresh readings in and take delayed ones out:
+*File to edit:* `C:\projects\drone_pursuit\drone_pursuit\source\drone_pursuit\drone_pursuit\tasks\direct\quadcopter\quadcopter_env.py`
 
 ```python
-def _delayed_readings(self, fresh):          # fresh: (num_envs, 7)
-    self._reading_history = torch.roll(self._reading_history, shifts=1, dims=1)
-    self._reading_history[:, 0] = fresh
-    idx = self._delay_steps.unsqueeze(-1).unsqueeze(-1).expand(-1, 1, 7)
-    return self._reading_history.gather(1, idx).squeeze(1)
+# ── FILE: ...\tasks\direct\quadcopter\quadcopter_env.py ─────────────────────
+# ── SECTION: class QuadcopterEnvCfg, below the Part A stick-command block ───
+
+    yaw_gain = 0.05              # ← EXISTING, from Part A
+
+    # ▼▼▼ INSERT HERE! — from project_notes.txt, converted to control steps ▼▼▼
+    obs_delay_min = 2
+    obs_delay_max = 5
+    # ▲▲▲ END OF INSERT ▲▲▲
 ```
 
-Re-randomise `_delay_steps` for reset environments in `_reset_idx`, and zero their history.
-
-**Randomising rather than fixing the delay is the point.** A constant lag can be cancelled exactly; a Tello's varies by roughly ±37 ms within a single flight. Training across the range produces tolerance rather than a policy tuned to a number it will never see twice.
-
-**The previous action.** With delayed readings, some commands have been issued but are not yet visible in anything the policy can see. Feeding back what it just commanded lets it reason about those instead of re-issuing them. Four numbers, standard practice for delayed control.
-
-### Part E — The camera model must match the Tello's lens
-
-Sets the simulated camera's focal length and frame shape to match the real drone's. Bearings are measured as a fraction of the frame, so a different field of view makes the same reading mean a different angle — silently, with no error.
+**Edit 2 of 3 — the history buffer and the per-env delay, in `__init__`:**
 
 ```python
-# camera model — MUST match both the TiledCameraCfg and the real drone's lens
-cam_width = 640
-cam_height = 480                  # 4:3, matching the Tello's 960x720
-cam_focal_mm = 12.0               # gives ~83 deg horizontal field of view
-cam_aperture_mm = 20.955          # PinholeCameraCfg default horizontal aperture
-attacker_span_m = 0.13            # the target's real width — used ONLY to simulate the camera
+# ── FILE: ...\tasks\direct\quadcopter\quadcopter_env.py ─────────────────────
+# ── SECTION: class QuadcopterEnv, method __init__ ───────────────────────────
+
+        self._atk_radius = 3.0                    # ← EXISTING, from 2.2 Step 2
+
+        # ▼▼▼ INSERT HERE! — delayed-reading machinery ▼▼▼
+        # one row per env, one column per past step, 7 readings each
+        self._reading_history = torch.zeros(
+            self.num_envs, self.cfg.obs_delay_max + 1, 7, device=self.device
+        )
+        # each env draws its own lag, so the policy meets the whole range
+        self._delay_steps = torch.randint(
+            self.cfg.obs_delay_min, self.cfg.obs_delay_max + 1,
+            (self.num_envs,), device=self.device
+        )
+        # last-seen readings, held while the attacker is out of view
+        self._prev_bx = torch.zeros(self.num_envs, device=self.device)
+        self._prev_by = torch.zeros(self.num_envs, device=self.device)
+        self._prev_asz = torch.zeros(self.num_envs, device=self.device)
+        self._prev_actions = torch.zeros(self.num_envs, 4, device=self.device)
+        # ▲▲▲ END OF INSERT ▲▲▲
 ```
 
-**Why 12 mm and not Isaac Lab's default 24 mm.** Bearings are *normalised* across the frame: +0.5 means "halfway from centre to the right edge." How many degrees that represents depends entirely on the lens. Isaac Lab's default gives roughly 47° of horizontal view; a Tello sees about 83°. Train on 47° and fly on 83° and every bearing means nearly twice the angle it did in training — the defender would under-steer on every correction, silently.
+**Edit 3 of 3 — the method that pushes fresh readings in and takes delayed ones out:**
+
+```python
+# ── FILE: ...\tasks\direct\quadcopter\quadcopter_env.py ─────────────────────
+# ── SECTION: class QuadcopterEnv — a new method, place it directly ──────────
+# ──          ABOVE _get_observations                                ────────
+
+    # ▼▼▼ INSERT HERE! ▼▼▼
+    def _delayed_readings(self, fresh):          # fresh: (num_envs, 7)
+        """Shift the history one step, store the newest, return each env's delayed row."""
+        self._reading_history = torch.roll(self._reading_history, shifts=1, dims=1)
+        self._reading_history[:, 0] = fresh
+        idx = self._delay_steps.unsqueeze(-1).unsqueeze(-1).expand(-1, 1, 7)
+        return self._reading_history.gather(1, idx).squeeze(1)
+    # ▲▲▲ END OF INSERT ▲▲▲
+```
+
+And in `_reset_idx`, alongside the 2.2 randomisation, clear the history and draw a new lag:
+
+```python
+# ── FILE: ...\tasks\direct\quadcopter\quadcopter_env.py ─────────────────────
+# ── SECTION: class QuadcopterEnv, method _reset_idx ─────────────────────────
+
+        self._atk_t[env_ids] = 0.0               # ← EXISTING, from 2.2 Step 2
+
+        # ▼▼▼ INSERT HERE! ▼▼▼
+        self._reading_history[env_ids] = 0.0
+        self._delay_steps[env_ids] = torch.randint(
+            self.cfg.obs_delay_min, self.cfg.obs_delay_max + 1,
+            (len(env_ids),), device=self.device
+        )
+        self._prev_bx[env_ids] = 0.0
+        self._prev_by[env_ids] = 0.0
+        self._prev_asz[env_ids] = 0.0
+        # ▲▲▲ END OF INSERT ▲▲▲
+```
+
+**Why the delay is randomised rather than fixed.** A constant lag can be cancelled exactly, and a policy trained on one would be tuned to a number it never sees twice — the measured spread on a Tello is roughly ±37 ms within a single flight. Drawing a fresh delay per episode from 2 to 5 steps produces tolerance across the range instead.
+
+**The previous action.** With delayed readings, commands issued in the last few steps have not yet appeared in anything the policy can see. Feeding back what it just commanded lets it account for those instead of issuing them again. Four numbers, standard practice for delayed control.
+
+</details>
+
+### Part E — Match the simulated camera to the Tello's lens
+
+<details>
+<summary>Expand Part E</summary>
+
+Bearings are measured as a fraction of the frame, so what `bearing_x = +0.5` means in degrees depends entirely on the lens. This step sets the simulated camera's focal length and frame shape to the Tello's, so that fraction means the same angle in training and in flight.
+
+*File to edit:* `C:\projects\drone_pursuit\drone_pursuit\source\drone_pursuit\drone_pursuit\tasks\direct\quadcopter\quadcopter_env.py`
+
+```python
+# ── FILE: ...\tasks\direct\quadcopter\quadcopter_env.py ─────────────────────
+# ── SECTION: class QuadcopterEnvCfg, below the Part D delay constants ───────
+
+    obs_delay_max = 5            # ← EXISTING, from Part D
+
+    # ▼▼▼ INSERT HERE! — camera model. MUST match the TiledCameraCfg you add ▼▼▼
+    # in 5.2 AND the real drone's lens.
+    cam_width = 640
+    cam_height = 480                  # 4:3, matching the Tello's 960x720
+    cam_focal_mm = 12.0               # gives ~83 deg horizontal field of view
+    cam_aperture_mm = 20.955          # PinholeCameraCfg default horizontal aperture
+    attacker_span_m = 0.13            # target's real width — ONLY to simulate the camera
+    # ▲▲▲ END OF INSERT ▲▲▲
+```
+
+**Why 12 mm and not Isaac Lab's default 24 mm.** Isaac Lab's default gives roughly 47° of horizontal view; a Tello sees about 83°. Train on 47° and fly on 83° and every bearing corresponds to nearly twice the angle it did in training, so the defender under-steers on every correction — and nothing errors.
 
 For a different camera, solve:
 
@@ -1577,83 +1981,135 @@ focal_mm = aperture_mm / (2 x tan(FOV / 2))
          = 20.955 / (2 x tan(41.3 deg)) = 12.0     for an 83 deg lens
 ```
 
-**Aspect ratio too.** A Tello outputs 4:3. Rendering square and then squashing a 4:3 photograph into it would distort every bearing. Render 640×480, resize real frames to 640×480, and the geometry stays honest.
+**Aspect ratio too.** A Tello outputs 4:3. Rendering square and then squashing a 4:3 photograph into it would stretch every horizontal bearing by 4/3. Render 640×480, resize real frames to 640×480, and the geometry stays consistent.
 
-**This is the most likely silent failure in the whole project**, because nothing errors — the numbers quietly mean something else.
+**This is the most likely silent failure in the whole project.** Chapter 6.1 Step 2 exists specifically to catch it, by comparing these numbers against ones measured from a rendered frame.
 
-### Part F — Calculating the readings during training
+</details>
 
-During training we compute the seven readings from the true relative position — going *forward* through the camera model: given where the attacker really is, how large would it appear?
+### Part F — Compute the seven readings from ground truth during training
 
-This is legitimate. The simulated camera really is photographing a target of known dimensions, and rendering the frame would produce this same rectangle, only far more slowly. What we never do is the *backward* step — taking a rectangle and dividing by an assumed size to produce metres. That step appears nowhere in this project.
+<details>
+<summary>Expand Part F</summary>
 
-```python
-from isaaclab.utils.math import subtract_frame_transforms
+During training the seven readings are computed from the true relative position, run *forward* through the camera model: given where the attacker really is, how large would it appear and where in frame? This is legitimate — the simulated camera really is photographing a target of known size, and rendering the frame would produce the same rectangle far more slowly. What never happens anywhere in this project is the *backward* step: taking a rectangle and dividing by an assumed width to produce metres.
 
-def _camera_readings(self):
-    """Project ground truth through the camera model → what the detector would report."""
-    rel_b, _ = subtract_frame_transforms(
-        self._robot.data.root_pos_w, self._robot.data.root_quat_w,
-        self._attacker.data.root_pos_w,
-    )
-    fwd = rel_b[:, 0]
-    safe_fwd = fwd.clamp(min=0.05)
-
-    f_px = self.cfg.cam_width * self.cfg.cam_focal_mm / self.cfg.cam_aperture_mm
-    half_w = self.cfg.cam_width / 2.0
-    half_h = self.cfg.cam_height / 2.0
-
-    bearing_x = -(rel_b[:, 1] / safe_fwd) * (f_px / half_w)
-    bearing_y = -(rel_b[:, 2] / safe_fwd) * (f_px / half_h)
-    ang_size = (f_px * self.cfg.attacker_span_m / self._dist.clamp(min=0.05)) / self.cfg.cam_width
-
-    visible = (fwd > 0.05) & (bearing_x.abs() < 1.0) & (bearing_y.abs() < 1.0) & (ang_size > 0.012)
-    return bearing_x, bearing_y, ang_size, visible.float()
-```
-
-The `ang_size > 0.012` threshold is a box about 8 pixels wide, below which your Chapter 5 detector will usually return nothing. Simulating that blind spot means the policy meets the "too small to detect" case thousands of times during training and learns a response, instead of encountering it first on a real flight.
-
-### Part G — Assembling the observation
-
-Puts the seventeen numbers together in the order the policy expects, holding the last reading whenever the attacker is not visible. Chapter 7.2's flight script assembles the same seventeen in the same order from real hardware.
+*File to edit:* `C:\projects\drone_pursuit\drone_pursuit\source\drone_pursuit\drone_pursuit\tasks\direct\quadcopter\quadcopter_env.py`
 
 ```python
-def _get_observations(self) -> dict:
-    bx, by, asz, vis = self._camera_readings()
+# ── FILE: ...\tasks\direct\quadcopter\quadcopter_env.py ─────────────────────
+# ── SECTION: the imports at the top of the file ─────────────────────────────
 
-    # hold the previous reading wherever the attacker is not currently visible
-    bx  = torch.where(vis > 0.5, bx,  self._prev_bx)
-    by  = torch.where(vis > 0.5, by,  self._prev_by)
-    asz = torch.where(vis > 0.5, asz, self._prev_asz)
+# ▼▼▼ INSERT HERE! (if not already imported) ▼▼▼
+from isaaclab.utils.math import subtract_frame_transforms, quat_apply
+# ▲▲▲ END OF INSERT ▲▲▲
 
-    d_bx, d_by, d_asz = bx - self._prev_bx, by - self._prev_by, asz - self._prev_asz
-    self._prev_bx, self._prev_by, self._prev_asz = bx.clone(), by.clone(), asz.clone()
 
-    fresh = torch.stack([bx, by, asz, d_bx, d_by, d_asz, vis], dim=-1)
-    delayed = self._delayed_readings(fresh)
+# ── SECTION: class QuadcopterEnv — a new method, place it directly BELOW ────
+# ──          _delayed_readings and ABOVE _get_observations             ─────
 
-    obs = torch.cat([
-        self._robot.data.root_lin_vel_b,          # 3
-        self._robot.data.projected_gravity_b,     # 3
-        delayed,                                  # 7
-        self._actions,                            # 4
-    ], dim=-1)
-    return {"policy": obs}
+    # ▼▼▼ INSERT HERE! ▼▼▼
+    def _camera_readings(self):
+        """Project ground truth through the camera model → what the detector would report."""
+        rel_b, _ = subtract_frame_transforms(
+            self._robot.data.root_pos_w, self._robot.data.root_quat_w,
+            self._attacker.data.root_pos_w,
+        )
+        fwd = rel_b[:, 0]
+        safe_fwd = fwd.clamp(min=0.05)
+
+        f_px = self.cfg.cam_width * self.cfg.cam_focal_mm / self.cfg.cam_aperture_mm
+        half_w = self.cfg.cam_width / 2.0
+        half_h = self.cfg.cam_height / 2.0
+
+        bearing_x = -(rel_b[:, 1] / safe_fwd) * (f_px / half_w)
+        bearing_y = -(rel_b[:, 2] / safe_fwd) * (f_px / half_h)
+        ang_size = (f_px * self.cfg.attacker_span_m / self._dist.clamp(min=0.05)) / self.cfg.cam_width
+
+        # the detector's blind spot: a box under ~8 px wide usually returns nothing
+        visible = (fwd > 0.05) & (bearing_x.abs() < 1.0) & (bearing_y.abs() < 1.0) & (ang_size > 0.012)
+        return bearing_x, bearing_y, ang_size, visible.float()
+    # ▲▲▲ END OF INSERT ▲▲▲
 ```
 
-Allocate `_prev_bx / _prev_by / _prev_asz` in `__init__`, and zero them for reset environments — otherwise a fresh episode inherits the previous one's last sighting and its first `d_ang_size` is nonsense.
+Simulating that blind spot means the policy meets the "too small to detect" case thousands of times in training and learns a response, instead of meeting it for the first time on a real flight.
 
-Also cache the true distance; the reward and the termination check both need it:
+</details>
+
+### Part G — Assemble the observation vector in the order the policy will always see
+
+<details>
+<summary>Expand Part G</summary>
+
+This step concatenates the seventeen numbers, holds the last camera reading whenever the attacker is not visible, and computes the three rate-of-change terms. Chapter 7.2's flight script builds the same seventeen in the same order from real telemetry, so any change to this ordering must be mirrored there.
+
+*File to edit:* `C:\projects\drone_pursuit\drone_pursuit\source\drone_pursuit\drone_pursuit\tasks\direct\quadcopter\quadcopter_env.py`
 
 ```python
-self._dist = torch.linalg.norm(
-    self._attacker.data.root_pos_w - self._robot.data.root_pos_w, dim=1
-)
+# ── FILE: ...\tasks\direct\quadcopter\quadcopter_env.py ─────────────────────
+# ── SECTION: class QuadcopterEnv, method _get_observations ──────────────────
+
+    def _get_observations(self) -> dict:
+
+        # ▼▼▼ DELETE the hover task's whole body — it looked like this: ▼▼▼
+        #   desired_pos_b, _ = subtract_frame_transforms(
+        #       self._robot.data.root_pos_w, self._robot.data.root_quat_w, self._desired_pos_w
+        #   )
+        #   obs = torch.cat([self._robot.data.root_lin_vel_b,
+        #                    self._robot.data.root_ang_vel_b,
+        #                    self._robot.data.projected_gravity_b,
+        #                    desired_pos_b], dim=-1)
+        #   return {"policy": obs}
+        # ▲▲▲ and REPLACE it with everything below ▲▲▲
+
+        # ▼▼▼ INSERT HERE! ▼▼▼
+        # cache the true distance — the reward (3.2) and _get_dones both read it
+        self._dist = torch.linalg.norm(
+            self._attacker.data.root_pos_w - self._robot.data.root_pos_w, dim=1
+        )
+
+        bx, by, asz, vis = self._camera_readings()
+
+        # hold the previous reading wherever the attacker is not currently visible
+        bx  = torch.where(vis > 0.5, bx,  self._prev_bx)
+        by  = torch.where(vis > 0.5, by,  self._prev_by)
+        asz = torch.where(vis > 0.5, asz, self._prev_asz)
+
+        d_bx, d_by, d_asz = bx - self._prev_bx, by - self._prev_by, asz - self._prev_asz
+        self._prev_bx, self._prev_by, self._prev_asz = bx.clone(), by.clone(), asz.clone()
+
+        fresh = torch.stack([bx, by, asz, d_bx, d_by, d_asz, vis], dim=-1)
+        delayed = self._delayed_readings(fresh)
+
+        obs = torch.cat([
+            self._robot.data.root_lin_vel_b,          # 3   slots 0:3
+            self._robot.data.projected_gravity_b,     # 3   slots 3:6
+            delayed,                                  # 7   slots 6:13  ← camera
+            self._actions,                            # 4   slots 13:17
+        ], dim=-1)
+        return {"policy": obs}
+        # ▲▲▲ END OF INSERT ▲▲▲
 ```
+
+`_prev_bx / _prev_by / _prev_asz` were allocated in Part D's Edit 2 and zeroed on reset in its final block. Without that zeroing, a fresh episode inherits the previous episode's last sighting and its first `d_ang_size` is a large meaningless jump.
+
+</details>
 
 ### Sanity check before moving on
 
+<details>
+<summary>Expand the sanity check</summary>
+
+> **Environment:** `env_drone`
+
 Run a handful of non-headless iterations printing `bearing_x`, `ang_size`, `_dist` and `visible` for env 0. Three things must hold: **ang_size rises as `_dist` falls**, **bearing_x flips sign** as the attacker crosses the frame, and **the delayed readings lag the fresh ones** by the expected number of steps.
+
+*Run from:* `any folder` — *the script lives in:* `C:\projects\drone_pursuit\drone_pursuit\scripts\skrl\`
+```bat
+python C:\projects\drone_pursuit\drone_pursuit\scripts\skrl\train.py --task Template-Drone-Pursuit-Direct-v0 --num_envs 4 --max_iterations 5
+```
+
+</details>
 
 > ✅ **Checkpoint 3.1**
 > 1. Env steps with no shape errors at `observation_space = 17` and `decimation` matching your measured rate
@@ -1661,221 +2117,434 @@ Run a handful of non-headless iterations printing `bearing_x`, `ang_size`, `_dis
 > 3. `visible` drops to 0 when the attacker leaves the frame, with held values staying frozen
 > 4. Your cfg contains the three numbers from `project_notes.txt`, not the defaults printed here
 
+</details>
 
 ---
 
-## 3.2 Reward design: teaching "get closer" (≤1.5h)
+## 3.2 Write the Reward Function and the Episode-Ending Conditions (≤1.5h)
 
-> **What / Why / How it contributes:** The reward function is the entire curriculum — the policy becomes whatever the reward pays for, including its loopholes. We build a dense reward from three ingredients (closing speed, proximity, capture bonus) plus stability penalties inherited from the hover task, and we define the episode-ending events. This subchapter is mostly THINKING, deliberately: reward bugs cost you full training runs, the most expensive kind of bug in this project.
+<details>
+<summary>Expand 3.2</summary>
 
-### First, the rule that makes this section legal
+> **What this subchapter does:** the policy becomes whatever the reward pays for, including any loophole in it. This subchapter builds a dense reward from three payments (closing speed, proximity, capture bonus) and two penalties (jerky commands, plus the hover task's existing stability terms), then defines the four events that end an episode. It is mostly reading and deciding rather than typing, because a reward bug is only visible after a full training run — the most expensive kind of mistake in this project.
 
-The observations changed in 3.1, but **the reward does not have to**. The reward is read only by the training algorithm, which uses it to adjust the network's weights. Once training ends it is never called again — `play.py` and your Chapter 6 demo never evaluate it. So it may freely use the true distance between the drones, even though the policy itself never receives that number.
+### Why the reward may use the true distance when the observations may not
+
+The observations changed in 3.1, but the reward does not have to. The reward is read only by the PPO update inside skrl; once training ends it is never called again — neither `play.py` nor the Chapter 6 demo evaluates it. So it may use the true distance between the drones even though the policy never receives that number.
 
 ```
  OBSERVATIONS ──► must be obtainable from a camera at deployment  (strict)
  REWARDS      ──► may use anything the simulator knows            (free)
 ```
 
-Keeping the reward metric is not a compromise — it is what lets us keep a dense, smooth, easy-to-tune learning signal while the policy learns to act on camera readings alone.
+Keeping the true metric is what lets the learning signal stay smooth while the policy still learns to act on camera readings alone.
 
-### The reward, ingredient by ingredient
+### Step 1 — Add the reward dials to the config class
 
-```python
-# in the cfg — the tuning dials
-closing_reward_scale = 2.0      # per m/s of speed TOWARD the target
-proximity_reward_scale = 1.5    # smooth "warmth" signal as distance shrinks
-capture_bonus = 200.0           # jackpot, once, at capture
-crash_penalty = -50.0           # hit the floor / left the arena
-action_rate_penalty = -0.02     # sim-to-real: penalise jerky command changes
-# keep the hover task's small lin_vel / ang_vel penalties (they fight jitter)
-```
-
-```python
-def _get_rewards(self) -> torch.Tensor:
-    to_target = self._attacker.data.root_pos_w - self._robot.data.root_pos_w
-    dir_to_target = to_target / self._dist.unsqueeze(1).clamp(min=1e-6)
-
-    # 1) CLOSING SPEED: my velocity, projected onto the target direction.
-    #    +1.0 means "approaching at 1 m/s"; negative means fleeing. Paid EVERY step.
-    closing = (self._robot.data.root_lin_vel_w * dir_to_target).sum(dim=1)
-
-    # 2) PROXIMITY: 1 - tanh(dist/4) — a smooth 0..1 "warmth" that rises as you approach.
-    proximity = 1.0 - torch.tanh(self._dist / 4.0)
-
-    # 3) CAPTURE: the jackpot
-    captured = self._dist < self.cfg.capture_radius
-
-    # 4) SMOOTHNESS: penalise how much the command changed since last step
-    action_rate = torch.sum(torch.square(self._actions - self._prev_actions), dim=1)
-
-    reward = (
-        self.cfg.closing_reward_scale * closing
-        + self.cfg.proximity_reward_scale * proximity
-        + self.cfg.capture_bonus * captured.float()
-        + self.cfg.action_rate_penalty * action_rate
-    ) * self.step_dt
-    self._prev_actions = self._actions.clone()
-    return reward
-```
-
-(Scaling by `step_dt`, like the built-in tasks do, keeps reward magnitudes comparable if you ever change the control frequency.)
-
-**Why three ingredients instead of just the capture bonus?** With the bonus alone, an untrained policy applying random thrust would have to stumble within 0.35 m of a moving attacker before receiving anything other than zero. Across thousands of episodes that may never happen, and PPO cannot improve a policy whose returns are identical everywhere — this is a **sparse reward**. `closing` and `proximity` pay out on every single step, so even a bad policy learns which direction is better. The capture bonus then supplies the final push from "nearby" to "in contact."
-
-**Why `tanh` for proximity?** It squashes distance into a bounded 0–1 curve: steep payoff gains near the target, flat far away. Unbounded `1/dist` rewards explode at tiny distances and destabilize PPO. `tanh` (hyperbolic tangent, the S-curve used inside neural networks) is the standard bounded squash; the hover task uses the same trick for its position reward.
-
-**Why penalise the action rate?** This one exists for Chapter 7. In simulation, a policy can change its command wildly between steps at no cost — motors respond instantly. Real motors have inertia and real radio links drop packets, so a jittery command stream produces a drone that shakes rather than flies. Published sim-to-real work identifies command smoothness as one of the decisive factors in whether a policy transfers at all. Keep the weight small: too large and the defender becomes sluggish and stops manoeuvring.
-
-**Reward-hacking preview** (you know this failure mode from Ant): watch for the policy learning to *orbit* the attacker at ~1 m — proximity pays well there, closing averages zero, and capture never happens. Fix if you see it: raise `closing_reward_scale` or shrink the `4.0` in the tanh to steepen the near-field gradient.
-
-### Episode endings (`_get_dones`)
-
-```python
-def _get_dones(self):
-    captured = self._dist < self.cfg.capture_radius                       # success
-    crashed = self._robot.data.root_pos_w[:, 2] < 0.1                     # floor
-    escaped = self._dist > self.cfg.arena_radius                          # lost the plot
-    died = crashed | escaped | captured        # all three END the episode now
-    time_out = self.episode_length_buf >= self.max_episode_length - 1
-    return died, time_out
-```
-
-Ending the episode **on capture** matters: if the episode continued, the drone would sit inside the capture radius farming bonus — a reward exploit you'd only discover after a confusing training run.
-
-> ✅ **Checkpoint 3.2** — code compiles & steps; and you can answer: *"If I set closing_reward_scale to 0, what degenerate behavior might appear?"* (Answer: hovering at the tanh sweet spot — proximity pays without ever closing.)
-
----
-
-## 3.3 Randomise, train, diagnose (≤1.5h hands-on + background compute)
-
-> **What / Why / How it contributes:** We launch the real training run, learn which TensorBoard curves diagnose a pursuit task specifically, and apply a simple curriculum: train against a slow attacker first, then raise its speed. Deliverable: a checkpoint where the defender reliably intercepts the moving attacker using ground-truth observations — the "flight brain" that Chapter 6 will connect to synthetic eyes.
-
-### Step 0 — Randomise what you cannot know about the drone
+<details>
+<summary>Expand Step 1</summary>
 
 > **Environment:** none needed — you are editing files.
 
-Varies mass, thrust and drift between attempts, so each one trains against a slightly different drone. You cannot measure these precisely on a cheap drone, and a policy that works across a range will work on the actual one.
-
-Before training, randomise the physical properties you cannot measure precisely. In `_reset_idx`, so each attempt trains against a slightly different drone:
+*File to edit:* `C:\projects\drone_pursuit\drone_pursuit\source\drone_pursuit\drone_pursuit\tasks\direct\quadcopter\quadcopter_env.py`
 
 ```python
-n = len(env_ids)
-# mass varies with battery charge and wear
-self._mass_scale[env_ids] = 1.0 + (torch.rand(n, device=self.device) - 0.5) * 0.2
-# available thrust falls as the battery drains
-self._thrust_scale[env_ids] = 0.85 + torch.rand(n, device=self.device) * 0.3
-# cheap drones drift — a small constant push in a random direction
-self._drift[env_ids] = (torch.rand(n, 3, device=self.device) - 0.5) * 0.15
+# ── FILE: ...\tasks\direct\quadcopter\quadcopter_env.py ─────────────────────
+# ── SECTION: class QuadcopterEnvCfg, where the hover reward scales live ─────
+
+    # --- EXISTING: keep these two, they fight jitter ---
+    lin_vel_reward_scale = -0.05
+    ang_vel_reward_scale = -0.01
+
+    # --- EXISTING: the hover task's distance reward is now unused ---
+    # distance_to_goal_reward_scale = 15.0     ← comment out or delete
+
+    # ▼▼▼ INSERT HERE! — the pursuit reward dials ▼▼▼
+    closing_reward_scale = 2.0      # per m/s of speed TOWARD the target
+    proximity_reward_scale = 1.5    # smooth "warmth" signal as distance shrinks
+    capture_bonus = 200.0           # paid once, at capture
+    crash_penalty = -50.0           # hit the floor / left the arena
+    action_rate_penalty = -0.02     # sim-to-real: penalise jerky command changes
+    # ▲▲▲ END OF INSERT ▲▲▲
 ```
 
-Also add small Gaussian noise to the camera readings before they enter the delay buffer. The detector's rectangle jitters by a few pixels between frames, and a policy that never saw noisy bearings will chase the jitter.
+</details>
 
-**Randomisation matters more than accuracy here.** You will never model a C$115 drone correctly. A policy that works across a wide band of possible drones will work on the actual one; a policy tuned to your best guess fails wherever that guess was wrong.
+### Step 2 — Rewrite `_get_rewards` with three payments and two penalties
 
-**A note on wind.** This models drift as a small *constant* push, which represents a drone's imperfect trim well but wind poorly — real wind is gusty and changes direction. This tutorial assumes calm conditions, and that assumption is load-bearing: on a breezy day the disturbance would exceed anything the policy trained against, and the honest response is to wait for better weather. Flying in wind would mean making `_drift` vary *during* an episode — a harder task needing its own training run.
+<details>
+<summary>Expand Step 2</summary>
 
-**Expect a lower capture rate than an unrandomised run, and welcome it.** You have made the task harder in exactly the ways reality is harder. A policy capturing 60–70% under randomisation is far more likely to fly than one capturing 95% under ideal conditions, because the second was never solving the real problem.
+> **Environment:** none needed — you are editing files.
 
-### Step 1 — Curriculum, the manual way
+*File to edit:* `C:\projects\drone_pursuit\drone_pursuit\source\drone_pursuit\drone_pursuit\tasks\direct\quadcopter\quadcopter_env.py`
+
+```python
+# ── FILE: ...\tasks\direct\quadcopter\quadcopter_env.py ─────────────────────
+# ── SECTION: class QuadcopterEnv, method _get_rewards ───────────────────────
+
+    def _get_rewards(self) -> torch.Tensor:
+
+        # ▼▼▼ DELETE the hover task's body — it computed distance_to_goal ▼▼▼
+        #   distance_to_goal = torch.linalg.norm(self._desired_pos_w - self._robot.data.root_pos_w, dim=1)
+        #   distance_to_goal_mapped = 1 - torch.tanh(distance_to_goal / 0.8)
+        #   rewards = { ... }   ; reward = torch.sum(torch.stack(list(rewards.values())), dim=0)
+        # ▲▲▲ and REPLACE the whole body with the code below ▲▲▲
+
+        # ▼▼▼ INSERT HERE! ▼▼▼
+        to_target = self._attacker.data.root_pos_w - self._robot.data.root_pos_w
+        dir_to_target = to_target / self._dist.unsqueeze(1).clamp(min=1e-6)
+
+        # 1) CLOSING SPEED: my velocity, projected onto the target direction.
+        #    +1.0 means "approaching at 1 m/s"; negative means fleeing. Paid EVERY step.
+        closing = (self._robot.data.root_lin_vel_w * dir_to_target).sum(dim=1)
+
+        # 2) PROXIMITY: 1 - tanh(dist/4) — a smooth 0..1 value that rises as you approach.
+        proximity = 1.0 - torch.tanh(self._dist / 4.0)
+
+        # 3) CAPTURE: the one-off bonus
+        captured = self._dist < self.cfg.capture_radius
+
+        # 4) SMOOTHNESS: how much the command changed since last step
+        action_rate = torch.sum(torch.square(self._actions - self._prev_actions), dim=1)
+
+        reward = (
+            self.cfg.closing_reward_scale * closing
+            + self.cfg.proximity_reward_scale * proximity
+            + self.cfg.capture_bonus * captured.float()
+            + self.cfg.action_rate_penalty * action_rate
+        ) * self.step_dt
+        self._prev_actions = self._actions.clone()
+        return reward
+        # ▲▲▲ END OF INSERT ▲▲▲
+```
+
+(Scaling by `step_dt`, as the built-in tasks do, keeps reward magnitudes comparable if you later change the control frequency.)
+
+**Why three payments instead of only the capture bonus.** With the bonus alone, an untrained policy would have to stumble within 0.35 m of a moving attacker before receiving anything but zero. Across thousands of episodes that may never happen, and PPO cannot improve a policy whose returns are identical everywhere — that is a sparse reward. `closing` and `proximity` pay on every step, so even a bad policy gets told which direction was better. The bonus then supplies the push from "nearby" to "in contact".
+
+**Why `tanh` for proximity.** It maps distance onto a bounded 0–1 curve: a steep gradient near the target, flat far away. An unbounded `1/dist` grows without limit at small distances and produces advantage estimates large enough to destabilise the PPO update. The hover task uses the same bounded squash for its position term.
+
+**Why penalise the action rate.** In simulation, changing the command from +1 to −1 between steps costs nothing — the force model responds instantly. On a Tello, motors have inertia and the WiFi link drops packets, so a command stream that swings wildly produces a drone that shakes instead of flying. Published sim-to-real work identifies command smoothness as one of the decisive factors in whether a policy transfers. Keep the weight small: raise it too far and the defender becomes sluggish and stops manoeuvring.
+
+**The reward-hacking pattern to watch for**, the same failure mode you saw in Ant: the policy learns to orbit the attacker at about 1 m. Proximity pays well there, closing averages zero over a lap, and capture never happens. If you see it, raise `closing_reward_scale` or shrink the `4.0` inside the tanh to steepen the near-field gradient.
+
+</details>
+
+### Step 3 — Define when an episode ends
+
+<details>
+<summary>Expand Step 3</summary>
+
+> **Environment:** none needed — you are editing files.
+
+*File to edit:* `C:\projects\drone_pursuit\drone_pursuit\source\drone_pursuit\drone_pursuit\tasks\direct\quadcopter\quadcopter_env.py`
+
+```python
+# ── FILE: ...\tasks\direct\quadcopter\quadcopter_env.py ─────────────────────
+# ── SECTION: class QuadcopterEnv, method _get_dones ─────────────────────────
+
+    def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
+
+        # ▼▼▼ DELETE the hover task's body — it looked like this: ▼▼▼
+        #   time_out = self.episode_length_buf >= self.max_episode_length - 1
+        #   died = torch.logical_or(self._robot.data.root_pos_w[:, 2] < 0.1,
+        #                           self._robot.data.root_pos_w[:, 2] > 2.0)
+        #   return died, time_out
+        # ▲▲▲ and REPLACE it with the code below ▲▲▲
+
+        # ▼▼▼ INSERT HERE! ▼▼▼
+        captured = self._dist < self.cfg.capture_radius                       # success
+        crashed = self._robot.data.root_pos_w[:, 2] < 0.1                     # floor
+        escaped = self._dist > self.cfg.arena_radius                          # lost it
+        died = crashed | escaped | captured        # all three END the episode now
+        time_out = self.episode_length_buf >= self.max_episode_length - 1
+        return died, time_out
+        # ▲▲▲ END OF INSERT ▲▲▲
+```
+
+Ending the episode on capture matters: if it continued, the defender would sit just inside the 0.35 m radius and collect the 200-point bonus again on every step — a reward exploit you would only notice after a confusing training run in which reward climbed steeply and capture rate did not.
+
+</details>
+
+> ✅ **Checkpoint 3.2** — the code compiles and the env steps, and you can answer: *"If I set `closing_reward_scale` to 0, what degenerate behaviour appears?"* (Answer: hovering at the distance where the tanh curve is steepest — proximity pays without ever closing.)
+
+</details>
+
+---
+
+## 3.3 Randomise the Drone's Physics, Train with PPO, and Read the Curves (≤1.5h hands-on + background compute)
+
+<details>
+<summary>Expand 3.3</summary>
+
+> **What this subchapter does:** launches the real training run and manages it. First it randomises the physical properties of the simulated drone that you cannot measure on a C$115 aircraft, then it trains against a slow attacker and raises the speed in stages, then it reads the five metrics that diagnose a pursuit task specifically. It ends by measuring `capture_ang_size` — the share of frame the attacker fills at capture — which Chapter 6.2 needs because it has no simulator to ask for distance. Deliverable: a checkpoint that reliably intercepts, and one calibrated constant.
+
+### Step 0 — Randomise the physical properties you cannot measure
+
+<details>
+<summary>Expand Step 0</summary>
+
+> **Environment:** none needed — you are editing files.
+
+A Tello's mass changes with battery and wear, its available thrust sags as the battery drains, and it drifts because its trim is imperfect. You cannot measure any of these precisely, so instead of guessing one value, each episode trains against a slightly different drone drawn from a range that contains the real one.
+
+*File to edit:* `C:\projects\drone_pursuit\drone_pursuit\source\drone_pursuit\drone_pursuit\tasks\direct\quadcopter\quadcopter_env.py`
+
+```python
+# ── FILE: ...\tasks\direct\quadcopter\quadcopter_env.py ─────────────────────
+# ── SECTION: class QuadcopterEnv, method __init__ ───────────────────────────
+
+        self._prev_actions = torch.zeros(self.num_envs, 4, device=self.device)  # ← from 3.1 D
+
+        # ▼▼▼ INSERT HERE! — allocate the randomised-drone buffers ▼▼▼
+        self._mass_scale = torch.ones(self.num_envs, device=self.device)
+        self._thrust_scale = torch.ones(self.num_envs, device=self.device)
+        self._drift = torch.zeros(self.num_envs, 3, device=self.device)
+        # ▲▲▲ END OF INSERT ▲▲▲
+
+
+# ── SECTION: class QuadcopterEnv, method _reset_idx ─────────────────────────
+
+        self._prev_asz[env_ids] = 0.0            # ← EXISTING, from 3.1 Part D
+
+        # ▼▼▼ INSERT HERE! — draw a slightly different drone for each new episode ▼▼▼
+        n = len(env_ids)
+        # mass varies with battery charge and wear
+        self._mass_scale[env_ids] = 1.0 + (torch.rand(n, device=self.device) - 0.5) * 0.2
+        # available thrust falls as the battery drains
+        self._thrust_scale[env_ids] = 0.85 + torch.rand(n, device=self.device) * 0.3
+        # cheap drones drift — a small constant push in a random direction
+        self._drift[env_ids] = (torch.rand(n, 3, device=self.device) - 0.5) * 0.15
+        # ▲▲▲ END OF INSERT ▲▲▲
+```
+
+Then apply them where the force is built, in `_pre_physics_step` (Part A), and add small Gaussian noise to the readings before they enter the delay buffer in `_get_observations` (Part G). The detector's rectangle jitters by a few pixels between frames, and a policy that only ever saw perfectly smooth bearings will chase that jitter.
+
+**Randomisation matters more than accuracy here.** A policy that works across a wide band of possible drones works on the actual one; a policy tuned to your single best guess fails wherever that guess was wrong, and you cannot tell which parameter was wrong from the flight.
+
+**A note on wind.** `_drift` is a constant push per episode, which represents imperfect trim well and wind poorly — real wind gusts and changes direction. This tutorial assumes calm conditions, and that assumption is load-bearing: on a breezy day the disturbance exceeds anything the policy trained against. Modelling wind would mean varying `_drift` *during* an episode, which is a harder task needing its own training run.
+
+**Expect a lower capture rate than an unrandomised run.** You have made the task harder in the ways reality is harder. A policy capturing 60–70% under randomisation is more likely to fly than one capturing 95% under ideal conditions, because the second was never solving the real problem.
+
+</details>
+
+### Step 1 — Start training against a slow attacker
+
+<details>
+<summary>Expand Step 1</summary>
 
 > **Environment:** `env_drone`
 
-Starts training against a slow attacker. Beginning easy matters because at full speed an untrained policy almost never makes contact, so the capture bonus is never collected and training settles for hovering.
+Set `attacker_speed = 0.3` before launching. At the full 0.6 m/s an untrained policy almost never comes within 0.35 m of the attacker, so the capture bonus is never collected and PPO converges on whatever the proximity term alone pays for — usually stationary hovering. Starting slow gets captures happening early, which is what makes the bonus informative.
 
-Start easy: in the cfg set `attacker_speed = 0.3`. Then:
+*File to edit:* `C:\projects\drone_pursuit\drone_pursuit\source\drone_pursuit\drone_pursuit\tasks\direct\quadcopter\quadcopter_env.py`
 
-*Run from:* `any folder`
+```python
+# ── FILE: ...\tasks\direct\quadcopter\quadcopter_env.py ─────────────────────
+# ── SECTION: class QuadcopterEnvCfg, the 2.1 pursuit knobs ──────────────────
+
+    # BEFORE: attacker_speed = 0.6
+    attacker_speed = 0.3       # ◄── CHANGE for the first curriculum stage
+```
+
+*Run from:* `any folder` — *the script lives in:* `C:\projects\drone_pursuit\drone_pursuit\scripts\skrl\`
 ```bat
 python C:\projects\drone_pursuit\drone_pursuit\scripts\skrl\train.py --task Template-Drone-Pursuit-Direct-v0 --num_envs 2048 --headless --max_iterations 1500
 tensorboard --logdir C:\projects\drone_pursuit\drone_pursuit\logs\skrl
 ```
 
-Expect roughly 30–90 min depending on GPU. This is a great moment to start Chapter 4 in a second terminal — it's fully independent.
+Expect roughly 30–90 min depending on GPU. Block D is fully independent of this run — open a second terminal and start Chapter 4 while it trains.
 
-### Step 2 — Which metrics matter for a pursuit task
+</details>
+
+### Step 2 — Log and interpret the pursuit-specific metrics
+
+<details>
+<summary>Expand Step 2</summary>
 
 > **Environment:** none needed — you are editing files.
 
-Adds pursuit-specific numbers to your TensorBoard logging and explains which pattern means what. Total reward alone can climb while the defender never actually catches anything.
+Total reward can climb steadily while the defender never actually catches anything, because proximity and closing pay continuously. This step adds five task-specific numbers to the logging dictionary the built-in tasks already use, and gives the failure signature for each.
 
-Beyond the usual `Total reward` climb, add these to `self.extras["log"]` in `_get_dones`/`_get_rewards` (same logging pattern as the built-in tasks) and watch:
+*File to edit:* `C:\projects\drone_pursuit\drone_pursuit\source\drone_pursuit\drone_pursuit\tasks\direct\quadcopter\quadcopter_env.py`
+
+```python
+# ── FILE: ...\tasks\direct\quadcopter\quadcopter_env.py ─────────────────────
+# ── SECTION: class QuadcopterEnv, method _reset_idx — the logging block ─────
+# ──          that already exists near the top of the method            ─────
+
+        extras = dict()
+        # --- EXISTING episode-sum logging, unchanged ---
+
+        # ▼▼▼ INSERT HERE! — pursuit-specific metrics ▼▼▼
+        extras["Metrics/final_distance"] = self._dist[env_ids].mean().item()
+        extras["Metrics/capture_rate"] = (
+            self._dist[env_ids] < self.cfg.capture_radius
+        ).float().mean().item()
+        extras["Metrics/visible_fraction"] = self._prev_asz[env_ids].gt(0).float().mean().item()
+        # ▲▲▲ END OF INSERT ▲▲▲
+
+        self.extras["log"] = dict(extras)      # ← EXISTING line, keep it LAST
+```
 
 | Metric | Healthy | Sick pattern → diagnosis |
 |---|---|---|
 | **capture rate** (fraction of episodes ending in capture) | climbs past 50–80% | stuck at 0% while reward climbs → orbiting exploit (see 3.2) |
-| **mean final distance** | falls toward capture_radius | plateaus ≈ some fixed radius → orbiting again, or attacker simply faster than max defender speed |
-| **episode length** | *falls* as captures come sooner | pinned at max → nobody's catching anybody |
-| **crash rate** | < 10% after early phase | high forever → stability penalties too weak vs. closing reward (kamikaze diving) |
-| **lost-sight fraction** (mean of `visible`) | rises toward ~0.9 as the policy learns to keep the attacker in frame | falling → the defender is flying blind and doesn't realise it matters |
+| **mean final distance** | falls toward capture_radius | plateaus at a fixed radius → orbiting again, or the attacker is simply faster than `max_speed` |
+| **episode length** | *falls* as captures come sooner | pinned at max → nobody is catching anybody |
+| **crash rate** | < 10% after the early phase | high forever → stability penalties too weak against the closing reward (diving into the floor) |
+| **lost-sight fraction** (mean of `visible`) | rises toward ~0.9 as the policy learns to keep the attacker in frame | falling → the defender is flying blind and the reward is not making that costly |
 
-### Step 3 — Raise the difficulty
+</details>
 
-> **Environment:** `env_drone`
+### Step 3 — Raise the attacker's speed and resume from the checkpoint
 
-Once capture rate > ~80% at speed 0.3: stop, set `attacker_speed = 0.6`, and **resume** from the checkpoint (`--checkpoint C:\projects\drone_pursuit\drone_pursuit\logs\skrl\<run-folder>\checkpoints\best_agent.pt` on the train script) rather than restarting. Repeat toward 1.0 m/s if you're ambitious. This staged-difficulty idea is curriculum learning in its simplest form — the adaptive-environment-generator in the Tsinghua paper is the industrial-strength version of this same instinct.
-
-### Step 4 — Harvest the capture calibration (5 minutes, saves you an hour later)
-
-> **Environment:** `env_drone`
-
-Measures what share of the frame the attacker fills at the moment of capture. Chapter 6 has no simulator to ask for distance, so it declares victory using this number instead — and right now is the only time both quantities are available together.
-
-Chapter 6 needs to declare victory using the camera alone, which means knowing **what share of the frame the attacker occupies at the moment of capture**. You have both quantities right now, so measure it while you can.
-
-Add two lines to your logging so that on every step where `_dist` first drops below `capture_radius`, you record the corresponding `ang_size`. Run `play.py` for a few dozen episodes and look at the distribution.
-
-You will get a spread rather than a single value — the attacker's rectangle is wider seen face-on than edge-on. Pick from that spread according to the error you'd rather make: the **low end** declares capture eagerly and occasionally claims one it didn't earn; the **median** is the balanced choice; the **high end** only ever confirms certain captures but silently misses some real ones. Write your choice into the cfg as `capture_ang_size`. Keep a `project_notes.txt` in the project folder for values like this one that you derive by measurement rather than install — the lockfile cannot capture them.
-
-You are not choosing this number freely — you chose `capture_radius` in metres back in 2.1, and the camera geometry determines what that looks like in pixels. You are simply going and reading off the answer.
-
-### Step 5 — Watch the trained chase
+<details>
+<summary>Expand Step 3</summary>
 
 > **Environment:** `env_drone`
 
-Plays the trained policy so you can see whether it intercepts rather than tail-chases. Corner-cutting toward where the attacker is going is the visible sign that the rate-of-change readings are doing their job.
+Once capture rate passes about 80% at `attacker_speed = 0.3`, stop the run, set `attacker_speed = 0.6` in the cfg, and resume from the saved checkpoint rather than restarting. Restarting would discard a policy that already knows how to intercept and re-learn it against a harder target, which takes longer and often fails.
 
-*Run from:* `any folder`
+*Run from:* `any folder` — *checkpoints live in:* `C:\projects\drone_pursuit\drone_pursuit\logs\skrl\<run-folder>\checkpoints\`
+```bat
+python C:\projects\drone_pursuit\drone_pursuit\scripts\skrl\train.py --task Template-Drone-Pursuit-Direct-v0 --num_envs 2048 --headless --max_iterations 1500 --checkpoint C:\projects\drone_pursuit\drone_pursuit\logs\skrl\<run-folder>\checkpoints\best_agent.pt
+```
+
+Repeat toward 1.0 m/s if you want a harder chase. This staged difficulty is curriculum learning in its simplest form; the adaptive environment generator in the Tsinghua paper is the same instinct built as a research system.
+
+</details>
+
+### Step 4 — Measure the frame share at capture (5 minutes, saves an hour in Chapter 6)
+
+<details>
+<summary>Expand Step 4</summary>
+
+> **Environment:** `env_drone`
+
+Chapter 6.2 has to declare a capture using only the camera, because in the real world no simulator reports distance. What it needs is a threshold on `ang_size` — the share of frame width the attacker fills at the moment `_dist` crosses `capture_radius`. Right now is the only point in the project where both quantities exist at the same time, which is why this measurement happens here rather than in Chapter 6.
+
+Add logging so that on every step where `_dist` first drops below `capture_radius`, the corresponding `ang_size` is recorded, then run `play.py` for a few dozen episodes and look at the distribution.
+
+*Run from:* `any folder` — *the script lives in:* `C:\projects\drone_pursuit\drone_pursuit\scripts\skrl\`
 ```bat
 python C:\projects\drone_pursuit\drone_pursuit\scripts\skrl\play.py --task Template-Drone-Pursuit-Direct-v0 --num_envs 16
 ```
 
-Watch for the *lead*: a well-trained defender cuts the corner toward where the attacker is *going*. That's the target-velocity observation earning its keep.
+You get a spread rather than a single value, because the attacker's rectangle is wider seen face-on than edge-on. Pick from that spread according to the error you prefer: the **low end** declares capture eagerly and occasionally claims one it did not earn; the **median** is balanced; the **high end** only confirms certain captures and silently misses real ones.
+
+*File to edit:* `C:\projects\drone_pursuit\drone_pursuit\source\drone_pursuit\drone_pursuit\tasks\direct\quadcopter\quadcopter_env.py`
+
+```python
+# ── FILE: ...\tasks\direct\quadcopter\quadcopter_env.py ─────────────────────
+# ── SECTION: class QuadcopterEnvCfg, below the Part E camera model ──────────
+
+    attacker_span_m = 0.13       # ← EXISTING, from 3.1 Part E
+
+    # ▼▼▼ INSERT HERE! — YOUR measured value, not this placeholder ▼▼▼
+    capture_ang_size = 0.19      # frame share at capture — read off in this step
+    # ▲▲▲ END OF INSERT ▲▲▲
+```
+
+Record it in `C:\projects\drone_pursuit\drone_pursuit\project_notes.txt` alongside the 1.4 measurements — values you derive by measurement are not in the lockfile and are not recoverable from it.
+
+You are not choosing this number freely. You set `capture_radius` in metres in 2.1, and the camera geometry from 3.1 Part E determines what that distance looks like in pixels. This step reads off the answer.
+
+</details>
+
+### Step 5 — Play the trained policy and check for interception
+
+<details>
+<summary>Expand Step 5</summary>
+
+> **Environment:** `env_drone`
+
+*Run from:* `any folder` — *the script lives in:* `C:\projects\drone_pursuit\drone_pursuit\scripts\skrl\`
+```bat
+python C:\projects\drone_pursuit\drone_pursuit\scripts\skrl\play.py --task Template-Drone-Pursuit-Direct-v0 --num_envs 16
+```
+
+Watch for the *lead*: a well-trained defender cuts the corner toward where the attacker is going rather than following its path from behind. Tail-chasing means the rate-of-change readings (`d_bearing_x`, `d_ang_size`) are not influencing the policy, which usually points back to a delay buffer that is returning fresh values instead of delayed ones.
+
+</details>
 
 > ✅ **Checkpoint 3.3 — MILESTONE: Problem 1 (control) SOLVED**
-> 1. Capture rate > 80% at attacker_speed ≥ 0.6
+> 1. Capture rate > 80% at `attacker_speed` ≥ 0.6
 > 2. Play shows visible interception (corner-cutting), not just tail-chasing
-> 3. Best checkpoint path recorded in `project_notes.txt` — Chapter 6 needs it
+> 3. Best checkpoint path recorded in `project_notes.txt` — Chapters 6 and 7 both need it
 > 4. `capture_ang_size` measured and written into the cfg
+
+</details>
+
+</details>
+
+</details>
+
+---
+# ██ BLOCK D — Generate Labelled Synthetic Images of a Drone ██
+
+> 💻 **NO HARDWARE — simulation only.**
+
+<details>
+<summary>Expand Block D</summary>
+
+**What this block produces:** roughly 2500 rendered images of a Crazyflie under randomised lighting, backgrounds and viewpoints, each with a bounding box label, converted into the folder layout Ultralytics reads. No detector is trained here and no policy is touched — the output is a dataset on disk, which Block E consumes.
+
+**Why the images are generated rather than photographed.** Labelling real photographs means a person drawing a rectangle on every one. In Isaac Sim the renderer already knows which pixels belong to the drone prim, so the `bounding_box_2d_tight` annotator writes the label at the same moment it writes the image, with no drawing and no pixel error. Your work reduces to deciding what varies between frames.
+
+**This block is independent of Block C.** Run it in a second terminal while Chapter 3.3 trains.
+
+**The files created in this block:**
+
+```
+C:\projects\drone_pursuit\drone_pursuit\scripts\sdg\generate_drone_data.py    ← 4.1, 4.2
+C:\projects\drone_pursuit\drone_pursuit\scripts\sdg\convert_to_yolo.py        ← 4.3
+C:\projects\drone_pursuit\drone_pursuit\data\yolo\drone.yaml                  ← 4.3
+```
 
 ---
 
-# Chapter 4 — Synthetic Data: Manufacturing a Drone-Photo Factory
+# Chapter 4 — Photograph a Drone in Isaac Sim with Replicator and Label It Automatically
 
-## 4.1 The SDG scene: camera + semantic tags (≤1.5h)
+> 💻 **NO HARDWARE — simulation only.**
 
-> **What / Why / How it contributes:** We build a standalone Replicator data-generation script. A Crazyflie gets a semantic tag ("drone"), a Replicator camera photographs it, and the bounding_box_2d_tight annotator auto-labels every frame. Why standalone instead of inside the RL env? Data generation and RL training have different needs (pretty rendering vs. speed); separating them lets each be simple. Output: the machine that Chapter 4.2 will crank.
+<details>
+<summary>Expand Chapter 4</summary>
 
-### Concept: why synthetic images come pre-labelled
+## 4.1 Build a Replicator Script That Photographs and Auto-Labels a Drone (≤1.5h)
 
-In the real world, someone draws boxes around drones in thousands of photos by hand. In sim, the renderer *already knows* every pixel's identity — annotation is free and pixel-perfect. Your job reduces to: (1) tell Replicator which prims mean "drone" (**semantic tags**), (2) point cameras from varied poses, (3) randomize everything else so the detector learns "drone-ness," not "this exact scene."
+<details>
+<summary>Expand 4.1</summary>
 
-### Step 1 — The script skeleton
+> **What this subchapter does:** creates a standalone Replicator script — separate from the RL environment — that spawns a Crazyflie tagged with the semantic class "drone", points a camera at it from randomly chosen positions, and writes each frame together with its bounding box. It runs outside the pursuit env because data generation wants high-quality rendering and the RL env wants step speed, and mixing the two makes both harder to tune. The 20 trial frames it produces are checked by hand before 4.2 scales it to 2500.
+
+### Why synthetic images arrive pre-labelled
+
+The renderer knows every pixel's source prim. Tagging the Crazyflie prim with `semantic_tags=[("class", "drone")]` tells Replicator which prim matters, and the `bounding_box_2d_tight` annotator then emits the pixel rectangle enclosing its visible pixels, per frame, automatically. Your remaining job is only: tag the right prims, point the camera from varied poses, and randomise everything else so the network keys on drone shape rather than on the scenery it happened to be rendered against.
+
+### Step 1 — Create the folders and the script's opening section
+
+<details>
+<summary>Expand Step 1</summary>
 
 > **Environment:** `env_drone` (the `mkdir` needs no environment; the script does)
 
-Builds the standalone script that photographs a drone and labels it automatically. It runs outside the RL environment because data generation wants pretty rendering while training wants speed, and Chapter 5 trains the detector on its output.
+This step writes the top half of the generator: the `AppLauncher` boilerplate that starts Isaac Sim with rendering enabled, a ground plane, two lights, and the Crazyflie carrying its semantic tag. The tag is the one line that makes labels possible; without it the annotator returns empty boxes and every frame is dropped in 4.3.
 
-Create the folder for data-generation scripts, and the folder its output will go to:
-
+*Run from:* `C:\projects\drone_pursuit\drone_pursuit`
 ```bat
 cd C:\projects\drone_pursuit\drone_pursuit
 mkdir C:\projects\drone_pursuit\drone_pursuit\scripts\sdg C:\projects\drone_pursuit\drone_pursuit\data\raw
 ```
 
-Then create `C:\projects\drone_pursuit\drone_pursuit\scripts\sdg\generate_drone_data.py`. It uses the standard `AppLauncher` pattern for standalone Isaac Lab scripts:
+*File to CREATE (new, empty file):* `C:\projects\drone_pursuit\drone_pursuit\scripts\sdg\generate_drone_data.py`
 
 ```python
+# ── FILE: C:\projects\drone_pursuit\drone_pursuit\scripts\sdg\generate_drone_data.py
+# ── This is a NEW file. Everything below is section 1 of 3; sections 2 and 3
+# ──          are appended in Step 2 and Step 3, in this order, at the END.
+
 """Standalone SDG: labeled images of a Crazyflie for detector training."""
 import argparse
 from isaaclab.app import AppLauncher
@@ -1914,20 +2583,36 @@ drone_cfg = sim_utils.UsdFileCfg(
     semantic_tags=[("class", "drone")],          # ← this line is what produces the labels
 )
 drone_cfg.func("/World/Drone", drone_cfg, translation=(0.0, 0.0, 1.5))
+
+# ── SECTION 2 (Step 2) GOES HERE — camera and writer ────────────────────────
+# ── SECTION 3 (Step 3) GOES BELOW THAT — the capture trigger ────────────────
 ```
 
-Note the asset path: Isaac Sim 5.x moved it to `Robots/Bitcraze/Crazyflie/cf2x.usd` (older tutorials say `Robots/Crazyflie/` — a rename documented in the Isaac Lab release notes; good example of why we pin doc versions).
+Note the asset path: Isaac Sim 5.x moved it to `Robots/Bitcraze/Crazyflie/cf2x.usd`. Older tutorials say `Robots/Crazyflie/`, and the rename is listed in the Isaac Lab release notes — a concrete example of why 1.0 pinned a commit.
 
-### Step 2 — Replicator camera + writer
+</details>
+
+### Step 2 — Add the Replicator camera and the writer that saves the labels
+
+<details>
+<summary>Expand Step 2</summary>
 
 > **Environment:** none needed — you are editing a file.
 
-Adds the camera and the writer that saves each frame with its bounding box. The camera settings match the Tello's lens exactly, for the same reason Chapter 3.1 gives: a different field of view changes what every reading means.
+This step creates the camera that takes the photograph and the `BasicWriter` that saves each frame's RGB image plus its tight bounding box into `data\raw`. The camera settings are not free choices: focal length 12 mm and a 640×480 render match the Tello's 83° 4:3 lens, for the same reason as Chapter 3.1 Part E — a detector trained on a different field of view sees a differently-shaped drone at the same distance.
+
+*File to edit:* `C:\projects\drone_pursuit\drone_pursuit\scripts\sdg\generate_drone_data.py`
 
 ```python
-# a Replicator camera and a render product (the "film" it exposes onto)
+# ── FILE: ...\scripts\sdg\generate_drone_data.py ────────────────────────────
+# ── SECTION: append directly BELOW the drone_cfg.func(...) line from Step 1 ─
+
+drone_cfg.func("/World/Drone", drone_cfg, translation=(0.0, 0.0, 1.5))   # ← from Step 1
+
+# ▼▼▼ INSERT HERE! ▼▼▼
+# a Replicator camera and a render product (the surface it exposes onto)
 camera = rep.create.camera(focal_length=12.0)   # ~83 deg FOV, matching a Tello
-render_product = rep.create.render_product(camera, (640, 480))   # 4:3, matching the real drone
+render_product = rep.create.render_product(camera, (640, 480))   # 4:3, like the real drone
 
 # BasicWriter: saves RGB + tight 2D boxes for every captured frame
 writer = rep.WriterRegistry.get("BasicWriter")
@@ -1937,17 +2622,31 @@ writer.initialize(
     bounding_box_2d_tight=True,      # "tight" = shrink-wrapped to visible pixels
 )
 writer.attach([render_product])
+# ▲▲▲ END OF INSERT ▲▲▲
 ```
 
-**tight vs loose boxes:** *loose* boxes the whole object even if half-hidden; *tight* shrink-wraps only visible pixels. Detectors are trained on what's visible → tight.
+**Tight versus loose boxes:** a *loose* box encloses the object's full extent even where another object hides part of it; a *tight* box encloses only the pixels actually visible. The detector is trained on what is visible, so tight is the matching choice.
 
-### Step 3 — First manual capture
+</details>
+
+### Step 3 — Add the capture trigger and generate 20 trial frames
+
+<details>
+<summary>Expand Step 3</summary>
 
 > **Environment:** `env_drone`
 
-Generates 20 frames as a trial run before the full batch. Twenty is enough to spot a broken setup, and cheap enough to throw away.
+Twenty frames take under a minute and are enough to reveal a broken camera pose, a missing tag or an empty writer directory. The production run in 4.2 takes far longer, so anything wrong is worth finding here.
+
+*File to edit:* `C:\projects\drone_pursuit\drone_pursuit\scripts\sdg\generate_drone_data.py`
 
 ```python
+# ── FILE: ...\scripts\sdg\generate_drone_data.py ────────────────────────────
+# ── SECTION: append at the very END of the file, below writer.attach(...) ───
+
+writer.attach([render_product])          # ← last line from Step 2
+
+# ▼▼▼ INSERT HERE! — 4.2 adds more randomisers INSIDE this same `with` block ▼▼▼
 with rep.trigger.on_frame(max_execs=args.num_frames):
     with camera:
         rep.modify.pose(
@@ -1956,57 +2655,104 @@ with rep.trigger.on_frame(max_execs=args.num_frames):
         )
 rep.orchestrator.run_until_complete()
 simulation_app.close()
+# ▲▲▲ END OF INSERT — this is the end of the file ▲▲▲
 ```
 
-Run it (note: `-p` through isaaclab.bat if your project scripts expect it, else plain python in the env):
-
-*Run from:* `any folder`
+*Run from:* `any folder` — *the script lives in:* `C:\projects\drone_pursuit\drone_pursuit\scripts\sdg\`
 ```bat
 python C:\projects\drone_pursuit\drone_pursuit\scripts\sdg\generate_drone_data.py --num_frames 20 --headless
 ```
 
-### Step 4 — Inspect like a QA engineer
+</details>
+
+### Step 4 — Inspect the frames and the label files by hand
+
+<details>
+<summary>Expand Step 4</summary>
 
 > **Environment:** none needed — you are looking at files in Explorer.
 
-Opens the generated frames and label files by hand. A labelling problem found here costs minutes; the same problem found in Chapter 5 looks like a detector that will not train no matter what you do.
+*Folder to open:* `C:\projects\drone_pursuit\drone_pursuit\data\raw\`
 
-Open `C:\projects\drone_pursuit\drone_pursuit\data\raw\`. You should find `rgb_0000.png`…, plus `bounding_box_2d_tight_0000.npy` and a matching `..._labels.json` per frame. Open a few PNGs: is the drone visible, from varied angles/distances? Load one `.npy` (it's a structured array with `x_min, y_min, x_max, y_max` plus a `semanticId` that maps through the labels JSON to `"drone"`).
+You should find `rgb_0000.png`…, plus `bounding_box_2d_tight_0000.npy` and a matching `..._labels.json` per frame. Open a few PNGs and confirm the drone is visible from varied angles and distances. Load one `.npy`: it is a structured array with `x_min, y_min, x_max, y_max` and a `semanticId` that maps through the labels JSON to `"drone"`.
 
-> ✅ **Checkpoint 4.1** — 20 frames exist; boxes in the .npy visually match the drone's position when you sketch them mentally over the PNG; labels JSON contains your "drone" class.
+A labelling problem found here costs a few minutes. The same problem found in Chapter 5 looks like a detector whose mAP will not rise no matter how long it trains, and takes a training run to notice.
+
+</details>
+
+> ✅ **Checkpoint 4.1** — 20 frames exist; the box coordinates in the `.npy` match where the drone appears in the PNG; the labels JSON contains the `drone` class.
+
+</details>
 
 ---
 
-## 4.2 Domain randomization: make the detector unfoolable (≤1.5h)
+## 4.2 Randomise Lighting, Background and Pose, Then Generate 2500 Frames (≤1.5h)
 
-> **What / Why / How it contributes:** Twenty photos of one drone in one gray world would train a detector that only works in that gray world. We now randomize lighting, background, distractor objects, and camera pose so the ONLY constant across thousands of frames is the drone itself — forcing the network to key on drone shape, not scenery. This is standard domain randomisation, tuned for a small flying object: heavy distance variation and both sky and ground backgrounds.
+<details>
+<summary>Expand 4.2</summary>
 
-### What to randomize, and the *why* behind each dial
+> **What this subchapter does:** twenty photographs of one drone in one grey world would train a detector that only works in that grey world. This subchapter varies camera distance and elevation, both light sources, the drone's own orientation, and a set of distractor shapes, so the only constant across thousands of frames is the drone itself. It then runs the production batch that Chapter 4.3 converts and Chapter 5.1 trains on.
 
-| Randomize | Range idea | Because at demo time… |
+### Step 1 — Decide what to randomise, and what each dial buys at demo time
+
+<details>
+<summary>Expand Step 1</summary>
+
+> **Environment:** none needed — this step is explanation only.
+
+| Randomise | Range | Because at demo time… |
 |---|---|---|
-| Camera distance | 0.5–6 m from drone | the attacker appears at wildly different scales as the chase closes |
-| Camera elevation | below AND above drone | a defender sees the attacker against **sky** when below it and against **ground** when above — two totally different background statistics |
-| Dome light intensity/color | 500–6000, warm↔cool | arena lighting in your RL scene isn't fixed forever |
-| Drone yaw/pitch | full yaw, ±20° pitch | a banking drone looks different from a level one |
-| Distractor objects | 3–8 random shapes with random colors/textures scattered around | teaches "this is NOT a drone" — without negatives, everything vaguely dark becomes a drone |
-| **Sun direction and intensity** | full azimuth, 10–80° elevation, wide intensity range | outdoors, a single strong directional light produces harsh shadows, silhouettes and washed-out highlights that a dome light never creates |
+| Camera distance | 0.5–6 m from drone | the attacker's apparent size changes continuously as the chase closes |
+| Camera elevation | below AND above the drone | a defender below the attacker sees it against **sky**; above it, against **ground** — two backgrounds with completely different brightness and texture statistics |
+| Dome light intensity/colour | 500–6000, warm↔cool | arena and room lighting are not fixed across sessions |
+| Drone yaw/pitch | full yaw, ±20° pitch | a banking drone presents a different silhouette from a level one |
+| Distractor objects | 3–8 shapes, random colour and scale | teaches "this is NOT a drone"; without negative examples, any small dark object becomes a detection |
+| **Sun direction and intensity** | full azimuth, 10–80° elevation, wide intensity range | outdoors, one strong directional source produces harsh shadows, silhouettes and blown highlights that a dome light never creates |
 
-Implementation — wrap the randomizations in the same `on_frame` trigger:
+### Why the sun needs its own light, separate from the dome
+
+A **dome light** illuminates evenly from every direction at once — the look of an overcast sky or an evenly lit room. A **distant light** is a single source infinitely far away with parallel rays, which is what the sun is. It produces three things a dome light cannot:
+
+- **A lit side and a dark side.** With the sun behind the attacker, the drone becomes a near-black silhouette against bright sky. This is the hardest case the detector will face outdoors, and without a directional light it never sees one.
+- **Cast shadows**, which give the detector a drone-shaped dark region it must learn *not* to box.
+- **Blown-out highlights**, where bright sky saturates the sensor and detail disappears.
+
+**What rendering still does not reproduce** is lens flare — the streaks and rings from light scattering inside a real lens, which a Tello camera produces heavily when pointed near the sun. If the detector fails specifically when flying toward the sun, this is the cause, and Chapter 7.4's retraining on real footage is the fix. Flying with the sun behind you avoids it entirely.
+
+</details>
+
+### Step 2 — Add the randomisers to the capture trigger
+
+<details>
+<summary>Expand Step 2</summary>
+
+> **Environment:** none needed — you are editing a file.
+
+*File to edit:* `C:\projects\drone_pursuit\drone_pursuit\scripts\sdg\generate_drone_data.py`
 
 ```python
-# distractors: a pool of primitive shapes, shuffled every frame
+# ── FILE: ...\scripts\sdg\generate_drone_data.py ────────────────────────────
+# ── SECTION: the `with rep.trigger.on_frame(...)` block from 4.1 Step 3 ─────
+
+writer.attach([render_product])          # ← EXISTING, from 4.1 Step 2
+
+# ▼▼▼ INSERT HERE! — the distractor pool, ABOVE the trigger block ▼▼▼
 distractors = rep.create.group([
     rep.create.cube(count=4, semantics=[("class", "distractor")]),
     rep.create.sphere(count=4, semantics=[("class", "distractor")]),
 ])
+# ▲▲▲ END OF INSERT ▲▲▲
 
-with rep.trigger.on_frame(max_execs=args.num_frames):
-    with camera:
-        rep.modify.pose(
+with rep.trigger.on_frame(max_execs=args.num_frames):     # ← EXISTING line
+    with camera:                                          # ← EXISTING block, but
+        rep.modify.pose(                                  #   WIDEN the ranges:
+            # BEFORE: uniform((-3, -3, 0.5), (3, 3, 3.0))
             position=rep.distribution.uniform((-6, -6, 0.2), (6, 6, 4.0)),
             look_at="/World/Drone",
         )
+
+    # ▼▼▼ INSERT HERE! — everything below, still INSIDE the `with` block, ▼▼▼
+    # ▼▼▼ i.e. indented to the same level as `with camera:`                ▼▼▼
     with rep.get.prims(path_pattern="/World/Light"):          # ambient fill
         rep.modify.attribute("inputs:intensity", rep.distribution.uniform(500, 6000))
         rep.modify.attribute("inputs:color", rep.distribution.uniform((0.7, 0.7, 0.6), (1.0, 1.0, 1.0)))
@@ -2022,46 +2768,50 @@ with rep.trigger.on_frame(max_execs=args.num_frames):
             scale=rep.distribution.uniform(0.05, 0.4),
         )
         rep.randomizer.color(colors=rep.distribution.uniform((0, 0, 0), (1, 1, 1)))
+    # ▲▲▲ END OF INSERT ▲▲▲
+
+rep.orchestrator.run_until_complete()      # ← EXISTING, unchanged
+simulation_app.close()                     # ← EXISTING, unchanged
 ```
 
-(We tag distractors with their own class but will simply *not* teach YOLO that class — they exist purely as visual noise. Their boxes get filtered out in 4.3's conversion.)
+The distractors carry their own semantic class, and Chapter 4.3's conversion script filters those boxes out. They exist only as visual noise in the image, never as a class the detector is taught.
 
-### Why the sun needs its own light, separate from the dome
+The rotation range `(-80, 0, 0)` to `(-10, 0, 360)` sweeps the sun through every compass direction at elevations from 10° (low sun, long shadows, frequent backlighting) to 80° (near overhead). The colour range spans golden low sun through neutral midday. **The intensity ceiling of 12000 is deliberately high**, so that a meaningful share of frames are genuinely difficult — overexposed, with the drone reduced to a dark shape. Those are the frames that teach the detector to survive the conditions Chapter 7 flies in.
 
-A **dome light** illuminates evenly from every direction at once — the look of an overcast sky or a well-lit room. A **distant light** is a single source infinitely far away, with all its rays parallel. That is what the sun is, and it produces three things a dome light cannot:
+</details>
 
-- **A lit side and a dark side.** With the sun behind the attacker, the drone becomes a near-black silhouette against bright sky. This is the hardest case your detector will face outdoors, and without a directional light it never sees it.
-- **Cast shadows**, which give the detector a shape it must learn to ignore.
-- **Blown-out highlights**, where bright sky saturates the sensor and detail disappears.
+### Step 3 — Run the production batch of 2500 frames
 
-The rotation range `(-80, 0, 0)` to `(-10, 0, 360)` sweeps the sun through a full circle of compass directions at elevations from 10° (low, near sunrise or sunset, long shadows and frequent backlighting) to 80° (near overhead, midday). The warm-to-white colour range spans golden low sun through neutral midday light.
-
-**The intensity ceiling of 12000 is deliberately high.** You want a meaningful share of frames where the image is genuinely difficult — overexposed, the attacker reduced to a dark shape. Those frames are what teach the detector to survive the conditions you will actually fly in.
-
-**What this still does not reproduce** is lens flare: the streaks and rings from light scattering inside a real lens, which appear when the sun is in or near the frame. Rendering does not simulate it, and a real Tello camera pointed near the sun produces it heavily. If you find the detector failing specifically when flying toward the sun, that is the cause — and Chapter 7.4's retraining on real footage is the fix. Or, more simply, fly with the sun behind you.
-
-### The production run
+<details>
+<summary>Expand Step 3</summary>
 
 > **Environment:** `env_drone`
 
-*Run from:* `any folder`
+*Run from:* `any folder` — *the script lives in:* `C:\projects\drone_pursuit\drone_pursuit\scripts\sdg\` — *output goes to:* `C:\projects\drone_pursuit\drone_pursuit\data\raw\`
 ```bat
 python C:\projects\drone_pursuit\drone_pursuit\scripts\sdg\generate_drone_data.py --num_frames 2500 --headless
 ```
 
-~2000–3000 frames is a solid single-class dataset. More helps, but variety matters more than raw count. Expect this to take a while — start it, then begin the QA tooling below.
+2000–3000 frames is a solid single-class dataset. Variety across the dials above matters more than raw count. This takes a while — start it, then work through 4.3's conversion script while it runs.
 
-> ✅ **Checkpoint 4.2** — flipping through 30 random production frames you see: near/far drones, sky and ground backgrounds, bright and dark scenes, distractors present, **some frames with the drone strongly backlit and nearly a silhouette**, and the drone always identifiable by YOU (if a human can't find it, don't expect the network to).
+</details>
+
+> ✅ **Checkpoint 4.2** — flipping through 30 random production frames you see: near and far drones, sky and ground backgrounds, bright and dark scenes, distractors present, **some frames with the drone strongly backlit and nearly a silhouette**, and the drone always findable by you (if a human cannot find it, the network will not).
 >
 > If no frame looks harshly lit, the sun is not being randomised — check that `/World/Sun` exists and that the `rep.get.prims` pattern matches it.
 
+</details>
+
 ---
 
-## 4.3 Dataset QA + conversion to YOLO format (≤1.5h)
+## 4.3 Convert Replicator Output to YOLO Format and Verify the Labels (≤1.5h)
 
-> **What / Why / How it contributes:** Raw Replicator output isn't what Ultralytics eats. We convert (Replicator pixel-corner boxes → YOLO's normalized center-x/center-y/width/height), filter junk (0-KB files, frames where the drone is invisible or under ten pixels, distractor boxes), and split train/val. Label errors introduced here surface in Chapter 5 as a low mAP that no amount of extra training will fix.
+<details>
+<summary>Expand 4.3</summary>
 
-### The format translation, visualized
+> **What this subchapter does:** Ultralytics does not read Replicator's `.npy` files. This subchapter converts the pixel-corner boxes into YOLO's normalised centre-and-size text format, discards frames that are empty, corrupt, or contain a drone smaller than 10 pixels, filters out distractor boxes, and splits the result 85/15 into train and val folders. It ends with a visual check, because a conversion bug — a swapped width and height, for instance — shows up in Chapter 5 as a low mAP that no amount of extra training fixes.
+
+### The format translation
 
 ```
 REPLICATOR (absolute pixel corners)        YOLO (normalized center + size)
@@ -2071,9 +2821,21 @@ REPLICATOR (absolute pixel corners)        YOLO (normalized center + size)
    └─────────┘(x_max,y_max)                        └── all divided by image size (0..1) ──┘
 ```
 
-Create `C:\projects\drone_pursuit\drone_pursuit\scripts\sdg\convert_to_yolo.py`:
+### Step 1 — Write the conversion and filtering script
+
+<details>
+<summary>Expand Step 1</summary>
+
+> **Environment:** none needed to write it; `env_drone` (or any env with numpy) to run it.
+
+*File to CREATE (new, empty file):* `C:\projects\drone_pursuit\drone_pursuit\scripts\sdg\convert_to_yolo.py`
 
 ```python
+# ── FILE: C:\projects\drone_pursuit\drone_pursuit\scripts\sdg\convert_to_yolo.py
+# ── This is a NEW file — the whole content, nothing to insert into.
+# ── Reads : C:\projects\drone_pursuit\drone_pursuit\data\raw
+# ── Writes: C:\projects\drone_pursuit\drone_pursuit\data\yolo
+
 import json, random, shutil
 from pathlib import Path
 import numpy as np
@@ -2102,7 +2864,7 @@ for rgb in sorted(RAW.glob("rgb_*.png")):
             continue
         xc, yc = (b["x_min"] + w / 2) / IMG_W, (b["y_min"] + h / 2) / IMG_H
         lines.append(f"0 {xc:.6f} {yc:.6f} {w/IMG_W:.6f} {h/IMG_H:.6f}")
-    if lines:                                                # keep only frames with a visible drone
+    if lines:                                                # keep only frames with a drone
         samples.append((rgb, lines)); kept += 1
     else:
         dropped += 1
@@ -2118,9 +2880,29 @@ for split, chunk in [("val", samples[:n_val]), ("train", samples[n_val:])]:
 print(f"kept {kept}, dropped {dropped}, val {n_val}")
 ```
 
-Then the dataset descriptor `C:\projects\drone_pursuit\drone_pursuit\data\yolo\drone.yaml`:
+*Run from:* `any folder`
+```bat
+conda activate env_drone
+python C:\projects\drone_pursuit\drone_pursuit\scripts\sdg\convert_to_yolo.py
+```
+
+</details>
+
+### Step 2 — Write the dataset descriptor
+
+<details>
+<summary>Expand Step 2</summary>
+
+> **Environment:** none needed — you are creating a text file.
+
+`drone.yaml` is the file the `yolo train` command in 5.1 is pointed at. It names the two split folders and declares that this dataset has exactly one class, which is what makes the exported ONNX output shape `(1, 5, 6300)` rather than the 80-class `(1, 84, 8400)` you saw in the 1.3 smoke test.
+
+*File to CREATE (new, empty file):* `C:\projects\drone_pursuit\drone_pursuit\data\yolo\drone.yaml`
 
 ```yaml
+# ── FILE: C:\projects\drone_pursuit\drone_pursuit\data\yolo\drone.yaml ──────
+# ── NEW file — the whole content.
+
 path: C:\projects\drone_pursuit\drone_pursuit\data\yolo
 train: images\train
 val: images\val
@@ -2128,132 +2910,274 @@ names:
   0: drone
 ```
 
-Finally, the QA step that catches label bugs *before* a wasted training run — draw 10 boxes onto their images and eyeball them (tiny script with PIL, or Ultralytics' own dataset visualizer once you're in Chapter 5). A conversion bug (e.g. swapped w/h) is instantly obvious visually and invisible numerically.
+</details>
 
-> ✅ **Checkpoint 4.3 — MILESTONE: Problem 2's fuel is loaded**
-> 1. ~85/15 train/val split on disk in YOLO layout
-> 2. Drop-rate sane (< ~20%; much higher → your camera randomization frames the drone out too often — tighten `look_at` ranges)
-> 3. 10/10 spot-checked boxes hug the drone
+### Step 3 — Draw ten boxes onto their images and look at them
+
+<details>
+<summary>Expand Step 3</summary>
+
+> **Environment:** any env with PIL installed.
+
+*Folders involved:* images in `C:\projects\drone_pursuit\drone_pursuit\data\yolo\images\train\`, labels in `...\data\yolo\labels\train\`
+
+Write a short PIL script (or use Ultralytics' dataset visualiser once you are in Chapter 5) that draws each label rectangle onto its image for ten random samples. A swapped width and height, or a centre computed from the wrong corner, is immediately obvious in a picture and completely invisible in the numbers — the drop count and file counts all look correct while every box is wrong.
+
+</details>
+
+> ✅ **Checkpoint 4.3 — MILESTONE: the detector's training data is ready**
+> 1. ~85/15 train/val split on disk in the YOLO folder layout
+> 2. Drop rate under about 20% — much higher means the camera pose randomisation in 4.2 frames the drone out too often; tighten the position ranges
+> 3. 10 out of 10 spot-checked boxes hug the drone
+
+</details>
+
+</details>
+
+</details>
 
 ---
 
-# Chapter 5 — Object Detection: Training the Eyes
+# ██ BLOCK E — Train the Object Detection Model That Finds the Drone ██
 
-## 5.1 Train YOLOv8-nano on your synthetic drones (≤1.5h)
+> 💻 **NO HARDWARE — simulation only.**
 
-> **What / Why / How it contributes:** In the drone_vision env, we fine-tune YOLOv8n — a network pretrained on millions of everyday photos — to specialize in one thing: spotting a Crazyflie. Fine-tuning (vs. training from scratch) means the network already understands edges, shapes and lighting; it only needs to learn "drone." That's why a few thousand synthetic images suffice. Deliverable: best.pt, your detector.
+<details>
+<summary>Expand Block E</summary>
 
-### Why nano?
+**What this block produces:** `drone_detector.onnx`, a YOLOv8-nano network that takes a 480×640 RGB frame and returns a rectangle around the drone in it. Training happens in `drone_vision`; the ONNX file is the only thing that crosses into `env_drone`, for the reason established in 1.3 — the two environments hold incompatible torch versions and ONNX carries no framework with it.
 
-YOLOv8 comes in sizes n/s/m/l/x (nano→xlarge). Chapter 6 runs the detector *inside the simulation loop* — nano (~3M parameters) infers in a few milliseconds and keeps the demo snappy. One distinctive object class is exactly the regime where nano is sufficient; larger models earn their cost on visually cluttered, many-class scenes.
+**Folders used in this block:**
 
-### Train
+```
+C:\projects\drone_pursuit\drone_pursuit\data\yolo\            ← input, from 4.3
+C:\projects\drone_pursuit\drone_pursuit\runs\detect\drone_v1\ ← YOLO's own output
+C:\projects\drone_pursuit\drone_pursuit\data\arena_frames\    ← 5.2 test frames
+C:\projects\drone_pursuit\drone_pursuit\models\               ← the exported .onnx
+```
+
+---
+
+# Chapter 5 — Train YOLOv8 on the Synthetic Images and Export It for Isaac Lab
+
+> 💻 **NO HARDWARE — simulation only.**
+
+<details>
+<summary>Expand Chapter 5</summary>
+
+## 5.1 Fine-Tune YOLOv8-nano on Your Synthetic Drone Images (≤1.5h)
+
+<details>
+<summary>Expand 5.1</summary>
+
+> **What this subchapter does:** takes YOLOv8n, a network already trained on millions of everyday photographs, and continues its training on your 2500 drone renders so it specialises in one class. Fine-tuning rather than training from scratch is why a few thousand images suffice: the network already encodes edges, textures and lighting, and only has to learn what a drone looks like. Deliverable: `best.pt`, which 5.2 stress-tests and exports.
+
+### Why the nano size
+
+YOLOv8 ships in five sizes, n/s/m/l/x. Chapter 6.2 runs the detector inside the simulation loop and Chapter 7.2 runs it inside a 20 Hz flight loop, where a detector taking longer than 50 ms starves the control rate. Nano is about 3 million parameters and infers in a few milliseconds. Larger models earn their cost on cluttered many-class scenes, not on one distinctive object.
+
+### Step 1 — Run the training
+
+<details>
+<summary>Expand Step 1</summary>
 
 > **Environment:** `drone_vision`
 
-*Run from:* `C:\projects\drone_pursuit\drone_pursuit`
+*Run from:* `C:\projects\drone_pursuit\drone_pursuit` — *output lands in:* `C:\projects\drone_pursuit\drone_pursuit\runs\detect\drone_v1\`
 ```bat
 conda activate drone_vision
 cd C:\projects\drone_pursuit\drone_pursuit
 yolo detect train data=C:\projects\drone_pursuit\drone_pursuit\data\yolo\drone.yaml model=yolov8n.pt epochs=60 imgsz=640 batch=16 name=drone_v1
 ```
 
-20–40 min typically. While it runs, open `C:\projects\drone_pursuit\drone_pursuit\runs\detect\drone_v1\` and watch artifacts appear — especially `train_batch0.jpg` (augmented training samples with boxes: your last chance to catch label bugs) and `results.png` (the loss/metric curves).
+20–40 min typically. While it runs, open the output folder. Two files matter: `train_batch0.jpg` shows augmented training samples with their boxes drawn — your last chance to catch a label bug from 4.3 — and `results.png` plots the loss and metric curves.
 
-### Read the metrics like you read TensorBoard
+</details>
 
-- **box_loss / cls_loss** — should fall steadily. (Localization error / classification error.)
-- **mAP50** — *mean Average Precision at 50% IoU*. Unpack: **IoU** (Intersection over Union) scores box overlap 0–1; "at 50" counts a detection correct if overlap ≥ 0.5; **AP** integrates precision across confidence thresholds; **m**ean averages over classes (we have one). For a single distinctive object on partly-synthetic-matching backgrounds, expect **mAP50 > 0.9**.
-- **mAP50-95** — same, averaged over stricter overlap thresholds; it'll be lower; > 0.6 is fine for us (we need "roughly where," not surgical corners).
+### Step 2 — Read the metrics
 
-If mAP50 < 0.8, the fix is almost always **data, not hyperparameters**: check drop-rate, box QA, and whether hard cases (distant drone against ground clutter) exist in training.
+<details>
+<summary>Expand Step 2</summary>
+
+> **Environment:** none needed — you are reading the output files.
+
+*Folder to open:* `C:\projects\drone_pursuit\drone_pursuit\runs\detect\drone_v1\`
+
+- **box_loss / cls_loss** — localisation error and classification error. Both should fall steadily.
+- **mAP50** — *mean Average Precision at 50% IoU*. **IoU** (Intersection over Union) scores how much a predicted box overlaps the true one, 0 to 1; "at 50" counts a detection as correct when that overlap is at least 0.5; **AP** integrates precision across confidence thresholds; the **m** averages over classes, of which we have one. For a single distinctive object with matching backgrounds, expect **mAP50 above 0.9**.
+- **mAP50-95** — the same measure averaged over stricter overlap thresholds up to 0.95, so it is always lower. Above 0.6 is fine here, because the policy needs roughly where the drone is, not a surgically exact corner.
+
+If mAP50 comes in below 0.8, the cause is almost always the data rather than the hyperparameters: check 4.3's drop rate, re-run the box spot-check, and confirm the training set actually contains hard cases such as a distant drone against ground clutter.
+
+</details>
 
 > ✅ **Checkpoint 5.1** — mAP50 ≥ 0.9 on val; `val_batch0_pred.jpg` shows tight, confident boxes.
 
+</details>
+
 ---
 
-## 5.2 Stress-test and export to ONNX (≤1.5h)
+## 5.2 Test the Detector on Arena Frames and Export It to ONNX (≤1.5h)
 
-> **What / Why / How it contributes:** A detector can score above 0.9 mAP on its own validation split and still miss the attacker in the pursuit arena, because the SDG scene and the arena differ in lighting, background and typical viewing distance. We capture frames from the defender's actual camera during a chase, test on those, then export to ONNX so the model can run inside env_drone.
+<details>
+<summary>Expand 5.2</summary>
 
-### Step 1 — Capture ground-truth-free test frames
+> **What this subchapter does:** a detector can score above 0.9 mAP on its own validation split and still miss the attacker in the pursuit arena, because the SDG scene and the arena differ in lighting, background and typical viewing distance. This subchapter captures frames from the defender's own camera during a real chase, tests the detector on those, and then exports it to ONNX at 480×640 so it can run inside `env_drone` in Chapter 6.
+
+### Step 1 — Attach a camera to the defender and capture chase frames
+
+<details>
+<summary>Expand Step 1</summary>
 
 > **Environment:** `env_drone` — this runs Isaac Lab to capture the frames.
 
-Attaches a camera to the defender and saves frames from an actual chase. These are the images the detector will really face, and they differ from the training set in lighting, background and typical distance.
-
-First, somewhere to put them:
+This step attaches a `TiledCameraCfg` to the defender's body and saves what it sees while your Chapter 3 policy chases. Those images are the ones the detector will really face, and the same camera stays in place for Chapter 6.2's demo — so this is also a dry run of that wiring.
 
 *Run from:* `any folder`
 ```bat
 mkdir C:\projects\drone_pursuit\drone_pursuit\data\arena_frames
 ```
 
-
-Quickest path: temporarily add a `TiledCameraCfg` to your pursuit env (this is also a dry run for Chapter 6):
+*File to edit:* `C:\projects\drone_pursuit\drone_pursuit\source\drone_pursuit\drone_pursuit\tasks\direct\quadcopter\quadcopter_env.py`
 
 ```python
-# in QuadcopterEnvCfg, in quadcopter_env.py
-from isaaclab.sensors import TiledCameraCfg
+# ── FILE: ...\tasks\direct\quadcopter\quadcopter_env.py ─────────────────────
+# ── SECTION: the imports at the top of the file ─────────────────────────────
 
-tiled_camera: TiledCameraCfg = TiledCameraCfg(
-    prim_path="/World/envs/env_.*/Robot/body/front_cam",       # rides on the defender's body
-    offset=TiledCameraCfg.OffsetCfg(pos=(0.04, 0.0, 0.01), rot=(1.0, 0.0, 0.0, 0.0), convention="ros"),
-    data_types=["rgb"],
-    spawn=sim_utils.PinholeCameraCfg(focal_length=12.0, clipping_range=(0.05, 30.0)),
-    width=640, height=480,
-)
+# ▼▼▼ INSERT HERE! ▼▼▼
+from isaaclab.sensors import TiledCamera, TiledCameraCfg
+# ▲▲▲ END OF INSERT ▲▲▲
+
+
+# ── SECTION: class QuadcopterEnvCfg, below the 3.1 Part E camera constants ──
+
+    capture_ang_size = 0.19      # ← EXISTING, from 3.3 Step 4
+
+    # ▼▼▼ INSERT HERE! — the camera that RENDERS (3.1 Part E only described it) ▼▼▼
+    tiled_camera: TiledCameraCfg = TiledCameraCfg(
+        prim_path="/World/envs/env_.*/Robot/body/front_cam",       # rides on the defender
+        offset=TiledCameraCfg.OffsetCfg(pos=(0.04, 0.0, 0.01), rot=(1.0, 0.0, 0.0, 0.0),
+                                        convention="ros"),
+        data_types=["rgb"],
+        spawn=sim_utils.PinholeCameraCfg(focal_length=12.0,        # = cam_focal_mm!
+                                         clipping_range=(0.05, 30.0)),
+        width=640, height=480,                                     # = cam_width/height!
+    )
+    # ▲▲▲ END OF INSERT ▲▲▲
+
+
+# ── SECTION: class QuadcopterEnv, method _setup_scene ───────────────────────
+
+    def _setup_scene(self):
+        self._robot = Articulation(self.cfg.robot)            # ← EXISTING
+        self._attacker = Articulation(self.cfg.attacker)      # ← EXISTING, from 2.1
+
+        # ▼▼▼ INSERT HERE! — BEFORE clone_environments ▼▼▼
+        self._camera = TiledCamera(self.cfg.tiled_camera)
+        self.scene.sensors["camera"] = self._camera
+        # ▲▲▲ END OF INSERT ▲▲▲
+
+        self.scene.articulations["robot"] = self._robot       # ← EXISTING
+        # ... rest unchanged ...
 ```
 
-Instantiate it in `_setup_scene` (`self._camera = TiledCamera(self.cfg.tiled_camera)` + `self.scene.sensors["camera"] = self._camera`), then run `play.py` with your Chapter-3 checkpoint, `--num_envs 1 --enable_cameras`, and a few lines in the loop (or a tiny callback script) dumping `self._camera.data.output["rgb"]` to PNGs during a chase. Save ~20 frames across the approach.
+The focal length here must equal `cam_focal_mm` from 3.1 Part E. If they differ, the rendered frames obey a different geometry from the readings the policy trained on, and Chapter 6.1 Step 2 will report a constant-factor disagreement.
 
-### Step 2 — Test the detector on them
+Then run `play.py` with your Chapter-3 checkpoint and dump `self._camera.data.output["rgb"]` to PNGs. Save about 20 frames spread across the approach, not 20 from the final second.
+
+*Run from:* `any folder` — *frames go to:* `C:\projects\drone_pursuit\drone_pursuit\data\arena_frames\`
+```bat
+python C:\projects\drone_pursuit\drone_pursuit\scripts\skrl\play.py --task Template-Drone-Pursuit-Direct-v0 --num_envs 1 --enable_cameras
+```
+
+</details>
+
+### Step 2 — Run the detector on those frames and study the misses
+
+<details>
+<summary>Expand Step 2</summary>
 
 > **Environment:** `drone_vision`
 
-Runs the detector on those arena frames and shows you the predictions. Scoring well on its own validation split proves little; this is the check that reveals whether it works where it will actually run.
-
-*Run from:* `C:\projects\drone_pursuit\drone_pursuit`
+*Run from:* `C:\projects\drone_pursuit\drone_pursuit` — *predictions are saved under:* `C:\projects\drone_pursuit\drone_pursuit\runs\detect\predict\`
 ```bat
 conda activate drone_vision
 yolo predict model=C:\projects\drone_pursuit\drone_pursuit\runs\detect\drone_v1\weights\best.pt source=C:\projects\drone_pursuit\drone_pursuit\data\arena_frames save=True conf=0.4
 ```
 
-Study the saved predictions. Typical finding: great when the attacker is near, misses when it's a 12-pixel speck far away. If misses are frequent at the distances that matter (< ~5 m), loop back to 4.2 with more far-range camera samples — one more SDG batch + `yolo detect train ... resume` style fine-tune usually closes it. Testing on frames from the environment where the detector will actually run is the check most often skipped, and the one that catches this.
+The typical finding is that detection is reliable when the attacker is near and fails when it is a 12-pixel speck at range. If misses are frequent at the distances that matter — under about 5 m — go back to 4.2, add camera positions further from the drone, generate another batch, and fine-tune. Testing on frames from the environment where the detector will actually run is the check most often skipped, and the one that catches this before Chapter 6 turns it into an unexplained drop in capture rate.
 
-### Step 3 — Export
+</details>
+
+### Step 3 — Export the detector to ONNX at 480×640
+
+<details>
+<summary>Expand Step 3</summary>
 
 > **Environment:** `drone_vision`
 
-Converts the trained detector into `drone_detector.onnx` at the drone's frame shape. This file is one of the two that cross into `env_drone`, and Chapter 6.1 loads it.
-
-*Run from:* `C:\projects\drone_pursuit\drone_pursuit`
+*Run from:* `C:\projects\drone_pursuit\drone_pursuit` — *the finished model belongs in:* `C:\projects\drone_pursuit\drone_pursuit\models\`
 ```bat
 yolo export model=C:\projects\drone_pursuit\drone_pursuit\runs\detect\drone_v1\weights\best.pt format=onnx imgsz=480,640
 copy C:\projects\drone_pursuit\drone_pursuit\runs\detect\drone_v1\weights\best.onnx C:\projects\drone_pursuit\drone_pursuit\models\drone_detector.onnx
 ```
 
-**Why `imgsz=480,640` and not plain `640`.** Training letterboxes images internally, which is fine. But at flight time you want the detector's input to be exactly the frame shape you feed it — 640 wide by 480 high — so the rectangle it returns is already in that coordinate space. Exporting square would mean padding every frame and then subtracting the padding back out of every box, which is arithmetic with no upside and one more place to be wrong.
+**Why `imgsz=480,640` and not plain `640`.** Training letterboxes images internally, which is harmless. At flight time you want the detector's input to be exactly the frame shape you feed it — 640 wide by 480 high — so the rectangle it returns is already in that coordinate space. Exporting square would mean padding every frame and subtracting the padding back out of every box, which is arithmetic with no benefit and one more place for a sign error.
 
-Re-run the 1.3 onnxruntime smoke test in `env_drone` against this file. The input shape should now read `[1, 3, 480, 640]`, and the output `(1, 5, 6300)`: 4 box numbers + 1 class score, for each candidate box.
+Re-run the 1.3 onnxruntime smoke test in `env_drone` against this file. The input shape should now read `[1, 3, 480, 640]` and the output `(1, 5, 6300)` — four box numbers plus one class score for each of 6300 candidate boxes.
+
+</details>
 
 > ✅ **Checkpoint 5.2 — MILESTONE: Problem 2 (perception) SOLVED**
 > 1. Detector finds the attacker in real arena frames at chase-relevant distances
-> 2. `drone_detector.onnx` loads and runs inside env_drone, input `[1, 3, 480, 640]`, output `(1, 5, 6300)`
+> 2. `drone_detector.onnx` loads and runs inside `env_drone`, input `[1, 3, 480, 640]`, output `(1, 5, 6300)`
+
+</details>
+
+</details>
+
+</details>
+
+---
+# ██ BLOCK F — Connect the Detector to the Policy and Run the Whole Loop in Simulation ██
+
+> 💻 **NO HARDWARE — simulation only.** This is the rehearsal for Block G: the same converter code and the same seven readings run unchanged on the Tello, so any error found here is found without a drone in the air.
+
+<details>
+<summary>Expand Block F</summary>
+
+**What this block produces:** a chase in which everything the defender knows about the attacker comes from a rendered camera frame passed through your detector — no positions read from the simulator.
+
+**The one thing this block adds** is the converter between the detector's pixel rectangle and the policy's seven readings. Everything else already exists: the policy from Block C, the detector from Block E, and the camera from 5.2.
+
+**The files created in this block:**
+
+```
+C:\projects\drone_pursuit\drone_pursuit\scripts\demo\vision_bridge.py         ← 6.1
+C:\projects\drone_pursuit\drone_pursuit\scripts\demo\vision_pursuit_demo.py   ← 6.2
+```
+
+`vision_bridge.py` is imported again, unchanged, by Chapter 7.2's flight script.
 
 ---
 
-# Chapter 6 — Integration: See → Estimate → Chase
+# Chapter 6 — Feed the Policy Camera Readings Instead of Simulator Truth
 
-## 6.1 The reading converter: rectangle → the seven numbers (≤1.5h)
+> 💻 **NO HARDWARE — simulation only.**
 
-**"Converter" (called a bridge elsewhere in robotics) just means a small piece of code that sits between two subsystems and translates one's output into the other's input.** Here the detector outputs a rectangle in pixels; the policy expects seven normalised numbers. Nothing decides anything — it only rescales and remembers.
+<details>
+<summary>Expand Chapter 6</summary>
 
-> **What / Why / How it contributes:** We build the translator between the detector's output and the policy's input. Because Chapter 3 defined the policy's input as camera readings, this translator only rescales the rectangle against the image dimensions — no conversion, no assumption about the attacker's size. We then verify it against the training-time projection, so any Chapter 6 weirdness later can be blamed on the detector or the policy, never on this file.
+## 6.1 Write the Converter That Turns a Bounding Box into the Seven Policy Inputs (≤1.5h)
 
-### What the bridge has to do
+<details>
+<summary>Expand 6.1</summary>
 
-The detector hands you a rectangle: a centre point and a size, both in pixels. The policy wants the seven readings from §0.4. The entire translation is *divide by the image dimensions*:
+> **What this subchapter does:** builds the piece of code that sits between the detector and the policy and translates one's output into the other's input. Because Chapter 3.1 defined the policy's inputs in image terms already, the translation is only a rescale by the image dimensions — no focal length, no assumed target width. This subchapter then verifies the converter's output against the numbers `_camera_readings()` computed for the same moment, so that any strange behaviour in 6.2 can be attributed to the detector or the policy rather than to this file.
+
+### What the converter has to do
+
+The detector hands you a rectangle: a centre point and a size, both in pixels. The policy wants the seven readings from §0.4. The whole translation is division by the image dimensions:
 
 ```
    the 640-wide camera image
@@ -2267,24 +3191,30 @@ The detector hands you a rectangle: a centre point and a size, both in pixels. T
    image centre = dead ahead
 ```
 
-No focal length, no aperture, no physical dimensions. This follows from §0.4: the policy was trained on quantities already expressed in image terms, so a real rectangle needs only rescaling.
+There is still one thing to get wrong here, and Step 2 exists to catch it: the image dimensions you construct the converter with must match the frames you feed it. Construct it for 640×480 and hand it a 960×720 Tello frame without resizing, and every bearing is scaled by 2/3 with no error raised.
 
-### Step 1 — Write the bridge
+### Step 1 — Write the converter file
+
+<details>
+<summary>Expand Step 1</summary>
 
 > **Environment:** none needed — you are creating a folder and a file.
 
-Creates the converter that turns the detector's rectangle into the seven numbers the policy expects. It only rescales and remembers — no interpretation — which is why nothing in it can be got wrong.
-
-Create the folder for the demo and flight scripts, which Chapters 6 and 7 both use:
+Two classes go in one file. `DroneDetector` loads the ONNX model under onnxruntime and returns the single highest-scoring rectangle, or `None` when nothing clears the confidence threshold. `CameraReadingBridge` rescales that rectangle into the seven numbers, remembers the previous values so it can compute the three rates of change, and holds those values frozen on a miss — the exact pattern the policy met in training whenever `ang_size` fell below the visibility threshold. Chapter 7.2's flight script imports both classes unchanged.
 
 *Run from:* `any folder`
 ```bat
 mkdir C:\projects\drone_pursuit\drone_pursuit\scripts\demo
 ```
 
-Then create `C:\projects\drone_pursuit\drone_pursuit\scripts\demo\vision_bridge.py`:
+*File to CREATE (new, empty file):* `C:\projects\drone_pursuit\drone_pursuit\scripts\demo\vision_bridge.py`
 
 ```python
+# ── FILE: C:\projects\drone_pursuit\drone_pursuit\scripts\demo\vision_bridge.py
+# ── This is a NEW file — the whole content, nothing to insert into.
+# ── Reads : C:\projects\drone_pursuit\drone_pursuit\models\drone_detector.onnx
+# ── Imported by: vision_pursuit_demo.py (6.2) and fly_real.py (7.2)
+
 import numpy as np, onnxruntime as ort
 
 
@@ -2300,7 +3230,7 @@ class DroneDetector:
         """480x640x3 uint8 (H, W, C) → (x_center, y_center, width, height) in pixels, or None."""
         x = rgb_uint8_hwc.astype(np.float32) / 255.0        # scale to 0..1
         x = np.transpose(x, (2, 0, 1))[None]                # HWC → 1,C,H,W
-        out = self.sess.run(None, {self.input_name: x})[0][0]   # (5, 8400)
+        out = self.sess.run(None, {self.input_name: x})[0][0]   # (5, 6300)
         boxes, scores = out[:4, :], out[4, :]
         best = int(np.argmax(scores))
         if scores[best] < self.conf:
@@ -2311,7 +3241,7 @@ class DroneDetector:
 class CameraReadingBridge:
     """Rectangle → the seven numbers the policy was trained on. Holds last value on a miss."""
 
-    def __init__(self, img_w=640, img_h=480):   # must match the frame you feed it
+    def __init__(self, img_w=640, img_h=480):   # MUST match the frame you feed it
         self.img_w, self.img_h = img_w, img_h
         self.bx = self.by = self.asz = 0.0
         self.has_seen = False
@@ -2336,43 +3266,58 @@ class CameraReadingBridge:
         return self.has_seen and self.asz > threshold
 ```
 
-### Step 2 — Check it against the readings calculated during training
+</details>
+
+### Step 2 — Compare the converter's output against the training-time projection
+
+<details>
+<summary>Expand Step 2</summary>
 
 > **Environment:** `env_drone`
 
-Compares the converter's output against what the simulator computed for the same moment. Agreement proves the two definitions match; a constant-factor disagreement means the camera's field of view does not match Chapter 3.1's settings.
+For any given moment you can produce the same seven readings twice: once by projecting ground truth through the camera model (`_camera_readings()` from 3.1 Part F) and once by running the detector on the rendered frame and passing the rectangle through the converter. Agreement proves the two definitions match. This is the check that catches the field-of-view mismatch flagged in 3.1 Part E, which produces no error and degrades the chase in a way that looks like a training problem.
 
-This test is easy because you can produce both versions of the same reading. Reuse the frame-capture setup from 5.2, but for each saved frame *also* record what `_camera_readings()` computed for that same moment. Then run the bridge on the image and compare:
+*Folders involved:* frames in `C:\projects\drone_pursuit\drone_pursuit\data\arena_frames\`, converter in `C:\projects\drone_pursuit\drone_pursuit\scripts\demo\vision_bridge.py`
+
+Reuse the frame-capture setup from 5.2, but for each saved frame also record what `_camera_readings()` computed for that moment. Then run the converter on the image and compare:
 
 ```
 frame 12   projected (training):  bx=+0.109  by=−0.250  size=0.053
            bridge   (from image):  bx=+0.115  by=−0.244  size=0.049   ✓
 ```
 
-Acceptance: bearings agree within a few hundredths, angular size within about 20% (the rectangle wobbles with the attacker's attitude — expected and harmless). Disagreement in *sign* means an axis is flipped; disagreement by a large constant factor means your `TiledCameraCfg` field of view doesn't match the `cam_focal_mm` / `cam_aperture_mm` you set in 3.1.
+Acceptance: bearings agree within a few hundredths, angular size within about 20% — the rectangle genuinely widens and narrows as the attacker banks, so some spread is expected. A disagreement in *sign* means an axis is flipped. A disagreement by a large constant factor means the `TiledCameraCfg` focal length does not match the `cam_focal_mm` / `cam_aperture_mm` in the env cfg.
 
-Watch for the second one especially. Nothing errors: the policy receives plausible numbers that mean something different from what it trained on, and the chase degrades in a way that looks like a training problem.
+</details>
 
-### Step 3 — Check the blind-spot behaviour
+### Step 3 — Test the out-of-view behaviour
+
+<details>
+<summary>Expand Step 3</summary>
 
 > **Environment:** `env_drone`
 
-Feeds the converter frames where the attacker is out of view. It should hold the previous readings and drop the visible flag — the same pattern the policy met during training whenever the attacker got too small to detect.
+Feed the converter frames in which the attacker is genuinely out of view. It must return `visible = 0`, hold the previous bearings unchanged, and report all three deltas as zero. Zeroing the bearings instead of holding them would send the policy a reading meaning "the attacker is dead ahead", which is the opposite of what losing sight means, and the defender would fly straight on.
 
-Feed the bridge a few frames where the attacker is genuinely out of view. It should return `visible = 0`, hold the previous bearings, and report all three deltas as zero. This is the same pattern the policy saw during training whenever `ang_size` fell below the visibility threshold, so it responds with behaviour it has already learned.
+</details>
 
 > ✅ **Checkpoint 6.1**
-> 1. Bridge output matches the training-time projection on ≥15 varied frames
-> 2. Field of view confirmed consistent between `TiledCameraCfg` and the cfg constants from 3.1
+> 1. Converter output matches the training-time projection on ≥15 varied frames
+> 2. Field of view confirmed identical between `TiledCameraCfg` and the cfg constants from 3.1
 > 3. Out-of-view frames produce `visible = 0` with frozen values and zero deltas
+
+</details>
 
 ---
 
-## 6.2 The final demo: the loop closes (≤1.5h)
+## 6.2 Run the Full See-Decide-Act Loop in Simulation (≤1.5h)
 
-> **What / Why / How it contributes:** Everything meets: the pursuit env with its onboard camera, your trained policy, the ONNX detector, and the reading converter from 6.1. We run one environment and, each control step, replace observation slots 6–12 with the seven numbers measured from a rendered frame. Everything the defender knows about the attacker now arrives through the camera. If it still captures, the full see-decide-act loop works.
+<details>
+<summary>Expand 6.2</summary>
 
-### The demo architecture (one env, one loop)
+> **What this subchapter does:** connects the pursuit env with its onboard camera, your trained policy, the ONNX detector and the converter from 6.1 into one script. It runs a single environment and, on every control step, overwrites observation slots 6 to 12 with the seven numbers measured from a rendered frame. If the defender still captures, the complete see-decide-act loop works and only the hardware remains.
+
+### The demo architecture
 
 ```
               ┌─────────────────── every control step ───────────────────┐
@@ -2392,16 +3337,27 @@ Feed the bridge a few frames where the attacker is genuinely out of view. It sho
               └──────────────────────────────────────────────────────────┘
 ```
 
-Two design notes worth stating plainly:
+- **Self-state stays from the simulator, and that is not cheating.** A real drone reads its own velocity and attitude from its inertial sensors, and Chapter 7.2 gets those same six numbers from `get_speed_x` and `get_roll`. Only knowledge about the attacker has to be earned through the camera, and that is exactly what slots 6 to 12 hold.
+- **Losing sight is already trained for.** When the detector returns nothing, the converter holds the previous readings and sets `visible = 0` — the pattern the policy met thousands of times during training whenever the attacker fell below the 0.012 detection threshold.
 
-- **Self-state stays from the simulator, and that is not cheating.** A real drone reads its own velocity and attitude from its inertial sensors. Only knowledge *about the attacker* has to be earned through the camera, and that is precisely the part we are replacing.
-- **Losing sight is already trained for.** When the detector comes up empty, the bridge holds the previous readings and sets `visible = 0` — the same pattern the policy met thousands of times during training whenever the attacker fell below the detection threshold.
+### Step 1 — Write the demo script
 
-### The demo script (the trickiest file in the tutorial — take it slow)
+<details>
+<summary>Expand Step 1</summary>
 
-`C:\projects\drone_pursuit\drone_pursuit\scripts\demo\vision_pursuit_demo.py`:
+> **Environment:** none needed to write it; `env_drone` to run it.
+
+This is the file that touches every subsystem, so expect to iterate on it.
+
+*File to CREATE (new, empty file):* `C:\projects\drone_pursuit\drone_pursuit\scripts\demo\vision_pursuit_demo.py`
 
 ```python
+# ── FILE: C:\projects\drone_pursuit\drone_pursuit\scripts\demo\vision_pursuit_demo.py
+# ── NEW file — the whole content, nothing to insert into.
+# ── Imports  : vision_bridge.py, sitting in this SAME folder (scripts\demo\)
+# ── Loads    : C:\projects\drone_pursuit\drone_pursuit\models\drone_detector.onnx
+# ── Loads    : your Ch.3 checkpoint, passed on the command line
+
 import argparse, torch
 from isaaclab.app import AppLauncher
 
@@ -2457,79 +3413,140 @@ while app.is_running():
           f"{bridge.captured(CAPTURE_ANG_SIZE)}")
 ```
 
-Run it:
+</details>
 
-*Run from:* `any folder`
+### Step 2 — Run it, and debug in two halves if it misbehaves
+
+<details>
+<summary>Expand Step 2</summary>
+
+> **Environment:** `env_drone`
+
+*Run from:* `any folder` — *the script lives in:* `C:\projects\drone_pursuit\drone_pursuit\scripts\demo\` — *checkpoints live in:* `C:\projects\drone_pursuit\drone_pursuit\logs\skrl\<run-folder>\checkpoints\`
 ```bat
 conda activate env_drone
 python C:\projects\drone_pursuit\drone_pursuit\scripts\demo\vision_pursuit_demo.py --checkpoint C:\projects\drone_pursuit\drone_pursuit\logs\skrl\<run-folder>\checkpoints\best_agent.pt --enable_cameras
 ```
 
-⚠️ Expect to iterate. This script touches every subsystem, and the usual suspects are small: the exact wrapper import path for your Isaac Lab minor version, the camera attribute name, agent-loading details. **Debug method:** comment out the splice first, so the policy runs on the training-time projected readings. That must reproduce Chapter 3 behaviour exactly — which isolates whether a problem lives in checkpoint loading or in the vision path. Only then re-enable the splice.
+⚠️ The failures here are usually small and mechanical: the exact wrapper import path for your Isaac Lab minor version, the camera attribute name, or the details of loading the agent.
 
-**What success looks like:** the chase is less smooth than in Chapter 3. The detector's rectangle shifts by a few pixels between frames, so the bearings shift with it and the defender corrects more often. It still closes and captures. The difference between its capture rate on calculated readings and on measured readings is the number worth recording.
+**Debug method — comment out one line first:**
 
-**What to watch at the end of a chase:** `true dist` drops below your capture radius, and within a frame or two `camera says captured` flips to True. The simulator and the camera are measuring the same event by completely different means; if they agree within a frame or two, your Chapter 3.3 calibration was correct.
+```python
+# ── FILE: ...\scripts\demo\vision_pursuit_demo.py, inside the while loop ────
 
-> ✅ **Checkpoint 6.2 — FINAL MILESTONE: Problem 3 (integration) SOLVED**
-> The defender captures the attacker with everything it knows about the attacker coming from its camera and your detector — no assumed dimensions, no positions from the simulator, no camera geometry. Record a video.
+    # 2) SPLICE — TEMPORARILY DISABLE this line for the first debug pass:
+    # obs[:, 6:13] = torch.tensor(readings, device=obs.device)
+```
+
+With that line commented out the policy runs on the training-time projected readings, which must reproduce Chapter 3 behaviour exactly. That separates a checkpoint-loading problem from a vision-path problem. Re-enable the splice only after that passes.
+
+**What success looks like.** The chase is less smooth than in Chapter 3. The detector's rectangle shifts by a few pixels between frames, the bearings shift with it, and the defender corrects more often. It still closes and captures. The gap between its capture rate on calculated readings and on measured readings is the number worth writing in `project_notes.txt`, because Chapter 7 will produce a third value for the same measurement on hardware.
+
+**What to watch at the end of a chase:** `true dist` drops below your capture radius, and within a frame or two `camera says captured` flips to True. Two independent measurements of the same event agreeing within a frame or two means the `capture_ang_size` you calibrated in 3.3 is correct.
+
+</details>
+
+> ✅ **Checkpoint 6.2 — MILESTONE: Problem 3 (integration) SOLVED**
+> The defender captures the attacker with everything it knows about the attacker coming from its camera and your detector — no assumed dimensions, no positions from the simulator, no camera geometry in the converter. Record a video.
+
+</details>
 
 ---
 
-## 6.3 What happens next
+## 6.3 Review What Is Complete and Choose the Next Extension
+
+<details>
+<summary>Expand 6.3</summary>
 
 **The simulation half is complete.** The defender captures a moving attacker using only what a camera reports, with no privileged information about the target.
 
-**Chapter 7 is the next step, and it is the point of the project**: putting this policy on the Tello you set up in 1.4 and finding out whether it transfers. Nothing needs retraining — the policy already speaks the drone's language.
+**Chapter 7 is the next step**: putting this policy on the Tello you set up in 1.4 and finding out whether it transfers. Nothing needs retraining — the policy already commands stick channels at your measured rate, expects delayed readings, and uses only telemetry a Tello reports.
 
 ### Directions beyond that
 
 Each of these builds on what you now have, ordered by effort:
 
-1. **Reactive attacker** (hours): make the scripted path flee — add a velocity component away from the defender, then re-run the curriculum. A harder pursuit problem, entirely in simulation.
-2. **Bearing-only range estimation** (a project): add a filter that accumulates bearings across many frames and combines them with your own known motion to recover the attacker's actual position, plus an estimate of how uncertain it is. Standard probabilistic state estimation, and it sits *below* the existing policy — no retraining needed. It would also give you something Chapter 6 deliberately gave up: an inspectable distance estimate.
-3. **True multi-agent** (project): 2 defenders against 1 RL-controlled attacker, using skrl's IPPO or MAPPO — the Direct workflow supports multi-agent environments. The reference point is the Tsinghua Multi-UAV pursuit-evasion work: adaptive curriculum, evader prediction network, and sim-to-real on real quadrotors.
+1. **Reactive attacker** (hours): add a velocity component that flees from the defender to `_move_attacker` in 2.2, then re-run the 3.3 curriculum. A harder pursuit problem, entirely in simulation.
+2. **Bearing-only range estimation** (a project): add a filter that accumulates bearings across many frames and combines them with the defender's own known motion to recover the attacker's actual position plus an uncertainty estimate. Standard probabilistic state estimation, and it sits *below* the existing policy, so no retraining is needed. It would also restore something Chapter 6 deliberately gave up: an inspectable distance estimate.
+3. **True multi-agent** (project): two defenders against one RL-controlled attacker, using skrl's IPPO or MAPPO — the Direct workflow supports multi-agent environments. The reference point is the Tsinghua Multi-UAV pursuit-evasion work: adaptive curriculum, evader prediction network, and sim-to-real on real quadrotors.
 4. **OmniDrones** (project): a full drone-RL framework on Isaac Sim with realistic rotor dynamics and controllers, from the same lineage as that paper — the step beyond the simplified force model used here.
 
-*(The noise-hardening that used to sit at the top of this list is no longer optional or deferred — it is built into Chapter 3.1 and 7.4, because hardware needs it.)*
+</details>
+
+</details>
+
+</details>
 
 ---
 
-# Chapter 7 — Flying It: The Sim-to-Real Test
+# ██ BLOCK G — Transfer the Trained Models to the Real Drone and Fly It ██
 
-Chapter 6 proved the system works in simulation with a rendered camera. This chapter puts it on the Tello you set up and measured in 1.4.
+> 🔌 **DRONE HARDWARE REQUIRED — every subchapter.** 7.1 is the only one you can complete with the drone still in its box; 7.2 needs the Tello with its propellers off; 7.3 and 7.4 need the Tello flying, plus the target drone, guards and spare batteries.
 
-**Nothing needs retraining here.** The policy already commands stick channels, already decides at your drone's rate, already expects delayed readings, and already uses only telemetry the Tello can report. That is what 1.4 bought by coming before Chapter 3.
+<details>
+<summary>Expand Block G</summary>
 
-**What you still need:** the attacker drone (a cheap toy quadcopter, C$50–70), spare propellers, a couple of batteries, and bright tape or a coloured shell for the target so the detector can find it at range. Total remaining spend is under C$100.
+**What this block produces:** `policy.onnx` — the decision-making network extracted from your skrl checkpoint — plus a flight script that runs it beside the detector on your laptop and commands a real Tello, and a set of recorded flights you use to improve both models.
+
+**Nothing is retrained to get here.** The policy already commands stick channels, already decides at your drone's measured rate, already expects delayed readings, and already uses only telemetry a Tello reports. That is what 1.4 bought by coming before Chapter 3.
+
+**What you still need to buy:** the attacker drone (a cheap toy quadcopter, C$50–70), spare propellers, a couple of batteries, and bright tape or a coloured shell for the target so the detector can find it at range. Total remaining spend is under C$100.
+
+**The files created in this block:**
+
+```
+C:\projects\drone_pursuit\drone_pursuit\scripts\demo\export_policy.py   ← 7.1
+C:\projects\drone_pursuit\drone_pursuit\scripts\demo\fly_real.py        ← 7.2
+C:\projects\drone_pursuit\drone_pursuit\models\policy.onnx              ← output of 7.1
+C:\projects\drone_pursuit\drone_pursuit\flights\                        ← flight recordings
+```
 
 ---
 
-## 7.1 Export the policy (≤1.5h)
+# Chapter 7 — Export the Trained Models to the Real Drone and Fly the Chase
 
-> **What / Why / How it contributes:** This is the transfer itself. The trained policy lives inside a skrl checkpoint that only Isaac Lab can open. Here you extract the decision-making network and save it as a standalone file your flight script loads without Isaac Lab installed — exactly what you did to the detector in Chapter 5.2, for the same reason.
+> 🔌 **DRONE HARDWARE REQUIRED** from 7.2 onward.
 
-### What a checkpoint is, and what you need from it
+<details>
+<summary>Expand Chapter 7</summary>
 
-**A checkpoint is a save file.** During training, skrl periodically writes the state of the learning process to a `.pt` file so a run can be resumed or evaluated later. It is what `play.py` loads and what you resumed from when raising the attacker's speed.
+## 7.1 Export the Trained Policy from the Checkpoint to an ONNX File (≤1.5h)
+
+> 💻 **No hardware needed for this subchapter** — it runs entirely in `env_drone`.
+
+<details>
+<summary>Expand 7.1</summary>
+
+> **What this subchapter does:** the trained policy currently lives inside a skrl checkpoint that only Isaac Lab can open, and the flight script has no Isaac Lab installed. This subchapter extracts the decision-making network from that checkpoint and saves it as `policy.onnx`, then proves the exported file produces the same output as the checkpoint on identical input. It is the same operation you performed on the detector in 5.2, for the same reason.
+
+### What a checkpoint contains, and which part you need
+
+A checkpoint is a save file. During training, skrl periodically writes the state of the learning process to a `.pt` file so a run can be resumed or evaluated later — it is what `play.py` loads and what you resumed from in 3.3 Step 3.
 
 | Inside it | Needed at flight time? |
 |---|---|
 | **The actor** — maps 17 observations to 4 commands | **Yes. This is the policy.** |
-| **The critic** — estimated future reward, used only to compute training updates | No |
+| **The critic** — estimated future reward, used only to compute PPO updates | No |
 | **Optimiser state** — how PPO was adjusting weights mid-run | No |
 
 Exporting means reaching past the training machinery and taking only the actor.
 
-### Step 1 — Export
+### Step 1 — Write the export script
+
+<details>
+<summary>Expand Step 1</summary>
 
 > **Environment:** `env_drone`
 
-Extracts the decision-making network from your training checkpoint and saves it as `policy.onnx`. Your flight script has no Isaac Lab installed, so this is what makes the trained policy runnable beside a real drone.
-
-`C:\projects\drone_pursuit\drone_pursuit\scripts\demo\export_policy.py`:
+*File to CREATE (new, empty file):* `C:\projects\drone_pursuit\drone_pursuit\scripts\demo\export_policy.py`
 
 ```python
+# ── FILE: C:\projects\drone_pursuit\drone_pursuit\scripts\demo\export_policy.py
+# ── NEW file — the whole content, nothing to insert into.
+# ── Reads : your Ch.3 checkpoint (command line)
+# ── Writes: C:\projects\drone_pursuit\drone_pursuit\models\policy.onnx
+
 """Extract the actor network from a skrl checkpoint and save it as ONNX."""
 import argparse, torch
 from isaaclab.app import AppLauncher
@@ -2570,7 +3587,7 @@ class DeterministicActor(torch.nn.Module):
 
 
 wrapper = DeterministicActor(runner.agent.policy)
-dummy = torch.zeros(1, 17, device=runner.agent.device)
+dummy = torch.zeros(1, 17, device=runner.agent.device)      # 17 = your obs size
 torch.onnx.export(
     wrapper, dummy, args.out,
     input_names=["obs"], output_names=["action"],
@@ -2578,36 +3595,61 @@ torch.onnx.export(
     opset_version=17,
 )
 print(f"exported → {args.out}")
+
+# ── SECTION 2 (Step 2) IS APPENDED BELOW THIS LINE ──────────────────────────
 ```
 
-**Why the mean and not a sample.** During training the policy deliberately adds randomness so it explores alternatives. At flight time you want the same observation to produce the same command every time, so you take the centre of the distribution rather than drawing from it.
+*Run from:* `any folder` — *the script lives in:* `C:\projects\drone_pursuit\drone_pursuit\scripts\demo\`
+```bat
+conda activate env_drone
+python C:\projects\drone_pursuit\drone_pursuit\scripts\demo\export_policy.py --checkpoint C:\projects\drone_pursuit\drone_pursuit\logs\skrl\<run-folder>\checkpoints\best_agent.pt
+```
 
-⚠️ The key holding the mean varies between skrl versions. If that line fails, print `out` and inspect the third element — usually `mean_actions`, sometimes `net_output`.
+**Why the mean and not a sample.** During training the policy draws its action from a distribution so it explores alternatives. In flight you want the same observation to produce the same command every time, so the export takes the centre of that distribution instead of drawing from it. Exporting the sampling version gives a drone that behaves slightly differently each run, which is almost impossible to debug.
 
-### Step 2 — Prove the export is faithful
+⚠️ The dictionary key holding the mean varies between skrl versions. If that line fails, print `out` and inspect the third element — usually `mean_actions`, sometimes `net_output`.
+
+</details>
+
+### Step 2 — Prove the exported file matches the checkpoint
+
+<details>
+<summary>Expand Step 2</summary>
 
 > **Environment:** `env_drone`
 
-Feeds the same numbers to the checkpoint and to the exported file and compares the results. A faulty export flies badly for reasons you would otherwise spend days blaming on the drone.
+Feed the same random 17 numbers to both the wrapped checkpoint and the ONNX file and compare the outputs. A faulty export produces a drone that flies badly for reasons you would otherwise spend days attributing to the hardware, the detector or the delay model.
 
-Do not skip this. A wrong export flies badly for reasons you would spend days blaming on the drone.
+*File to edit:* `C:\projects\drone_pursuit\drone_pursuit\scripts\demo\export_policy.py`
 
 ```python
+# ── FILE: ...\scripts\demo\export_policy.py ─────────────────────────────────
+# ── SECTION: append at the very END of the file ─────────────────────────────
+
+print(f"exported → {args.out}")          # ← last line from Step 1
+
+# ▼▼▼ INSERT HERE! — the faithfulness check ▼▼▼
 import numpy as np, onnxruntime as ort
 sess = ort.InferenceSession(args.out, providers=["CPUExecutionProvider"])
 probe = torch.randn(1, 17, device=runner.agent.device)
 from_torch = wrapper(probe).detach().cpu().numpy()
 from_onnx = sess.run(None, {"obs": probe.cpu().numpy()})[0]
 print("max difference:", np.abs(from_torch - from_onnx).max())
+# ▲▲▲ END OF INSERT ▲▲▲
 ```
 
 Below about 1e-4 means faithful.
 
-### Step 3 — Both models in one place
+</details>
+
+### Step 3 — Confirm both models sit together in `models\`
+
+<details>
+<summary>Expand Step 3</summary>
 
 > **Environment:** none needed — you are checking that two files exist.
 
-Confirms the detector and the policy sit together in `models\`. These two files are the entire sim-to-real transfer; everything else stays behind in the simulator.
+*Folder to open:* `C:\projects\drone_pursuit\drone_pursuit\models\`
 
 ```
 C:\projects\drone_pursuit\drone_pursuit\models\
@@ -2615,18 +3657,27 @@ C:\projects\drone_pursuit\drone_pursuit\models\
     policy.onnx             ← this subchapter
 ```
 
-**These two files are the entire transfer.** The environment, the reward, the arena and Isaac Lab itself all stay behind.
+These two files are the entire transfer. The environment, the reward function, the arena and Isaac Lab itself all stay behind.
+
+</details>
 
 > ✅ **Checkpoint 7.1**
 > 1. `policy.onnx` exists and loads under onnxruntime
 > 2. Its output matches the checkpoint to within 1e-4 on random input
 > 3. Both models sit together in `models\`
 
+</details>
+
 ---
 
-## 7.2 Build the flight script and bench-test it (≤1.5h)
+## 7.2 Write the Flight Script and Bench-Test It with the Propellers Removed (≤1.5h)
 
-> **What / Why / How it contributes:** This assembles everything into the loop that flies the drone. You then run it with the propellers removed, so every part can be verified while nothing can hurt you — including the one bug most likely to send a drone into a wall.
+> 🔌 **DRONE HARDWARE REQUIRED** — the Tello, powered on, with its propellers removed for the bench test.
+
+<details>
+<summary>Expand 7.2</summary>
+
+> **What this subchapter does:** assembles the detector, the converter, the exported policy and the Tello SDK into the loop that flies the drone, and records every observation and command to CSV plus the video to MP4. It then runs that loop with the propellers off, so every part can be verified while nothing can hurt you — including the channel-mapping error that otherwise sends the drone sideways into a wall.
 
 ### The loop
 
@@ -2648,18 +3699,40 @@ C:\projects\drone_pursuit\drone_pursuit\models\
   └── wait, so the loop runs at the rate you trained at
 ```
 
-### The script
+### Step 1 — Create the flight-recording folder
 
-First create the folder the script records into. **Do this before flying, not after** — the script opens its log file immediately after takeoff, so a missing folder crashes it with the drone already in the air:
+<details>
+<summary>Expand Step 1</summary>
+
+> **Environment:** none needed — this is a folder command.
 
 *Run from:* `any folder`
 ```bat
 mkdir C:\projects\drone_pursuit\drone_pursuit\flights
 ```
 
-Then `C:\projects\drone_pursuit\drone_pursuit\scripts\demo\fly_real.py`, run in `env_drone`. It never imports Isaac Lab:
+**Do this before flying, not after.** The script opens its log file immediately after takeoff, and Python's `open()` fails if the parent folder is missing — which would crash the script with the drone already in the air.
+
+</details>
+
+### Step 2 — Write the flight script
+
+<details>
+<summary>Expand Step 2</summary>
+
+> **Environment:** `env_drone` to run it; none needed to write it.
+
+*File to CREATE (new, empty file):* `C:\projects\drone_pursuit\drone_pursuit\scripts\demo\fly_real.py`
 
 ```python
+# ── FILE: C:\projects\drone_pursuit\drone_pursuit\scripts\demo\fly_real.py
+# ── NEW file — the whole content, nothing to insert into.
+# ── Imports: vision_bridge.py, in this SAME folder (scripts\demo\)
+# ── Loads  : C:\projects\drone_pursuit\drone_pursuit\models\drone_detector.onnx
+# ──          C:\projects\drone_pursuit\drone_pursuit\models\policy.onnx
+# ── Writes : C:\projects\drone_pursuit\drone_pursuit\flights\flight_<stamp>.csv / .mp4
+# ── NOTE   : this script NEVER imports Isaac Lab.
+
 """Fly the Tello with the policy trained in simulation."""
 import time, threading, csv, datetime
 import numpy as np, onnxruntime as ort, cv2
@@ -2710,7 +3783,7 @@ threading.Thread(target=watch_for_stop, daemon=True).start()
 
 prev_action = np.zeros(4, dtype=np.float32)
 t0 = time.time()
-drone.takeoff()
+drone.takeoff()                  # ◄── COMMENT OUT for the Step 3 bench test
 time.sleep(2)
 
 try:
@@ -2737,7 +3810,7 @@ try:
             np.sin(roll), np.sin(pitch), -np.cos(roll) * np.cos(pitch),
         ], dtype=np.float32)
 
-        # 4 — assemble the 17 numbers, in the trained order
+        # 4 — assemble the 17 numbers, in the SAME order as 3.1 Part G
         obs = np.concatenate([self_state, readings, prev_action])[None].astype(np.float32)
 
         # 5 — DECIDE.  ◄── THIS LINE IS THE TRAINED POLICY RUNNING.
@@ -2747,6 +3820,7 @@ try:
         prev_action = action.copy()
 
         # 6 — ACT.  Tello channels: left/right, forward/back, up/down, yaw (−100..100)
+        #     ◄── THIS MAPPING IS A GUESS until Step 3 verifies it.
         drone.send_rc_control(
             int(action[1] * 100),
             int(action[0] * 100),
@@ -2766,24 +3840,55 @@ try:
             print(f"loop overran: {loop_ms:.0f} ms")
 finally:
     drone.send_rc_control(0, 0, 0, 0)
-    drone.land()
+    drone.land()                 # ◄── COMMENT OUT for the Step 3 bench test
     drone.streamoff()
     log.close()
     video.release()
     print(f"flight recorded → flight_{stamp}.csv / .mp4")
 ```
 
-### Three things worth understanding
+**Three things worth understanding in that script:**
 
-**The channel mapping in step 6 is a guess until verified.** Which action index drives which stick depends on how you ordered them in 3.1. Get it wrong and the drone goes sideways when it should go forward. Verifying it is the main purpose of the bench test below.
+**The channel mapping in step 6 is a guess until verified.** Which action index drives which stick depends on the order you assigned in 3.1 Part A. Get it wrong and the drone translates sideways when the policy meant forward.
 
-**Every flight is recorded automatically** — a CSV of every observation and command, plus the video. This costs nothing during flight and is the entire input to 7.4. A flight you did not record teaches you only what you happened to notice at the time.
+**Every flight is recorded automatically** — a CSV of every observation and command plus the raw video. This costs nothing during flight and is the entire input to 7.4. A flight you did not record teaches you only what you happened to notice while it was happening.
 
 **The Tello lands itself after 15 seconds without a command**, so a crashed script does not leave a drone flying.
 
-### Bench test — propellers removed
+</details>
 
-Take the propellers off. Comment out `takeoff()` and `land()`. Run it and hold the attacker in front of the camera.
+### Step 3 — Bench-test with the propellers removed
+
+<details>
+<summary>Expand Step 3</summary>
+
+> **Environment:** `env_drone` — 🔌 **Tello powered on, propellers OFF.**
+
+Take the propellers off, then disable takeoff and landing:
+
+*File to edit:* `C:\projects\drone_pursuit\drone_pursuit\scripts\demo\fly_real.py`
+
+```python
+# ── FILE: ...\scripts\demo\fly_real.py ──────────────────────────────────────
+# ── SECTION: two lines, one before the loop and one in the finally block ────
+
+# BEFORE the loop:
+# drone.takeoff()          ◄── COMMENT OUT for the bench test
+time.sleep(2)
+
+# ... and inside `finally:` ...
+    drone.send_rc_control(0, 0, 0, 0)
+    # drone.land()         ◄── COMMENT OUT for the bench test
+    drone.streamoff()
+```
+
+*Run from:* `any folder` — *the script lives in:* `C:\projects\drone_pursuit\drone_pursuit\scripts\demo\`
+```bat
+conda activate env_drone
+python C:\projects\drone_pursuit\drone_pursuit\scripts\demo\fly_real.py
+```
+
+Hold the attacker drone in front of the camera by hand and check all six rows:
 
 | Check | What you should see |
 |---|---|
@@ -2794,49 +3899,80 @@ Take the propellers off. Comment out `takeoff()` and `land()`. Run it and hold t
 | Rate holds | No "loop overran" messages |
 | Emergency stop | Both ENTER and `x` behave as expected |
 
-**If commands point the wrong way, fix the channel mapping now.**
+**If commands point the wrong way, fix the channel mapping now**, before anything spins. Restore `takeoff()` and `land()` afterwards.
+
+</details>
 
 > ✅ **Checkpoint 7.2**
 > 1. Bench run passes all six checks
-> 2. A CSV and MP4 appeared in `flights\`
+> 2. A CSV and MP4 appeared in `C:\projects\drone_pursuit\drone_pursuit\flights\`
 > 3. You know which action index drives which direction
+
+</details>
 
 ---
 
-## 7.3 Fly it, in stages (≤1.5h per stage)
+## 7.3 Fly the Chase in Six Staged Tests (≤1.5h per stage)
 
-> **What / Why / How it contributes:** Each stage adds exactly one new thing, so a failure names its own cause. Skipping stages converts a diagnosable problem into a broken drone and an unanswerable question.
+> 🔌 **DRONE HARDWARE REQUIRED** — Tello flying with propellers and guards, plus the target drone from Stage 3 onward.
+
+<details>
+<summary>Expand 7.3</summary>
+
+> **What this subchapter does:** runs the flight script for real, in six stages that each add exactly one new element. Staging matters because a failure at stage 3 names its own cause — the one thing stage 3 added — while jumping straight to a flying attacker turns any failure into an unanswerable question and often a broken drone.
 
 ### Before every session
 
 Propeller guards on. Eye protection. Clear space. Nobody else present. Battery above 30%. Hand near the keyboard.
 
-### The stages
+### Step 1 — Work through the six stages in order
 
-**Stage 1 — Hover only.** Restore `takeoff()`, but force the policy output to zero so it just hovers. Checks the loop holds rate while flying, video keeps up, landing works. Two minutes.
+<details>
+<summary>Expand Step 1</summary>
 
-**Stage 2 — Live policy, no attacker.** Let the policy run with nothing to detect. It should sit roughly still, holding its last reading with `visible` at 0. If it wanders off aggressively, the lost-sight behaviour is wrong — stop and check the converter is holding values rather than zeroing them.
+> **Environment:** `env_drone` — 🔌 drone flying.
 
-**Stage 3 — Stationary attacker.** On a stand, two metres away. The defender should approach and stop at capture distance. **This is the first real test of the transfer.**
+*Run from:* `any folder` — *the script lives in:* `C:\projects\drone_pursuit\drone_pursuit\scripts\demo\`
+```bat
+conda activate env_drone
+python C:\projects\drone_pursuit\drone_pursuit\scripts\demo\fly_real.py
+```
+
+**Stage 1 — Hover only.** Restore `takeoff()`, but force the policy output to zero so the drone just hovers. In `fly_real.py`, immediately after the `action = np.clip(...)` line, temporarily add `action[:] = 0.0`. Checks that the loop holds 20 Hz while flying, that video keeps up, and that landing works. Two minutes.
+
+**Stage 2 — Live policy, no attacker.** Remove the `action[:] = 0.0` line and let the policy run with nothing to detect. It should sit roughly still, holding its last reading with `visible` at 0. If it wanders off aggressively, the lost-sight behaviour is wrong — stop and confirm the converter is holding values rather than zeroing them.
+
+**Stage 3 — Stationary attacker on a stand, two metres away.** The defender should approach and stop at capture distance. This is the first real test of the transfer.
 
 **Stage 4 — Hand-carried attacker.** Walk it slowly across the space.
 
 **Stage 5 — Flying attacker, slow.** Both airborne, attacker near walking pace.
 
-**Stage 6 — Increase attacker speed.** The Chapter 3.3 curriculum again, in hardware.
+**Stage 6 — Increase attacker speed.** The Chapter 3.3 curriculum again, this time in hardware.
 
-### Reading a failure
+</details>
 
-| What you see | Most likely cause | What to check in the log |
+### Step 2 — Diagnose failures from the log, not from memory
+
+<details>
+<summary>Expand Step 2</summary>
+
+> **Environment:** none needed — you are reading CSV files.
+
+*Folder to open:* `C:\projects\drone_pursuit\drone_pursuit\flights\`
+
+| What you see | Most likely cause | What to check in the CSV |
 |---|---|---|
-| Oscillates while hovering | Stand-in stabiliser in 3.1 does not match the Tello's | Commands alternating sign rapidly |
-| Overshoots repeatedly | Real delay exceeds what you trained for | Re-measure delay; widen `obs_delay_*` |
-| Drifts to one side | Real drift larger than randomised | `vx`/`vy` biased with near-zero commands |
+| Oscillates while hovering | Stand-in stabiliser from 3.1 does not match the Tello's | Commands alternating sign rapidly |
+| Overshoots repeatedly | Real delay exceeds the range you trained for | Re-measure delay; widen `obs_delay_*` |
+| Drifts to one side | Real drift larger than the randomised range | `vx`/`vy` biased while commands are near zero |
 | Stops or wanders when the target moves | Detector losing the target | `visible` dropping to 0 often |
 | Works close, fails far | Detector cannot resolve a small target | `asz` small, `visible` flickering |
 | Flies the wrong way entirely | Channel mapping wrong | Commands correctly signed but on the wrong axis |
 
-**Read the log before forming a theory.** Almost every row above is answered by the CSV rather than by what you saw.
+Almost every row above is answered by the CSV rather than by what you saw from across the room. Read the log before forming a theory.
+
+</details>
 
 ### On legality
 
@@ -2845,17 +3981,22 @@ Indoors in a private space is the least regulated situation. Outdoors in Canada,
 > ✅ **Checkpoint 7.3 — SIM-TO-REAL VALIDATED**
 > A policy trained entirely in simulation flies a real drone, finds a real target through a real camera, and closes on it. Record it.
 
+</details>
+
 ---
 
-## 7.4 Improve the system from real flight data (≤1.5h per cycle)
+## 7.4 Improve the Detector and the Simulation Using Recorded Flight Data (≤1.5h per cycle)
 
-> **What / Why / How it contributes:** Your first flights will be imperfect, and the recordings from 7.2 tell you why. This turns them into improvements — a better detector and a more truthful simulation. This is the loop professional sim-to-real work runs continuously.
+> 🔌 **DRONE HARDWARE REQUIRED** — you need the recordings from 7.3, and each cycle ends with another flight.
 
-### The honest constraint
+<details>
+<summary>Expand 7.4</summary>
 
-**You cannot train the policy directly on real flight data.** PPO needs millions of steps; each flight gives a few thousand, and the mistakes it would learn from are crashes. Nobody does this on real hardware for a task like this.
+> **What this subchapter does:** turns the CSVs and videos recorded in 7.2 into two concrete improvements — a detector fine-tuned on real footage of your real target, and simulator constants corrected to match how your drone actually responded. Each cycle makes the simulation more truthful, so the next policy trained in it transfers better. This is the loop professional sim-to-real work runs continuously.
 
-What you do instead loops through the simulator:
+### Why the policy is not trained on flight data directly
+
+PPO needs millions of environment steps; one flight gives a few thousand, and the informative ones are crashes. Nobody trains a task like this on real hardware. The improvements loop through the simulator instead:
 
 ```
    real flight ──► what was wrong? ──► fix the SIMULATION ──► retrain ──► fly again
@@ -2864,25 +4005,27 @@ What you do instead loops through the simulator:
                                    cycle, so the policy transfers better)
 ```
 
-This is **system identification**: using measurements of the real thing to correct your model of it.
+This is **system identification**: using measurements of the real system to correct your model of it.
 
-**What is automatic, and what is not.** Collection is automatic and complete — every observation, command, loop time and video frame is written to `flights\` on every run without you doing anything. *Interpretation* is manual: you read the logs, decide what was wrong, change a parameter. No code here adjusts the simulator by itself, and building one would be a research project. What you have is complete data and a short checklist, which is what makes the manual step twenty minutes rather than guesswork.
+**What is automatic and what is not.** Collection is automatic and complete — every observation, command, loop time and video frame lands in `flights\` on every run. Interpretation is manual: you read the logs, decide what was wrong, and change a parameter. No code here adjusts the simulator on its own, and writing one would be a research project. What you have is complete data plus the checklist below, which is what makes the manual step twenty minutes rather than guesswork.
 
-### Loop 1 — Improve the detector (biggest gains, least effort)
+### Step 1 — Fine-tune the detector on real footage (largest gain, least effort)
+
+<details>
+<summary>Expand Step 1</summary>
 
 > **Environment:** `drone_vision` for the YOLO commands; the frame extraction itself needs none.
 
-Your detector has only seen synthetic renders. The recorded videos are real footage of the real target.
+Your detector has only ever seen synthetic Crazyflie renders. The recorded videos are real footage of the real target drone, which is the single biggest difference between Chapter 6's conditions and Chapter 7's.
 
-1. **Extract frames** — every tenth; consecutive ones are nearly identical. Put them somewhere of their own:
+**1 — Extract frames** — every tenth, since consecutive frames at 20 Hz are nearly identical:
 
-*Run from:* `any folder`
+*Run from:* `any folder` — *source videos in:* `C:\projects\drone_pursuit\drone_pursuit\flights\`
 ```bat
 mkdir C:\projects\drone_pursuit\drone_pursuit\data\real\images
 ```
 
-
-2. **Pre-label them with the detector you already have**, then correct what it got wrong. You never label from a blank slate:
+**2 — Pre-label them with the detector you already have**, then correct what it got wrong. You never label from a blank slate:
 
 *Run from:* `C:\projects\drone_pursuit\drone_pursuit`
 ```bat
@@ -2892,36 +4035,56 @@ yolo detect predict model=C:\projects\drone_pursuit\drone_pursuit\runs\detect\dr
 
 `save_txt` writes YOLO-format labels beside each image. Load those into any labelling tool and you are reviewing boxes rather than drawing them — five to ten times faster.
 
-3. **Propagate across nearby frames.** Because these come from continuous video, a box on frame *n* is nearly right for frame *n+1*. CVAT, Label Studio and Roboflow all interpolate between two corrected frames.
+**3 — Propagate across nearby frames.** Because these come from continuous video, a box on frame *n* is nearly right for frame *n+1*. CVAT, Label Studio and Roboflow all interpolate between two corrected frames.
 
-4. **Spend effort where the detector failed.** Two automatic ways to find those frames: any pre-labelled box below about 0.4 confidence, and any row in the flight CSV where `visible` flickers between 0 and 1. Pull those timestamps and extract the matching frames. Frames where the attacker is large and obvious teach almost nothing.
+**4 — Spend the effort where the detector failed.** Two automatic ways to find those frames: any pre-labelled box below about 0.4 confidence, and any row in the flight CSV where `visible` flickers between 0 and 1. Pull those timestamps and extract the matching frames. Frames where the attacker is large and obvious teach the network almost nothing.
 
-**Realistic effort:** reviewing 200–400 pre-labelled frames takes perhaps 45 minutes, versus several hours drawing from scratch. It cannot be fully automated — an auto-labeller good enough to do it would already be the detector you are trying to build.
+Reviewing 200–400 pre-labelled frames takes roughly 45 minutes, against several hours drawing from scratch. It cannot be fully automated — an auto-labeller good enough to do it unsupervised would already be the detector you are trying to build.
 
-5. **Fine-tune from your synthetic model**, not from scratch:
+**5 — Fine-tune from your synthetic model**, not from scratch. You also need a `drone.yaml` for this new folder, identical to 4.3's but with `path:` pointing at `data\real`:
 
 *Run from:* `C:\projects\drone_pursuit\drone_pursuit`
 ```bat
 yolo detect train data=C:\projects\drone_pursuit\drone_pursuit\data\real\drone.yaml model=C:\projects\drone_pursuit\drone_pursuit\runs\detect\drone_v1\weights\best.pt epochs=40 imgsz=640 name=drone_real
 ```
 
-6. **Re-export to ONNX** at `imgsz=480,640` and re-measure `capture_ang_size` — a different target at the same distance fills a different share of the frame.
+**6 — Re-export to ONNX** at `imgsz=480,640`, copy over `models\drone_detector.onnx`, and re-measure `capture_ang_size`. A target of different width at the same distance fills a different share of the frame, so the old threshold would declare capture at the wrong distance.
 
-### Loop 2 — Make the simulation more truthful
+</details>
+
+### Step 2 — Correct the simulation constants from the flight logs
+
+<details>
+<summary>Expand Step 2</summary>
 
 > **Environment:** none needed — you are reading logs and editing cfg values.
 
-The CSV contains what you commanded and how the drone responded. That is enough to correct the biggest modelling errors.
+*Logs to read:* `C:\projects\drone_pursuit\drone_pursuit\flights\flight_<stamp>.csv`
+*File to edit:* `C:\projects\drone_pursuit\drone_pursuit\source\drone_pursuit\drone_pursuit\tasks\direct\quadcopter\quadcopter_env.py`
 
-**Correct the stand-in stabiliser.** Find a segment where you commanded a steady forward value and look at how `vx` rose. Real drone faster than simulation → raise `vel_gain`; slower → lower it. Ten minutes comparing plots beats any amount of guessing.
+```python
+# ── FILE: ...\tasks\direct\quadcopter\quadcopter_env.py ─────────────────────
+# ── SECTION: class QuadcopterEnvCfg — four numbers you already added ────────
+# ── Change them IN PLACE; nothing new is inserted here.
 
-**Correct the drift range.** Find segments with near-zero commands and look at residual `vx`/`vy`. That is the Tello's true drift. Widen the randomisation range in 3.3 to contain it comfortably.
+    max_speed = 2.0        # ◄── LOWER if max forward command produced less speed
+    vel_gain = 3.0         # ◄── RAISE if the real drone accelerated faster than sim
+    obs_delay_max = 5      # ◄── RAISE if the drone overshoots consistently
+    # and in _reset_idx, widen the 0.15 multiplier on self._drift if the real
+    # residual velocity at zero command exceeds the randomised range
+```
 
-**Correct the delay range.** Consistent overshoot means the real delay exceeds what you trained for. Widen `obs_delay_max`.
+**The stand-in stabiliser.** Find a segment where you commanded a steady forward value and plot how `vx` rose. If the real drone accelerated faster than the simulation does, raise `vel_gain`; slower, lower it. Ten minutes comparing two plots beats any amount of guessing at 3.1's approximation.
 
-**Correct the speed limits.** If maximum forward produced less speed than `max_speed` assumes, lower it — otherwise the policy expects performance the drone does not have.
+**The drift range.** Find segments with near-zero commands and read the residual `vx`/`vy`. That is your Tello's true drift. Widen the randomisation range in 3.3 Step 0 so it comfortably contains that value.
 
-Then retrain and fly again.
+**The delay range.** Consistent overshoot means the real delay exceeds what you trained for. Widen `obs_delay_max`.
+
+**The speed limits.** If maximum forward command produced less speed than `max_speed` assumes, lower `max_speed` — otherwise the policy plans manoeuvres around performance the drone does not have.
+
+Then retrain (3.3 Step 1) and fly again (7.3).
+
+</details>
 
 ### What good iteration looks like
 
@@ -2932,15 +4095,25 @@ Then retrain and fly again.
 | 3 | Delay range widened | Overshoot reduced |
 | 4 | Attacker speed increased | A harder task, honestly passed |
 
-**Change one thing per cycle.** Two changes and a better result tells you nothing about which helped — the same rule that governed the simulation chapters, now applied to hardware.
+**Change one thing per cycle.** Two changes and a better result tells you nothing about which helped — the same rule that governed Chapters 2 and 3, now applied to hardware.
 
 > ✅ **Checkpoint 7.4**
 > 1. At least one detector fine-tune from real footage, with measurably fewer lost-sight events
 > 2. At least one simulation parameter corrected from flight logs
 > 3. A second flight session visibly better than the first
 
+</details>
+
+</details>
+
+</details>
+
 ---
-# Appendix A — Version & compatibility ledger
+
+# Appendix A — Check Versions and Diagnose Compatibility Symptoms
+
+<details>
+<summary>Expand Appendix A</summary>
 
 | Component | Version targeted | Pin reason |
 |---|---|---|
@@ -2964,46 +4137,56 @@ Then retrain and fly again.
 | Ghost imports after refactor | delete `__pycache__` in the task package |
 | `isaaclab.__version__` looks too low (0.x) | that is the extension version, not the release; check `pip list | findstr isaacsim` instead |
 | `git describe` shows an old tag on `main` | `main` is untagged between releases; the Isaac Sim version is the reliable indicator |
-| ONNX output shape ≠ (1,5,8400) | exported the wrong .pt (pretrained 80-class instead of your best.pt) |
+| ONNX output shape ≠ (1,5,6300) | exported the wrong .pt (pretrained 80-class instead of your best.pt) |
 | Chase works in Ch.3, degrades badly in Ch.6 | field of view mismatch — `TiledCameraCfg` focal length must match `cam_focal_mm`/`cam_aperture_mm` in the env cfg |
 | Defender flies off when attacker leaves frame | `visible` flag not wired, or previous readings not held on a miss |
 | Ch.7: policy fine in sim, oscillates on hardware | real delay exceeds the trained range, or the stand-in stabiliser in 3.1 does not match the drone — re-measure, widen `obs_delay_*`, retrain |
 | Ch.7: video latency near one second | buffering, not the drone — set the capture buffer size to 1 and read in a thread that discards stale frames |
 | Ch.7: works close, fails far | detector cannot resolve a small target — add far-range training frames or brighter markers |
-| Ch.7: drone flies sideways when it should go forward | action-to-stick channel mapping wrong in the bridge — verify on the bench with propellers off |
+| Ch.7: drone flies sideways when it should go forward | action-to-stick channel mapping wrong in the flight script — verify on the bench with propellers off |
 | Ch.7: ONNX policy disagrees with the checkpoint | the export wrapper extracted a sampled action instead of the distribution mean |
 | Ch.7: "loop overran" printing constantly | detector or frame conversion too slow for the control rate — lower the detector input size |
 
-# Appendix B — Time budget recap
+</details>
 
-| Subchapter | ~Time | Depends on |
-|---|---|---|
-| 1.0 Isolate the project | 1.5h | — |
-| 1.1 Understand the flight code | 1.5h | 1.0 |
-| 1.2 External project | 1.5h | 1.0, 1.1 |
-| 1.3 Vision env + boundary tests | 1.5h | 1.0 |
-| **1.4 Set up and measure the Tello** | **1.5h** | **hardware in hand** |
-| 2.1 Attacker in the scene | 1.5h | 1.2 |
-| 2.2 Scripted motion | 1.5h | 2.1 |
-| 3.1 Commands and observations | 1.5h | 2.2, **1.4** |
-| 3.2 Reward design | 1.5h | 3.1 |
-| 3.3 Randomise, train, curriculum | 1.5h (+ GPU hours) | 3.2 |
-| 4.1 SDG scene | 1.5h | 1.2 (parallel to Ch.3) |
-| 4.2 Randomisation | 1.5h | 4.1 |
-| 4.3 QA + YOLO convert | 1.5h | 4.2 |
-| 5.1 Train YOLO | 1.5h | 4.3, 1.3 |
-| 5.2 Stress-test + ONNX | 1.5h | 5.1 |
-| 6.1 Reading converter | 1.5h | 5.2 |
-| 6.2 Simulated demo | 1.5h+ | 3.3, 6.1 |
-| 6.3 What happens next | — | — |
-| 7.1 Export the policy | 1.5h | 6.2 |
-| 7.2 Flight script + bench test | 1.5h | 7.1 |
-| 7.3 Staged flight tests | 1.5h per stage | 7.2 |
-| 7.4 Improve from real flight data | 1.5h per cycle | 7.3 |
+# Appendix B — Plan Your Time, Hardware and Dependencies
 
-**Buy the hardware early.** Subchapter 1.4 needs the Tello in hand, and everything from Chapter 3 onward is built on its measurements. Ordering the drone while working through 1.0–1.3 keeps the sequence unbroken.
+<details>
+<summary>Expand Appendix B</summary>
+
+| Block | Subchapter | Hardware | ~Time | Depends on |
+|---|---|---|---|---|
+| A | 1.0 Isolate the project | 💻 | 1.5h | — |
+| A | 1.1 Understand the flight code | 💻 | 1.5h | 1.0 |
+| A | 1.2 External project | 💻 | 1.5h | 1.0, 1.1 |
+| A | 1.3 Vision env + boundary tests | 💻 | 1.5h | 1.0 |
+| A | **1.4 Set up and measure the Tello** | 🔌 | **1.5h** | **drone in hand** |
+| B | 2.1 Spawn the attacker in every env | 💻 | 1.5h | 1.2 |
+| B | 2.2 Move the attacker along a randomised path | 💻 | 1.5h | 2.1 |
+| C | 3.1 Define commands and observations | 💻 | 1.5h | 2.2, **1.4** |
+| C | 3.2 Write the reward and episode endings | 💻 | 1.5h | 3.1 |
+| C | 3.3 Randomise, train, read the curves | 💻 | 1.5h (+ GPU hours) | 3.2 |
+| D | 4.1 Build the Replicator SDG script | 💻 | 1.5h | 1.2 (parallel to Block C) |
+| D | 4.2 Randomise and generate 2500 frames | 💻 | 1.5h | 4.1 |
+| D | 4.3 Convert to YOLO format and verify | 💻 | 1.5h | 4.2 |
+| E | 5.1 Fine-tune YOLOv8-nano | 💻 | 1.5h | 4.3, 1.3 |
+| E | 5.2 Test on arena frames and export ONNX | 💻 | 1.5h | 5.1 |
+| F | 6.1 Write the bounding-box converter | 💻 | 1.5h | 5.2 |
+| F | 6.2 Run the full loop in simulation | 💻 | 1.5h+ | 3.3, 6.1 |
+| F | 6.3 Review and choose the next extension | 💻 | — | — |
+| G | 7.1 Export the policy to ONNX | 💻 | 1.5h | 6.2 |
+| G | 7.2 Write the flight script and bench-test | 🔌 propellers off | 1.5h | 7.1 |
+| G | 7.3 Fly in six staged tests | 🔌 flying | 1.5h per stage | 7.2 |
+| G | 7.4 Improve from real flight data | 🔌 flying | 1.5h per cycle | 7.3 |
+
+**Buy the hardware early.** Subchapter 1.4 needs the Tello in hand, and everything from Chapter 3 onward is built on its measurements. Ordering the drone while working through 1.0–1.3 keeps the sequence unbroken. The target drone is not needed until 7.3.
+
+</details>
 
 ## Sources
+
+<details>
+<summary>Expand sources</summary>
 
 [1] Isaac Lab Project Developers, NVIDIA. "Local Installation — Isaac Lab Documentation" (Isaac Sim 5.1 / Python 3.11 requirements). 2026. https://isaac-sim.github.io/IsaacLab/main/source/setup/installation/index.html
 
@@ -3029,7 +4212,8 @@ Then retrain and fly again.
 
 [12] Toni-SM et al. "skrl — Multi-agent API Documentation (IPPO, MAPPO)." https://skrl.readthedocs.io/en/latest/api/multi_agents.html
 
+</details>
+
 ---
 
 *Built for your learning style: big picture → detail, one hard thing at a time, checkpoints before commitments, and every tool proven compatible before you bet hours on it. Good hunting.* 🛩️
-
