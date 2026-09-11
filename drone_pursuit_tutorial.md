@@ -1540,7 +1540,33 @@ z = 1.5 + 0.4 * sin(0.7 * t + phase)                     # the bob
 
 > **Environment:** none needed — you are editing files.
 
+Here we are not simulating the attacker drone movement with physics. We are simply telling where to place the attacker on every tick/second. We are "teletransporting" it to a defined position every second. This part defines the attacker drone position every second (trajectory).
+Since we are programming the attacker drone to move on a circle, the way we define its position on a circle is by: at each point we calculate the angle "theta" on a circle. Given theta, we calculate sin(theta), cos(theta) which give us the y and x coordinates. Given the angle, where is the attacker sitting on a circle? 
 This step replaces the "hold pose" block from 2.1 with a new method, `_move_attacker`, which computes a new position each physics tick and writes it to the simulator. It also allocates three per-environment buffers — starting angle, direction of travel, and an episode clock — and re-randomises the first two on every reset. Without that randomisation, every environment presents the identical chase and the policy can memorise one manoeuvre sequence instead of learning to intercept a moving target.
+
+<details><summary>Glossary:</summary>
+     
+**The five moving parts**
+
+- Radius (_atk_radius = 3.0) — the length of the clock hand, in metres. It sets how big the circle is. Nothing about it changes during flight.
+
+- theta — the angle the hand is currently pointing at, measured from a fixed "zero" direction. This is the one number that says where on the circle the attacker is right now. Everything else in the calculation exists only to produce theta. It is measured in radians rather than degrees.
+  
+- Radian: how much of the circle has the point raced/swept? 1 radian = a lengh equals to 1 radius folded onto the circle's outer circumference. 
+
+- phase — where the hand was pointing at the very start of the episode, before it began moving. It's the starting angle. Each environment draws a random one (torch.rand(n) * 2 * math.pi, i.e. anywhere from 0 to a full lap), so environment 7's attacker begins at the far side of its circle while environment 12's begins near its defender. Without it, all 2048 attackers would start at the identical spot.
+
+- direction — either +1 or −1. It decides whether the hand sweeps counter-clockwise or clockwise. Multiplying by −1 makes the angle shrink over time instead of grow, which runs the circle backwards.
+
+- t (_atk_t): time: — a stopwatch, in seconds, counting from the moment this episode started. It's the only thing that changes on its own; the attacker moves because t keeps growing.
+
+- w — angular speed/velocity: how many radians the hand sweeps per second. It is attacker_speed / radius, and the division is there because a bigger circle means the same angular sweep covers more ground. Walking around a running track and around a dinner plate at 1 m/s are wildly different angular rates.
+
+- physics_dt — the length of one physics tick, 1/100 second. Isaac Sim advances the world in these small jumps, and this method is called on each one. Adding physics_dt to t every call is how the stopwatch keeps time.
+
+- cos(theta) and sin(theta) — the pair that turns an angle into a position. Given an angle, cos gives the horizontal distance from the centre (x) and sin gives the vertical distance, both for a circle (y) of radius 1. Multiply each by 3 and you have a point on a 3-metre circle. 
+
+</details>
 
 Three separate edits to the same file follow. Make them in order.
 
