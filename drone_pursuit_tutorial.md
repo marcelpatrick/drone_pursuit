@@ -1621,24 +1621,70 @@ Three separate edits to the same file follow. Make them in order.
     # ▼▼▼ INSERT HERE! — a brand-new method, directly BELOW _apply_action ▼▼▼
     def _move_attacker(self):
         """Kinematic attacker: circle + vertical bob, written to sim each physics tick."""
+
+        # Advance the stopwatch by one physics tick (1/100 s). This is the only
+        # line that makes anything move — everything below just reads the clock.
         self._atk_t += self.physics_dt
+
+        # Convert "metres per second along the path" into "radians of angle per
+        # second". Dividing by the radius is what makes attacker_speed mean m/s:
+        # on a bigger circle the same angle covers more ground, so it needs less angle.
+        # w = angular velocity = radians per second
         w = self.cfg.attacker_speed / self._atk_radius            # m/s → rad/s
+
+        # Where the clock hand points RIGHT NOW = where it started (phase)
+        # + how far it has swept since (w × t), run forwards or backwards (direction).
+        # One number per environment, because phase and direction differ per env.
+        # theta = angle on a circle = phase (starting angle) + direction (-1 or 1) * radians per second * time
         theta = self._atk_phase + self._atk_dir * w * self._atk_t
 
+        # An empty table: one row per environment, three columns (x, y, z).
+        # Filled in over the next three lines.
         pos = torch.zeros(self.num_envs, 3, device=self.device)
+
+        # Turn the angle into a position. cos gives the offset along x for a
+        # circle of radius 1; multiplying by 3 stretches it to a 3-metre circle.
         pos[:, 0] = self._atk_radius * torch.cos(theta)
+
+        # Same for the y offset, using sin. Together, cos and sin place the point
+        # exactly on the circle, whatever angle theta happens to be.
         pos[:, 1] = self._atk_radius * torch.sin(theta)
+
+        # Altitude. This sin is NOT a circle coordinate — it is being used as a
+        # wave over time: hover at 1.5 m, rise and fall 0.4 m either side.
+        # 0.7 sets how fast it bobs (radians per second); adding phase means each
+        # environment's bob is out of step with the others, like the circle is.
         pos[:, 2] = 1.5 + 0.4 * torch.sin(0.7 * self._atk_t + self._atk_phase)
+
+        # Everything above was measured from the environment's own centre. Adding
+        # env_origins shifts each row to where that arena actually sits in the world.
         pos += self.scene.env_origins                             # local → world
 
+        # Read the attacker's current pose (position + which way it is facing),
+        # so we can change only the part we care about.
         pose = self._attacker.data.root_pose_w.clone()
+
+        # Overwrite the position columns with the new point. Columns 3 onward hold
+        # the facing direction and are left untouched — the attacker slides around
+        # the circle without turning.
         pose[:, :3] = pos                                         # keep orientation as-is
+
+        # Hand the new pose to the physics engine. This is a teleport, not a push:
+        # PhysX places the body exactly here rather than working out how it got there.
         self._attacker.write_root_pose_to_sim(pose)
 
-        # attacker velocity by finite difference — Chapter 3 uses it
+        # On the very first tick there is no previous position to compare against,
+        # so seed it with the current one. This makes the first velocity come out
+        # as zero instead of a meaningless huge jump.
         if not hasattr(self, "_atk_prev_pos"):
             self._atk_prev_pos = pos.clone()
+
+        # Speed = distance moved ÷ time taken. Because the attacker is teleported
+        # rather than pushed, PhysX has no velocity for it — so we work it out
+        # ourselves from where it was one tick ago.
         self._atk_vel = (pos - self._atk_prev_pos) / self.physics_dt
+
+        # Remember today's position so the next tick can do the same subtraction.
         self._atk_prev_pos = pos.clone()
     # ▲▲▲ END OF INSERT ▲▲▲
 
