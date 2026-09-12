@@ -1570,6 +1570,16 @@ This step replaces the "hold pose" block from 2.1 with a new method, `_move_atta
 
 Three separate edits to the same file follow. Make them in order.
 
+**Edit 0 of 3 — import math
+
+```py
+from __future__ import annotations
+
+import gymnasium as gym
+import math              # < Add this
+import torch
+```
+
 **Edit 1 of 3 — allocate the buffers in `__init__`:**
 
 *File to edit:* `C:\projects\drone_pursuit\drone_pursuit\source\drone_pursuit\drone_pursuit\tasks\direct\quadcopter\quadcopter_env.py`
@@ -1719,7 +1729,7 @@ This is domain randomisation applied to behaviour rather than appearance — the
 
 </details>
 
-### Step 3 — Render the scene and confirm the attackers orbit
+### Step 3 — Render the scene and confirm the attacker's orbit
 
 <details>
 <summary>Expand Step 3</summary>
