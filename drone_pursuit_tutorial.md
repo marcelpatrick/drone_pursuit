@@ -1729,6 +1729,15 @@ This is domain randomisation applied to behaviour rather than appearance — the
 
 </details>
 
+#### Step 2.2 — Paint the defender blue for differentiation
+
+Both drones come from the same recipe (CRAZYFLIE_CFG), so they look identical. Isaac Lab lets you attach a visual material — paint, essentially — to a spawn recipe without touching the USD file.
+
+inside file `C:\projects\drone_pursuit\drone_pursuit\source\drone_pursuit\drone_pursuit\tasks\direct\quadcopter\quadcopter_env.py`
+
+In ``QuadcopterEnvCfg``, replace the existing robot: line with:
+
+
 ### Step 3 — Render the scene and confirm the attacker's orbit
 
 <details>
@@ -1752,6 +1761,7 @@ You should see attackers sweeping circles at different starting angles and in bo
 > 2. Different envs show different phases and directions
 > 3. After episodes time out, the trajectories re-randomise
 > 4. Commit to git: "attacker added and moving — scene complete"
+> 5. You run the simulation: the defender (blue) is wobbling erratically - still no training or policy, the attacker (gray) is gliding smoothly with its rotors still - that's because we are manually moving it around, it is know being flown by a physics simulation. 
 
 </details>
 
