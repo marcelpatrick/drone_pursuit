@@ -2597,6 +2597,58 @@ C:\projects\drone_pursuit\drone_pursuit\data\yolo\drone.yaml                  �
 
 ---
 
+## If running block D out of a separate machine: 
+
+**Complete these steps before proceeding with the tasks on Block D**
+1- Build the environment
+2- Install IsaacSIM and IsaacLab (if not yet done) **note**: this tutorial runs on IsaacSim 5.1. Other verions might face compatibility issues: 
+```py
+conda create -n env_drone python=3.11
+conda activate env_drone
+pip install --upgrade pip
+pip install "isaacsim[all,extscache]==5.1.0" --extra-index-url https://pypi.nvidia.com
+git clone https://github.com/isaac-sim/IsaacLab.git ~/IsaacLab
+cd ~/IsaacLab
+./isaaclab.sh --install
+```
+3- Match the code version
+```
+# paste the SHA  
+cd ~/IsaacLab
+git checkout <SHA-from-isaaclab_commit.txt>
+./isaaclab.sh --install          # re-run after changing commit
+```
+4- Pin setuptools
+```
+pip install "setuptools<81"
+```
+5- Create the two folders
+```
+mkdir -p ~/projects/drone_pursuit/drone_pursuit/scripts/sdg
+mkdir -p ~/projects/drone_pursuit/drone_pursuit/data/raw
+```
+6- Smoke test: prove the render path works on this GPU
+```
+cd ~/IsaacLab
+./isaaclab.sh -p scripts/reinforcement_learning/skrl/train.py \
+  --task Isaac-Cartpole-RGB-Camera-Direct-v0 --num_envs 64 --headless \
+  --enable_cameras --max_iterations 5
+```
+Success is simply: it runs without a rendering or VRAM error. If it reports vkCreateInstance failed, the problem is Vulkan/driver-level, not Isaac Lab — fix it here. If it runs out of memory, lower --num_envs; Block D itself renders one camera, so that ceiling does not constrain it.
+
+Linux translation: 
+> | Block D says (🖥️ Windows) | 🐧 HELPER uses (Linux) |
+> |---|---|
+> | `C:\projects\drone_pursuit\drone_pursuit` | `~/projects/drone_pursuit/drone_pursuit` (or `$HOME/...`) |
+> | `C:\Users\[YOUR_USER]\IsaacLab` | `~/IsaacLab` |
+> | backslashes `\` in every path | forward slashes `/` |
+> | `mkdir A B` | `mkdir -p A B` |
+> | `isaaclab.bat -p` | `./isaaclab.sh -p` |
+> | `copy` / `findstr` | `cp` / `grep` |
+> | ```bat``` code fences | ```bash``` |
+
+
+
 # Chapter 4 — Photograph a Drone in Isaac Sim with Replicator and Label It Automatically
 
 > 💻 **NO HARDWARE — simulation only.**
@@ -2680,6 +2732,14 @@ drone_cfg.func("/World/Drone", drone_cfg, translation=(0.0, 0.0, 1.5))
 # ── SECTION 3 (Step 3) GOES BELOW THAT — the capture trigger ────────────────
 ```
 
+**For Linux version, replace the respective parts of the code above with:**
+```
+# BEFORE: parser.add_argument("--out_dir", type=str, default=r"C:\projects\...\data\raw")
+import os
+parser.add_argument("--out_dir", type=str,
+                    default=os.path.expanduser("~/projects/drone_pursuit/drone_pursuit/data/raw"))
+```
+
 Note the asset path: Isaac Sim 5.x moved it to `Robots/Bitcraze/Crazyflie/cf2x.usd`. Older tutorials say `Robots/Crazyflie/`, and the rename is listed in the Isaac Lab release notes — a concrete example of why 1.0 pinned a commit.
 
 </details>
@@ -2754,6 +2814,14 @@ simulation_app.close()
 ```bat
 python C:\projects\drone_pursuit\drone_pursuit\scripts\sdg\generate_drone_data.py --num_frames 20 --headless
 ```
+
+**Linux version**
+```
+conda activate env_drone
+export OMNI_KIT_ACCEPT_EULA=YES
+python ~/projects/drone_pursuit/drone_pursuit/scripts/sdg/generate_drone_data.py  --num_frames 20 --headless
+```
+Linux: On a machine with no display attached, always pass --headless; without it Kit tries to open a window and fails. And if the first run stalls at vkCreateInstance failed, install the Vulkan loader and ICD for your driver — this is the single most common Linux-only failure, and it is a driver problem, not an Isaac Lab one.
 
 </details>
 
@@ -2884,6 +2952,7 @@ The rotation range `(-80, 0, 0)` to `(-10, 0, 360)` sweeps the sun through every
 python C:\projects\drone_pursuit\drone_pursuit\scripts\sdg\generate_drone_data.py --num_frames 2500 --headless
 ```
 
+
 2000–3000 frames is a solid single-class dataset. Variety across the dials above matters more than raw count. This takes a while — start it, then work through 4.3's conversion script while it runs.
 
 </details>
@@ -2972,6 +3041,12 @@ for split, chunk in [("val", samples[:n_val]), ("train", samples[n_val:])]:
 print(f"kept {kept}, dropped {dropped}, val {n_val}")
 ```
 
+**For Linux version: replace the corresponding content in the code above with:**
+```
+RAW = Path.home() / "projects/drone_pursuit/drone_pursuit/data/raw"
+OUT = Path.home() / "projects/drone_pursuit/drone_pursuit/data/yolo"
+```
+
 *Run from:* `any folder`
 ```bat
 conda activate env_drone
@@ -3002,6 +3077,15 @@ names:
   0: drone
 ```
 
+**Linux version**
+```yaml
+path: /home/<user>/projects/drone_pursuit/drone_pursuit/data/yolo
+train: images/train
+val: images/val
+names:
+  0: drone
+```
+
 </details>
 
 ### Step 3 — Draw ten boxes onto their images and look at them
@@ -3027,6 +3111,102 @@ Write a short PIL script (or use Ultralytics' dataset visualiser once you are in
 </details>
 
 </details>
+
+## Output handover (if working on 2 separate machines):
+
+<details>
+     <summary>Expand</summary>
+
+> ### 📦 Handing the dataset to Block E
+> 
+> Block E reads exactly one thing: the folder `data/yolo/`, containing four subfolders and a
+> descriptor. Everything else produced in Block D — the raw `.npy` boxes, the labels JSON, the
+> unconverted PNGs — has already done its job and stays on the helper's disk.
+>
+> ```
+>   🐧 HELPER MACHINE (Linux)                     🖥️ MAIN MACHINE (Windows)
+>   data/raw/            (stays — several GB)
+>   data/yolo/  ────── zip ─────────────────────► data\yolo\
+>     images/train/  *.png                          images\train\
+>     images/val/    *.png                          images\val\
+>     labels/train/  *.txt                          labels\train\
+>     labels/val/    *.txt                          labels\val\
+>     drone.yaml     (Linux path)                   drone.yaml  (path line rewritten)
+> ```
+>
+> #### Step H-0 — 🐧 **HELPER MACHINE.** Package and send.
+>
+> ```bash
+> # 🐧 HELPER
+> cd ~/projects/drone_pursuit/drone_pursuit/data
+> zip -r drone_yolo_dataset.zip yolo
+> ```
+>
+> Send with the zip, in the same message:
+>
+> 1. The line `convert_to_yolo.py` printed — `kept N, dropped M, val K`. Checkpoint 4.3 requires
+>    the drop rate under ~20%; if it is higher, the fix belongs on the helper's machine (adjust
+>    the 4.2 camera position ranges and regenerate), not after the handover.
+> 2. 10 of the spot-check images from 4.3 Step 3 with boxes drawn on them. These prove the
+>    conversion arithmetic is right, and take one minute to look at versus a 40-minute training
+>    run to infer.
+>
+> **The four things the helper must confirm before sending, or Block E trains on garbage**
+>
+> - **Render size is 640×480**, and `IMG_W, IMG_H = 640, 480` in `convert_to_yolo.py` matches it.
+>   If the render product in 4.1 Step 2 was changed, every normalised coordinate is wrong by a
+>   constant factor and nothing downstream reveals it except a stubbornly low mAP.
+> - **Label paths are relative.** A YOLO `.txt` contains only numbers, so nothing machine-specific
+>   travels. `drone.yaml` is the only file holding an absolute path, which is why it is the only
+>   file the main machine edits.
+> - **Class id is always `0`.** Every label line starts with `0`. Distractor boxes were filtered
+>   out during conversion, not renamed. A stray `1` anywhere makes Ultralytics expect two classes
+>   and changes the exported ONNX output shape, which breaks Block F's decoding.
+> - **Filenames are unique.** Replicator restarts numbering at `rgb_0000.png` on every run, so a
+>   second batch silently overwrites the first. If more than one batch is generated, render each
+>   into its own raw folder and prefix on conversion — `b2_rgb_0000.png` with a matching
+>   `b2_rgb_0000.txt` — keeping image and label stems identical.
+>
+> ---
+>
+> #### Steps H-1 to H-3 — 🖥️ **MAIN MACHINE (Windows ).** Receive output data and verify, before 5.1.
+>
+> **H-1. Unzip** into `C:\projects\drone_pursuit\drone_pursuit\data\` so that `data\yolo\` appears
+> with its four subfolders intact.
+>
+> **H-2. Edit one line of `drone.yaml`** — the only file that needs changing:
+>
+> ```yaml
+> :: 🖥️ MAIN — C:\projects\drone_pursuit\drone_pursuit\data\yolo\drone.yaml
+> path: C:\projects\drone_pursuit\drone_pursuit\data\yolo
+> train: images\train
+> val: images\val
+> names:
+>   0: drone
+> ```
+>
+> **H-3. Count images against labels**, in both splits:
+>
+> ```bat
+> :: 🖥️ MAIN — Windows cmd
+> dir /s /b C:\projects\drone_pursuit\drone_pursuit\data\yolo\images\train | find /c ".png"
+> dir /s /b C:\projects\drone_pursuit\drone_pursuit\data\yolo\labels\train | find /c ".txt"
+> dir /s /b C:\projects\drone_pursuit\drone_pursuit\data\yolo\images\val   | find /c ".png"
+> dir /s /b C:\projects\drone_pursuit\drone_pursuit\data\yolo\labels\val   | find /c ".txt"
+> ```
+>
+> The two counts must be equal within `train`, and within `val`. A mismatch means an image
+> without a label, which Ultralytics reads as "there is no drone in this picture" and actively
+> trains against.
+>
+> > ✅ **Checkpoint D-handover** (🖥️ MAIN) — the zip unpacks to the four-subfolder layout, image
+> > and label counts match in both splits, `drone.yaml` points at the Windows path, and
+> > Ultralytics' own `train_batch0.jpg` (first minute of 5.1) shows boxes hugging the drones.
+> > That last image is the real acceptance test: if the boxes are right there, the handover was
+> > clean.
+     
+</details>
+
 
 ---
 
