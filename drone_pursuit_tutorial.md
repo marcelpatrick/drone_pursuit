@@ -2600,7 +2600,11 @@ C:\projects\drone_pursuit\drone_pursuit\data\yolo\drone.yaml                  â†
 ## If running block D out of a separate machine: 
 
 **Complete these steps before proceeding with the tasks on Block D**
+
+<details><summary>Expand</summary>
+
 1- Build the environment
+
 2- Install IsaacSIM and IsaacLab (if not yet done) **note**: this tutorial runs on IsaacSim 5.1. Other verions might face compatibility issues: 
 ```py
 conda create -n env_drone python=3.11
@@ -2647,7 +2651,7 @@ Linux translation:
 > | `copy` / `findstr` | `cp` / `grep` |
 > | ```bat``` code fences | ```bash``` |
 
-
+</details>
 
 # Chapter 4 â€” Photograph a Drone in Isaac Sim with Replicator and Label It Automatically
 
