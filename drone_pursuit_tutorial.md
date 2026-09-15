@@ -1960,6 +1960,7 @@ obs (17 numbers per env):
 Three edits to the same file.
 
 **Edit 1 of 3 — the two constants, from your own measurement:**
+Manually ads a delay to the input reading on the simulation so it mimics the expected behavior when running on hardware
 
 *File to edit:* `C:\projects\drone_pursuit\drone_pursuit\source\drone_pursuit\drone_pursuit\tasks\direct\quadcopter\quadcopter_env.py`
 
@@ -1976,6 +1977,7 @@ Three edits to the same file.
 ```
 
 **Edit 2 of 3 — the history buffer and the per-env delay, in `__init__`:**
+To hand the policy a reading from 5 steps ago, the code has to keep the past readings. Edit 2 creates that storage (buffer) when the environment starts, in __init__:
 
 ```python
 # ── FILE: ...\tasks\direct\quadcopter\quadcopter_env.py ─────────────────────
@@ -2018,7 +2020,7 @@ Three edits to the same file.
     # ▲▲▲ END OF INSERT ▲▲▲
 ```
 
-And in `_reset_idx`, alongside the 2.2 randomisation, clear the history and draw a new lag:
+And in `_reset_idx`, alongside the 2.2 randomisation, clear the history and draw a new lag, picks a new random delay (2, 3, 4 or 5 steps) for that environment:
 
 ```python
 # ── FILE: ...\tasks\direct\quadcopter\quadcopter_env.py ─────────────────────
