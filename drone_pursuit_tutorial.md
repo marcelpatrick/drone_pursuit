@@ -1805,6 +1805,11 @@ C:\projects\drone_pursuit\drone_pursuit\source\drone_pursuit\drone_pursuit\tasks
 
 > **Environment for Parts A to G:** none needed — they are all edits to `quadcopter_env.py`. You run nothing until the sanity check at the end of 3.1.
 
+These are the parameters in this chapter that need to be swapped by the real measurements from the Tello drone hardware: 
+- `decimation = 5` (3.1 Part B), from the control rate. Calculate it as 100 ÷ your measured Hz, rounded to a whole number.
+- `obs_delay_min = 2` and obs_delay_max = 5 (3.1 Part D), from the video delay. Calculate each as delay in seconds × your control rate in Hz.
+- `observation_space = 17` (3.1 Part C). Change it only if the telemetry differs, which is unlikely.
+
 ### Part A — Replace force outputs with the four stick commands a Tello accepts
 
 <details>
