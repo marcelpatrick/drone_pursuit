@@ -52,9 +52,17 @@ class QuadcopterEnvWindow(BaseEnvWindow):
 class QuadcopterEnvCfg(DirectRLEnvCfg):
     # env
     episode_length_s = 10.0
-    decimation = 2
+    decimation = 5              # Decimation is how many physics steps pass between policy decisions
+                                # <<< INSERT THE TELLO NUMBER HERE !!! (using dummy for now)
+                                # Convertion of hertz in decimations: 
+                                    # Physic engine updates / physic steps = game tick
+                                    # Policy decision: every time the neural network ingests the inputs and produces the outputs
+                                    # Hz/hertz: x times anything happens per sec
+                                    # The physics engine updates policy 100 times per second (100 physics steps / sec)
+                                    # Policy decision happens once every 5 physics steps (decimation = 5).
+                                    # How many policy decision happen every second? = 100 steps / 5 decimations = 20 policy decisions per second = 20 hertz
     action_space = 4
-    observation_space = 12
+    observation_space = 17      # The number of parameters the policy receives
     state_space = 0
     debug_vis = True
 
@@ -114,6 +122,18 @@ class QuadcopterEnvCfg(DirectRLEnvCfg):
     arena_radius = 8.0           # meters — episode fails if defender strays this far
     attacker_speed = 0.6         # m/s along its path (we'll tune this in Ch. 3)
 
+    # ▼▼▼ NEW — the stick-command model ▼▼▼
+    max_speed = 2.0          # m/s — conservative; a Tello can do more
+    max_yaw_rate = 1.5       # rad/s
+    vel_gain = 3.0           # how hard the stand-in stabiliser corrects
+    yaw_gain = 0.05
+    # ▲▲▲ END OF INSERT ▲▲▲
+    # ▼▼▼ NEW! — from project_notes.txt, converted to control steps ▼▼▼
+    # Manually ads a delay to the input reading on the simulation so it mimics the expected behavior when running on hardware
+    obs_delay_min = 2
+    obs_delay_max = 5
+    # ▲▲▲ END OF INSERT ▲▲▲
+
     # reward scales
     lin_vel_reward_scale = -0.05
     ang_vel_reward_scale = -0.01
@@ -139,6 +159,24 @@ class QuadcopterEnv(DirectRLEnv):
         self._atk_dir = torch.ones(self.num_envs, device=self.device)      # +1 or -1 (CW/CCW)
         self._atk_t = torch.zeros(self.num_envs, device=self.device)       # per-env clock
         self._atk_radius = 3.0                                             # metres
+
+        # ▼▼▼ NEW! — delayed-reading machinery ▼▼▼
+        # Creates a buffer to stores the policy readin from 2-5 steps ago (obs_delay)
+        # one row per env, one column per past step, 7 readings each
+        self._reading_history = torch.zeros(
+            self.num_envs, self.cfg.obs_delay_max + 1, 7, device=self.device
+        )
+        # each env draws its own lag, so the policy meets the whole range
+        self._delay_steps = torch.randint(
+            self.cfg.obs_delay_min, self.cfg.obs_delay_max + 1,
+            (self.num_envs,), device=self.device
+        )
+        # last-seen readings, held while the attacker is out of view
+        self._prev_bx = torch.zeros(self.num_envs, device=self.device)
+        self._prev_by = torch.zeros(self.num_envs, device=self.device)
+        self._prev_asz = torch.zeros(self.num_envs, device=self.device)
+        self._prev_actions = torch.zeros(self.num_envs, 4, device=self.device)
+        # ▲▲▲ END OF INSERT ▲▲▲
 
         # Logging
         self._episode_sums = {
@@ -179,10 +217,30 @@ class QuadcopterEnv(DirectRLEnv):
         light_cfg.func("/World/Light", light_cfg)
 
     #   Translates the neural network's output into physical push.
+    #   It turns the policy's 4 numbers into forces, which _apply_action then applies.
     def _pre_physics_step(self, actions: torch.Tensor):
+
+        # ▼▼▼ DELETE the hover task's force conversion — these three lines: ▼▼▼
+        #   self._actions = actions.clone().clamp(-1.0, 1.0)
+        #   self._thrust[:, 0, 2] = self.cfg.thrust_to_weight * self._robot_weight * (self._actions[:, 0] + 1.0) / 2.0
+        #   self._moment[:, 0, :] = self.cfg.moment_scale * self._actions[:, 1:]
+        # ▲▲▲ and REPLACE the whole method body with the code below ▲▲▲
+
+        # ▼▼▼ NEW ▼▼▼
         self._actions = actions.clone().clamp(-1.0, 1.0)
-        self._thrust[:, 0, 2] = self.cfg.thrust_to_weight * self._robot_weight * (self._actions[:, 0] + 1.0) / 2.0
-        self._moment[:, 0, :] = self.cfg.moment_scale * self._actions[:, 1:]
+
+        desired_vel_b = self._actions[:, :3] * self.cfg.max_speed        # m/s
+        desired_yaw_rate = self._actions[:, 3] * self.cfg.max_yaw_rate   # rad/s
+
+        # stands in for the Tello's own stabiliser
+        vel_error = desired_vel_b - self._robot.data.root_lin_vel_b
+        force_b = self.cfg.vel_gain * vel_error * self._robot_mass
+        force_b[:, 2] += self._robot_weight                              # hold altitude
+
+        self._thrust[:, 0, :] = quat_apply(self._robot.data.root_quat_w, force_b)
+        yaw_error = desired_yaw_rate - self._robot.data.root_ang_vel_b[:, 2]
+        self._moment[:, 0, 2] = self.cfg.yaw_gain * yaw_error
+        # ▲▲▲ END OF INSERT ▲▲▲
 
     # Hands those forces to the physics engine, repeatedly. It runs on every physics tick, 
     # which happens more often than the network decides — so one decision gets applied several times.
@@ -260,6 +318,14 @@ class QuadcopterEnv(DirectRLEnv):
         self._atk_prev_pos = pos.clone()
     # ▲▲▲ END OF INSERT ▲▲▲
 
+    # ▼▼▼ New!: pushes fresh readings in and takes delayed ones out ▼▼▼
+    def _delayed_readings(self, fresh):          # fresh: (num_envs, 7)
+        """Shift the history one step, store the newest, return each env's delayed row."""
+        self._reading_history = torch.roll(self._reading_history, shifts=1, dims=1)
+        self._reading_history[:, 0] = fresh
+        idx = self._delay_steps.unsqueeze(-1).unsqueeze(-1).expand(-1, 1, 7)
+        return self._reading_history.gather(1, idx).squeeze(1)
+    # ▲▲▲ END OF INSERT ▲▲▲
 
     def _get_observations(self) -> dict:
         desired_pos_b, _ = subtract_frame_transforms(
@@ -357,6 +423,17 @@ class QuadcopterEnv(DirectRLEnv):
             torch.rand(n, device=self.device) > 0.5, 1.0, -1.0
         )
         self._atk_t[env_ids] = 0.0
+        # ▲▲▲ END OF INSERT ▲▲▲
+
+        # ▼▼▼ NEW! clear the history and draw a new lag, picks a new random delay (2, 3, 4 or 5 steps) for that environment: ▼▼▼
+        self._reading_history[env_ids] = 0.0
+        self._delay_steps[env_ids] = torch.randint(
+            self.cfg.obs_delay_min, self.cfg.obs_delay_max + 1,
+            (len(env_ids),), device=self.device
+        )
+        self._prev_bx[env_ids] = 0.0
+        self._prev_by[env_ids] = 0.0
+        self._prev_asz[env_ids] = 0.0
         # ▲▲▲ END OF INSERT ▲▲▲
 
     def _set_debug_vis_impl(self, debug_vis: bool):
