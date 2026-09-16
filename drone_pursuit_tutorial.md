@@ -2951,7 +2951,7 @@ The rotation range `(-80, 0, 0)` to `(-10, 0, 360)` sweeps the sun through every
 
 </details>
 
-## 4.2B Randomise the Background — Floor, Sky, Trees, Buildings and Walls (≤1.5h)
+## 4.2B Randomise the Background and Drone (≤1.5h)
 
 <details>
 <summary>Expand 4.2B</summary>
