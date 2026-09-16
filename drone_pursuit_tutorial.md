@@ -2862,7 +2862,7 @@ A labelling problem found here costs a few minutes. The same problem found in Ch
 <details>
 <summary>Expand 4.2</summary>
 
-> **What this subchapter does:** twenty photographs of one drone in one grey world would train a detector that only works in that grey world. This subchapter varies camera distance and elevation, both light sources, the drone's own orientation, and a set of distractor shapes, so the only constant across thousands of frames is the drone itself. It then runs the production batch that Chapter 4.3 converts and Chapter 5.1 trains on.
+> **What this subchapter does:** twenty photographs of one drone in one grey world would train a detector that only works in that grey world. This subchapter varies camera distance and elevation, both light sources, the drone's orientation, and a set of distractor shapes. 4.2B then extends it to the floor, sky, surrounding scenery, and the drone's model and colour, so the only thing all frames share is that each contains a drone. Complete 4.2B before running this subchapter's Step 3 production batch, which Chapter 4.3 converts and Chapter 5.1 trains on.
 
 ### Step 1 — Decide what to randomise, and what each dial buys at demo time
 
@@ -2871,21 +2871,50 @@ A labelling problem found here costs a few minutes. The same problem found in Ch
 
 > **Environment:** none needed — this step is explanation only.
 
+Each row below is one dial: something that changes between frames, how far it changes, and the demo-time situation it prepares the detector for. The dials fall into three groups. The first group, added in this subchapter's Step 2, controls **how the drone is seen**. The second group, added in 4.2B, controls **what surrounds it**. The third group, also in 4.2B, controls **what the drone itself looks like**. The detector learns only what stays true across all of them: a drone is present, whatever its shape, colour, lighting or backdrop.
+
+
+**Group 1 — how the drone is seen (this subchapter, Step 2)**
+
 | Randomise | Range | Because at demo time… |
 |---|---|---|
 | Camera distance | 0.5–6 m from drone | the attacker's apparent size changes continuously as the chase closes |
-| Camera elevation | below AND above the drone | a defender below the attacker sees it against **sky**; above it, against **ground** — two backgrounds with completely different brightness and texture statistics |
+| Camera elevation | below AND above the drone | a defender below the attacker sees it against **sky**; above it, against **ground**. The two backgrounds differ completely in brightness and texture. |
 | Dome light intensity/colour | 500–6000, warm↔cool | arena and room lighting are not fixed across sessions |
-| Drone yaw/pitch | full yaw, ±20° pitch | a banking drone presents a different silhouette from a level one |
-| Distractor objects | 3–8 shapes, random colour and scale | teaches "this is NOT a drone"; without negative examples, any small dark object becomes a detection |
 | **Sun direction and intensity** | full azimuth, 10–80° elevation, wide intensity range | outdoors, one strong directional source produces harsh shadows, silhouettes and blown highlights that a dome light never creates |
+| Drone tilt and heading | full heading, ±20° tilt | a banking drone presents a different silhouette from a level one |
+| Distractor objects | 3–8 shapes, random colour and scale, within 5 m | teaches "this is NOT a drone"; without negative examples, any small dark object becomes a detection |
+
+**Group 2 — what surrounds the drone (4.2B, Steps 3–4 and 6)**
+
+| Randomise | Range | Because at demo time… |
+|---|---|---|
+| Floor | 6+ ground pictures plus your own, any rotation; hidden 1 frame in 5 | the ground under a real flight is grass, asphalt, concrete or a gym floor, never a grey grid |
+| Sky | 12 sky photographs (outdoor and indoor) plus your own, any facing | behind the attacker there are clouds, a horizon of trees and roofs, or the walls of a room, not an evenly coloured void |
+| Walls | 8 textured walls, 12–25 m away, each hidden ~40% of frames | walls and fences are the most common thing directly behind a low-flying drone |
+| Trees and props | up to 8 models, 2–12 m tall, 15–40 m away, each hidden ~30% of frames | foliage breaks up the outline of a small dark object |
+| Buildings | 12 textured blocks, 22–70 m away, each hidden ~40% of frames | window frames and roof edges produce straight dark lines that resemble propeller arms |
+
+**Group 3 — what the drone itself looks like (4.2B, Steps 5–6)**
+
+| Randomise | Range | Because at demo time… |
+|---|---|---|
+| Drone model | Crazyflie, other quadcopters, your own models (a Tello if you add one); exactly one per frame | a detector that has seen only one airframe learns that airframe's exact outline and misses any other |
+| Paint | half the frames original paint, half random colours per part | real drones mix colours: a white Tello body, black arms, orange propeller guards |
+| Size | largest side 8–35 cm | combined with camera distance, the detector meets both a small drone nearby and a larger one further away |
+
+**Why the surroundings stay behind the drone.** Every Group 2 object is placed at least 6 m (the camera's limit) plus half its own width away from the drone. It can therefore never stand between the camera and the drone. The distractors are the only exception, on purpose: partial occlusion is a real demo-time case.
+
+**Why the scenes are allowed to look unrealistic.** Some frames will show an indoor room photograph behind an outdoor tree, or a drone with a green body and pink propellers. Realism is not the goal. The goal is that nothing except "a drone is here" stays the same across 2500 frames, which forces the detector to learn exactly that.
+
+**What this does not change.** The detector still has **one class**, `"drone"`, so 4.3's converter, 5.1's `drone.yaml` and the ONNX output shape in 5.2 all stay as they are. Detecting other drone types does not mean the policy chases them equally well. As 0.4 explains, reading #3 ("share of view") means *small = far* only for an attacker about the Tello's size.
 
 ### Why the sun needs its own light, separate from the dome
 
-A **dome light** illuminates evenly from every direction at once — the look of an overcast sky or an evenly lit room. A **distant light** is a single source infinitely far away with parallel rays, which is what the sun is. It produces three things a dome light cannot:
+A **dome light** illuminates evenly from every direction at once — the look of an overcast sky or an evenly lit room. With 4.2B's sky photographs on it, the dome also carries each photo's own brightness pattern. It still cannot cast one sharp shadow. A **distant light** is a single source infinitely far away with parallel rays, which is what the sun is. It produces three things a dome light cannot:
 
 - **A lit side and a dark side.** With the sun behind the attacker, the drone becomes a near-black silhouette against bright sky. This is the hardest case the detector will face outdoors, and without a directional light it never sees one.
-- **Cast shadows**, which give the detector a drone-shaped dark region it must learn *not* to box.
+- **Cast shadows**, which give the detector a drone-shaped dark region it must learn *not* to box. With 4.2B's buildings and trees, those objects also cast large shadows across the floor.
 - **Blown-out highlights**, where bright sky saturates the sensor and detail disappears.
 
 **What rendering still does not reproduce** is lens flare — the streaks and rings from light scattering inside a real lens, which a Tello camera produces heavily when pointed near the sun. If the detector fails specifically when flying toward the sun, this is the cause, and Chapter 7.4's retraining on real footage is the fix. Flying with the sun behind you avoids it entirely.
@@ -3808,9 +3837,9 @@ python C:\projects\drone_pursuit\drone_pursuit\scripts\sdg\generate_drone_data.p
 
 </details>
 
-> ✅ **Checkpoint 4.2** — flipping through 30 random production frames you see: near and far drones, sky and ground backgrounds, bright and dark scenes, distractors present, **some frames with the drone strongly backlit and nearly a silhouette**, and the drone always findable by you (if a human cannot find it, the network will not).
+> ✅ **Checkpoint 4.2** — flipping through 30 random production frames you see: near and far drones; sky and ground backgrounds; bright and dark scenes; distractors present; **some frames with the drone strongly backlit and nearly a silhouette**; and, from 4.2B, different floors, skies, scenery and drone models and colours. In every frame the drone is findable by you (if a human cannot find it, the network will not).
 >
-> If no frame looks harshly lit, the sun is not being randomised — check that `/World/Sun` exists and that the `rep.get.prims` pattern matches it.
+> If no frame looks harshly lit, the sun is not being randomised — check that `/World/Sun` exists and that the `rep.get.prim_at_path("/World/Sun")` line in 4.2B Step 6 names it exactly.
 
 </details>
 
