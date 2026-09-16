@@ -3236,16 +3236,24 @@ for i in range(8):
 
 stage = omni.usd.get_context().get_stage()
 bbox_cache = UsdGeom.BBoxCache(Usd.TimeCode.Default(), [UsdGeom.Tokens.default_, UsdGeom.Tokens.render])
-PROPS = []                         # (prim path, scale that makes the model's largest side 1 m)
+PROPS = []
 for i in range(8 if PROP_USDS else 0):
     usd = PROP_USDS[i % len(PROP_USDS)]
     path = f"/World/Background/Prop_{i:02d}"
-    cfg = sim_utils.UsdFileCfg(usd_path=usd)
-    cfg.func(path, cfg, translation=PARK)
-    size = bbox_cache.ComputeWorldBound(stage.GetPrimAtPath(path)).ComputeAlignedRange().GetSize()
-    largest = max(size[0], size[1], size[2])
+    try:
+        cfg = sim_utils.UsdFileCfg(usd_path=usd)
+        cfg.func(path, cfg, translation=PARK)
+        size = bbox_cache.ComputeWorldBound(stage.GetPrimAtPath(path)).ComputeAlignedRange().GetSize()
+        largest = max(size[0], size[1], size[2])
+    except Exception as e:
+        print(f"[bg] {path}: FAILED to load {usd} -> {e}; skipped")
+        continue
+    if not largest > 0:                          # geometry didn't load: no size to scale from
+        print(f"[bg] {path}: {usd} loaded with no geometry; hidden and skipped")
+        UsdGeom.Imageable(stage.GetPrimAtPath(path)).MakeInvisible()
+        continue
     print(f"[bg] {path}: {usd.rsplit('/', 1)[-1]} authored size {size[0]:.2f} x {size[1]:.2f} x {size[2]:.2f}")
-    PROPS.append((path, 1.0 / largest if largest > 0 else 1.0))
+    PROPS.append((path, 1.0 / largest))
 # ▲▲▲ END OF INSERT ▲▲▲
 
 with rep.trigger.on_frame(max_execs=args.num_frames):     # ← EXISTING, edited in Step 5
