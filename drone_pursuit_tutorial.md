@@ -2836,7 +2836,7 @@ Linux: On a machine with no display attached, always pass --headless; without it
 
 </details>
 
-### Step 4 — Inspect the frames and the label files by hand
+### Step 4 — Inspect the frames and the label
 
 <details>
 <summary>Expand Step 4</summary>
@@ -2951,6 +2951,471 @@ The rotation range `(-80, 0, 0)` to `(-10, 0, 360)` sweeps the sun through every
 
 </details>
 
+## 4.2B Randomise the Background — Floor, Sky, Trees, Buildings and Walls (≤1.5h)
+
+<details>
+<summary>Expand 4.2B</summary>
+
+> **What this subchapter does:** 4.2 varies the light, the camera and the drone, but every frame is still taken in the same place: a grey grid floor under an empty, evenly coloured sky. This subchapter replaces that place with one that changes every frame — a textured floor, a real sky photograph, and trees, buildings and walls standing behind the drone. It edits the same `generate_drone_data.py` from 4.1 and 4.2, so **do it after 4.2 Step 2 and before 4.2 Step 3's production run.** If you already ran the production batch, Step 6 below tells you how to redo it.
+
+**Why the background matters to the detector.** YOLO (the detector network trained in 5.1) learns whatever visual rule best separates "inside a drone box" from "everything else" in the training images. If "everything else" is always a grey grid or a plain sky, the cheapest rule it can learn is "a small dark shape on a plain surface is a drone". At demo time in Chapter 7 that rule fires on a window corner, a ceiling lamp or a tree branch (false detections), and fails when the attacker passes in front of a bookshelf or a hedge (missed detections). Chapter 5.2 is where you would first notice this, as a detector that scores well on its own validation images and poorly on arena frames.
+
+---
+
+### Step 1 — Understand the five background layers and where each one sits
+
+<details>
+<summary>Expand Step 1</summary>
+
+> **Environment:** none needed — this step is explanation only.
+
+Every frame is assembled from layers, ordered from the camera outwards. Everything new in this subchapter sits **behind** the drone, never between the camera and the drone, so it can never hide the drone and never removes a label.
+
+```
+WHAT THE CAMERA SEES, NEAR TO FAR
+
+camera ─▶ distractors ─▶ DRONE ─▶ walls ─▶ trees & props ─▶ buildings ─▶ sky photo
+          (4.2, 0–5 m)   (0 m)    12–25 m     15–40 m         22–70 m     infinitely far
+                        └────────────── textured floor underneath, 200 m × 200 m ──────────────┘
+```
+
+```
+TOP VIEW — why the new objects can never block the drone
+
+ ┌─────────────────────────────────────────────────┐
+ │ buildings: 22–70 m from the drone               │
+ │   ┌─────────────────────────────────────────┐   │
+ │   │ trees & props: 15–40 m                  │   │
+ │   │   ┌─────────────────────────────────┐   │   │
+ │   │   │ walls: 12–25 m                  │   │   │
+ │   │   │   ┌─────────────────────────┐   │   │   │
+ │   │   │   │ CAPTURE AREA            │   │   │   │
+ │   │   │   │ camera stays within ±6 m│   │   │   │
+ │   │   │   │         ✈ drone         │   │   │   │
+ │   │   │   └─────────────────────────┘   │   │   │
+ │   │   └─────────────────────────────────┘   │   │
+ │   └─────────────────────────────────────────┘   │
+ └─────────────────────────────────────────────────┘
+```
+
+The camera (4.2) is always within 6 m of the drone, so the straight line from camera to drone stays inside that ±6 m box. Each object type starts at **6 m + half its largest width**: a 12 m wall is at least 12 m out, a 20 m × 20 m building at least 22 m out. That arithmetic is what guarantees no background object ever crosses the camera-to-drone line.
+
+| Layer | What varies every frame | Because at demo time… |
+|---|---|---|
+| **Floor** | its picture (gravel, planks, stone, your own grass/asphalt), its rotation; hidden 1 frame in 5 | a defender above the attacker sees it against whatever the ground happens to be |
+| **Sky** | which sky photograph, which way it faces | outdoors the sky has clouds and a horizon of trees and roofs; indoors the "sky" is the room itself |
+| **Walls** | position, heading, surface picture; each hidden ~40% of frames | walls, fences and hoardings are the most common thing directly behind a low-flying drone |
+| **Trees & props** | position, heading, size (2–12 m); each hidden ~30% of frames | foliage breaks up the outline of a small dark object, which is exactly the case the detector must survive |
+| **Buildings** | position, heading, surface picture; each hidden ~40% of frames | windows, roof edges and gutters produce straight dark lines that a lazy detector confuses with propeller arms |
+
+Two new terms used throughout:
+
+- A **texture** is an image painted onto a 3D surface. `project_uvw=True` paints it by the surface's position in space rather than by a UV map (the per-model instructions that say which image pixel lands where), which lets you paint any box without preparing it first.
+- An **HDRI** (high-dynamic-range image) is a 360° photograph wrapped around the whole scene as a sphere. Put on the dome light, it is both the visible background and a source of light, so the sky and the lighting on the drone change together.
+
+**Mixed scenes are intentional.** Some frames will show an indoor room photograph behind an outdoor tree. The detector does not need realistic scenes, it needs the drone to be the only thing that stays the same across 2500 frames; any combination that breaks the "plain background" rule does that job.
+
+</details>
+
+### Step 2 — Create folders for your own textures, skies and 3D models
+
+<details>
+<summary>Expand Step 2</summary>
+
+> **Environment:** none needed
+
+The script uses NVIDIA-hosted images and models, and also picks up any files you drop into four folders under `data\bg\`. This matters because NVIDIA's hosted material library, as far as this tutorial could verify, has no grass, asphalt or concrete pictures — the most common ground under a real flight.
+
+*Run from:* `any folder`
+```bat
+mkdir C:\projects\drone_pursuit\drone_pursuit\data\bg\floor C:\projects\drone_pursuit\drone_pursuit\data\bg\wall C:\projects\drone_pursuit\drone_pursuit\data\bg\sky C:\projects\drone_pursuit\drone_pursuit\data\bg\props
+```
+
+**Linux version**
+```
+mkdir -p ~/projects/drone_pursuit/drone_pursuit/data/bg/{floor,wall,sky,props}
+```
+
+**Recommended (15 minutes): add your own files.** [Poly Haven](https://polyhaven.com) publishes textures and HDRIs under CC0 (free for any use, no attribution needed).
+
+| Folder | What to put in it | Where to get it |
+|---|---|---|
+| `data\bg\floor\` | 5–10 ground pictures: grass, asphalt, concrete, dirt, gym floor | Poly Haven → Textures. Download **only the colour map** at 1K or 2K JPG — its file name contains `diff` or `color`. Normal, roughness and displacement maps look wrong when painted as a picture. |
+| `data\bg\wall\` | 5–10 wall pictures: brick, plaster, concrete, siding, fence | Same as above |
+| `data\bg\sky\` | 5–10 `.hdr` files matching where you will fly: parks, fields, streets, sports halls | Poly Haven → HDRIs, 2K `.hdr` |
+| `data\bg\props\` | any ready-made 3D models (`.usd`, `.usdc`, `.usdz`) — houses, trees, cars | Optional. Leave empty if you have none. |
+
+If you skip this, the script still runs on the NVIDIA-hosted files alone.
+
+</details>
+
+### Step 3 — Replace the grey ground with a paintable floor and give the sky a photograph
+
+<details>
+<summary>Expand Step 3</summary>
+
+> **Environment:** none needed — you are editing a file.
+
+This step edits the opening section written in 4.1 Step 1. The current ground (`GroundPlaneCfg`) loads a prebuilt grid file whose internal mesh path this script does not know, so there is nothing reliable to paint; `MeshCuboidCfg` builds a flat slab whose mesh is always at `/World/Floor/geometry/mesh`, which Step 5 paints every frame. The dome light gets a starting sky photograph and `visible_in_primary_ray=True`, which makes the camera see the photograph rather than only receive its light.
+
+*File to edit:* `C:\projects\drone_pursuit\drone_pursuit\scripts\sdg\generate_drone_data.py`
+
+```python
+# ── FILE: ...\scripts\sdg\generate_drone_data.py ────────────────────────────
+# ── SECTION: the imports near the top (from 4.1 Step 1) ─────────────────────
+
+# BEFORE:
+# from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR
+# AFTER:
+from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR, NVIDIA_NUCLEUS_DIR, check_file_path
+```
+
+```python
+# ── FILE: ...\scripts\sdg\generate_drone_data.py ────────────────────────────
+# ── SECTION: the ground + lights block (from 4.1 Step 1) ────────────────────
+
+# ground + two lights (both get randomized in 4.2)
+
+# BEFORE:
+# sim_utils.GroundPlaneCfg().func("/World/ground", sim_utils.GroundPlaneCfg())
+# AFTER — a 200 m x 200 m slab, top surface at height 0, painted every frame in 4.2B Step 5:
+floor_cfg = sim_utils.MeshCuboidCfg(size=(200.0, 200.0, 0.05))
+floor_cfg.func("/World/Floor", floor_cfg, translation=(0.0, 0.0, -0.025))
+
+# ambient fill — stands in for skylight bouncing around
+# BEFORE:
+# dome_cfg = sim_utils.DomeLightCfg(intensity=2000.0)
+# AFTER:
+dome_cfg = sim_utils.DomeLightCfg(
+    intensity=1000.0,
+    texture_file=f"{NVIDIA_NUCLEUS_DIR}/Assets/Skies/Clear/qwantani_4k.hdr",  # first sky; swapped every frame
+    visible_in_primary_ray=True,          # True = the camera sees the photo, not just its light
+)
+dome_cfg.func("/World/Light", dome_cfg)   # ← EXISTING line, unchanged
+
+# the sun ... and the drone ... ← EXISTING, unchanged
+```
+
+**Why the floor has no collision.** Nothing in this script falls or collides — the drone is placed, not flown — so the slab only needs to be visible.
+
+</details>
+
+### Step 4 — List the background files and build the background objects
+
+<details>
+<summary>Expand Step 4</summary>
+
+> **Environment:** none needed — you are editing a file.
+
+This step adds one block that does three things once, before any frame is captured. It builds the lists of sky photos, floor pictures, wall pictures and 3D models, **checking that each file really exists** and printing any that do not (`check_file_path` asks your disk first, then NVIDIA's asset server). It builds 12 buildings and 8 walls as boxes with fixed random sizes, and loads up to 8 trees or props. Step 5 then moves, paints and hides all of them on every frame.
+
+**Why buildings and walls are boxes.** The Isaac Sim asset library contains warehouses, offices and a hospital, but no outdoor houses or city buildings. At 22–70 m from a 640×480 camera, a building appears as a large textured block with straight edges, which is what a box with a brick or cladding picture on it produces. Real house models you place in `data\bg\props\` are added alongside them.
+
+**Why every 3D model is measured when it loads.** Models from different sources are authored in different units — the same tree can arrive 10 m tall or 1000 m tall depending on whether its author worked in metres or centimetres. The script measures each model's largest side and stores the scale that makes it exactly 1 m, so Step 5 can size every model in real metres.
+
+*File to edit:* `C:\projects\drone_pursuit\drone_pursuit\scripts\sdg\generate_drone_data.py`
+
+```python
+# ── FILE: ...\scripts\sdg\generate_drone_data.py ────────────────────────────
+# ── SECTION: directly BELOW the `distractors = rep.create.group([...])` block
+# ──          from 4.2 Step 2, and ABOVE `with rep.trigger.on_frame(...)`   ──
+
+distractors = rep.create.group([             # ← EXISTING, from 4.2 Step 2
+    rep.create.cube(count=4, semantics=[("class", "distractor")]),
+    rep.create.sphere(count=4, semantics=[("class", "distractor")]),
+])
+
+# ▼▼▼ INSERT HERE! ▼▼▼
+import glob, os, random
+import omni.usd
+from pxr import Usd, UsdGeom
+
+# ════ 1. helpers: find your own files, and drop any path that does not exist ════
+BG_DIR = r"C:\projects\drone_pursuit\drone_pursuit\data\bg"
+
+def local_files(subfolder, extensions):
+    """Every file in data\\bg\\<subfolder>\\ with one of the given extensions."""
+    found = []
+    for ext in extensions:
+        found += glob.glob(os.path.join(BG_DIR, subfolder, f"*{ext}"))
+    return [p.replace("\\", "/") for p in found]
+
+def keep_existing(label, paths, required=True):
+    """Keep only paths found on disk or on NVIDIA's server; print the ones that are missing."""
+    usable = [p for p in paths if check_file_path(p) != 0]     # 0 = not found anywhere
+    for p in paths:
+        if p not in usable:
+            print(f"[bg] {label}: NOT FOUND, skipped -> {p}")
+    print(f"[bg] {label}: {len(usable)} usable")
+    if required and not usable:
+        raise RuntimeError(f"[bg] {label}: none usable - read the NOT FOUND lines above")
+    return usable
+
+# ════ 2. the pools each layer draws from ════
+SKIES = keep_existing("skies", [
+    # outdoor
+    f"{NVIDIA_NUCLEUS_DIR}/Assets/Skies/Clear/qwantani_4k.hdr",
+    f"{NVIDIA_NUCLEUS_DIR}/Assets/Skies/Clear/mealie_road_4k.hdr",
+    f"{NVIDIA_NUCLEUS_DIR}/Assets/Skies/Clear/noon_grass_4k.hdr",
+    f"{NVIDIA_NUCLEUS_DIR}/Assets/Skies/Cloudy/champagne_castle_1_4k.hdr",
+    f"{NVIDIA_NUCLEUS_DIR}/Assets/Skies/Cloudy/kloofendal_48d_partly_cloudy_4k.hdr",
+    f"{NVIDIA_NUCLEUS_DIR}/Assets/Skies/Cloudy/abandoned_parking_4k.hdr",
+    f"{NVIDIA_NUCLEUS_DIR}/Assets/Skies/Cloudy/lakeside_4k.hdr",
+    f"{ISAAC_NUCLEUS_DIR}/Materials/Textures/Skies/PolyHaven/kloofendal_43d_clear_puresky_4k.hdr",
+    # indoor — for flights in a room or a gym
+    f"{NVIDIA_NUCLEUS_DIR}/Assets/Skies/Indoor/autoshop_01_4k.hdr",
+    f"{NVIDIA_NUCLEUS_DIR}/Assets/Skies/Indoor/carpentry_shop_01_4k.hdr",
+    f"{NVIDIA_NUCLEUS_DIR}/Assets/Skies/Indoor/old_bus_depot_4k.hdr",
+    f"{NVIDIA_NUCLEUS_DIR}/Assets/Skies/Indoor/wooden_lounge_4k.hdr",
+] + local_files("sky", [".hdr", ".exr"]))
+
+FLOOR_TEX = keep_existing("floor textures", [
+    f"{NVIDIA_NUCLEUS_DIR}/Materials/vMaterials_2/Ground/textures/aggregate_exposed_diff.jpg",
+    f"{NVIDIA_NUCLEUS_DIR}/Materials/vMaterials_2/Ground/textures/gravel_track_ballast_diff.jpg",
+    f"{ISAAC_NUCLEUS_DIR}/Materials/Textures/Patterns/nv_brick_grey.jpg",
+    f"{ISAAC_NUCLEUS_DIR}/Materials/Textures/Patterns/nv_wood_boards_brown.jpg",
+    f"{NVIDIA_NUCLEUS_DIR}/Materials/Base/Wood/Plywood/Plywood_BaseColor.png",
+    f"{NVIDIA_NUCLEUS_DIR}/Materials/Base/Stone/Marble/Marble_BaseColor.png",
+] + local_files("floor", [".jpg", ".jpeg", ".png"]))
+
+WALL_TEX = keep_existing("wall textures", [
+    f"{ISAAC_NUCLEUS_DIR}/Materials/Textures/Patterns/nv_brick_grey.jpg",
+    f"{ISAAC_NUCLEUS_DIR}/Materials/Textures/Patterns/nv_wooden_wall.jpg",
+    f"{NVIDIA_NUCLEUS_DIR}/Materials/Base/Wood/Timber_Cladding/Timber_Cladding_BaseColor.png",
+    f"{NVIDIA_NUCLEUS_DIR}/Materials/Base/Wood/Oak/Oak_BaseColor.png",
+    f"{NVIDIA_NUCLEUS_DIR}/Materials/Base/Metals/RustedMetal/RustedMetal_BaseColor.png",
+    f"{NVIDIA_NUCLEUS_DIR}/Materials/Base/Metals/Steel_Carbon/Steel_Carbon_BaseColor.png",
+] + local_files("wall", [".jpg", ".jpeg", ".png"]))
+
+# trees come from NVIDIA's general content library, which is separate from the Isaac Sim pack
+NV_CONTENT = "https://omniverse-content-production.s3-us-west-2.amazonaws.com/Assets"
+PROP_USDS = keep_existing("trees & props", [
+    f"{NV_CONTENT}/Vegetation/Trees/Red_Maple.usd",
+    f"{NV_CONTENT}/Vegetation/Trees/Japanese_Cherry.usd",
+    f"{NV_CONTENT}/Vegetation/Shrub/Boxwood.usd",
+    f"{NV_CONTENT}/Vegetation/Shrub/Cedar_Shrub.usd",
+] + local_files("props", [".usd", ".usda", ".usdc", ".usdz"]), required=False)
+
+PROP_SIZE_M = (2.0, 12.0)   # every tree/prop is resized so its largest side is 2–12 m
+PROP_TILT_X = 0.0           # set to 90.0 or -90.0 only if trees appear lying on their side
+
+# ════ 3. where each layer may stand: four rectangles around the capture area ════
+def strips(near, far):
+    """Returns four ((x_min, y_min), (x_max, y_max)) rectangles, all at least `near` m from the drone."""
+    return [
+        ((-far,  near), ( far,  far)),     # north
+        ((-far, -far),  ( far, -near)),    # south
+        (( near, -near), ( far,  near)),   # east
+        ((-far, -near), (-near,  near)),   # west
+    ]
+
+# near = 6 m camera limit + half the object's largest width (Step 1)
+WALL_STRIPS     = strips(near=12.0, far=25.0)   # walls up to 12 m long  → half = 6 m
+PROP_STRIPS     = strips(near=15.0, far=40.0)   # props up to 12 m wide  → half-diagonal ≈ 8.5 m
+BUILDING_STRIPS = strips(near=22.0, far=70.0)   # up to 20 m x 20 m      → half-diagonal ≈ 14 m
+
+# ════ 4. build the objects once; Step 5 moves them every frame ════
+rng = random.Random(7)             # fixed seed = the same building and wall sizes on every run
+PARK = (0.0, 0.0, -100.0)          # spawn underground; the first frame moves everything into place
+
+BUILDINGS = []                     # (prim path, height)
+for i in range(12):
+    w, d, h = rng.uniform(6, 20), rng.uniform(6, 20), rng.uniform(4, 30)
+    path = f"/World/Background/Building_{i:02d}"
+    cfg = sim_utils.MeshCuboidCfg(size=(w, d, h))
+    cfg.func(path, cfg, translation=PARK)
+    BUILDINGS.append((path, h))
+
+WALLS = []                         # (prim path, height)
+for i in range(8):
+    length, h = rng.uniform(6, 12), rng.uniform(2.5, 6)
+    path = f"/World/Background/Wall_{i:02d}"
+    cfg = sim_utils.MeshCuboidCfg(size=(length, 0.3, h))
+    cfg.func(path, cfg, translation=PARK)
+    WALLS.append((path, h))
+
+stage = omni.usd.get_context().get_stage()
+bbox_cache = UsdGeom.BBoxCache(Usd.TimeCode.Default(), [UsdGeom.Tokens.default_, UsdGeom.Tokens.render])
+PROPS = []                         # (prim path, scale that makes the model's largest side 1 m)
+for i in range(8 if PROP_USDS else 0):
+    usd = PROP_USDS[i % len(PROP_USDS)]
+    path = f"/World/Background/Prop_{i:02d}"
+    cfg = sim_utils.UsdFileCfg(usd_path=usd)
+    cfg.func(path, cfg, translation=PARK)
+    size = bbox_cache.ComputeWorldBound(stage.GetPrimAtPath(path)).ComputeAlignedRange().GetSize()
+    largest = max(size[0], size[1], size[2])
+    print(f"[bg] {path}: {usd.rsplit('/', 1)[-1]} authored size {size[0]:.2f} x {size[1]:.2f} x {size[2]:.2f}")
+    PROPS.append((path, 1.0 / largest if largest > 0 else 1.0))
+# ▲▲▲ END OF INSERT ▲▲▲
+
+with rep.trigger.on_frame(max_execs=args.num_frames):     # ← EXISTING, edited in Step 5
+```
+
+**For Linux version, replace the corresponding line in the code above with:**
+```
+BG_DIR = os.path.expanduser("~/projects/drone_pursuit/drone_pursuit/data/bg")
+```
+
+**None of the new objects carry a semantic tag,** so the `bounding_box_2d_tight` annotator draws no boxes around them. If a downloaded model arrives with its own class tag (a tree tagged `"tree"`, for example), its boxes are discarded by 4.3's converter, which keeps only `"drone"`.
+
+</details>
+
+### Step 5 — Randomise every layer on every frame
+
+<details>
+<summary>Expand Step 5</summary>
+
+> **Environment:** none needed — you are editing a file.
+
+This step replaces the whole `with rep.trigger.on_frame(...)` block from 4.1 Step 3 and 4.2 Step 2. It keeps everything that block already does and makes three changes:
+
+1. **`rt_subframes=8`** — the number of times the renderer draws the same frame before saving it. A newly swapped sky or texture needs a few draws to finish loading; with the default, some saved images show a white sky or unpainted grey buildings. NVIDIA's own SDG workflows use 8 when they swap materials and move the camera between captures. The cost is that each saved frame takes several renders, so the 2500-frame run takes noticeably longer than it did in 4.2.
+2. **`rep.get.prims(path_pattern=...)` becomes `rep.get.prim_at_path(...)`** for the light, sun and drone. `get.prims` matches paths as a regular expression (a text pattern), so a pattern like `/World/Drone` can also select the drone's own sub-parts; `get.prim_at_path` selects exactly the one prim named.
+3. **New randomisers** for the sky photo, the floor, and every building, wall and prop.
+
+*File to edit:* `C:\projects\drone_pursuit\drone_pursuit\scripts\sdg\generate_drone_data.py`
+
+```python
+# ── FILE: ...\scripts\sdg\generate_drone_data.py ────────────────────────────
+# ── SECTION: REPLACE the entire `with rep.trigger.on_frame(...)` block,     ─
+# ──          down to (not including) rep.orchestrator.run_until_complete()  ─
+
+with rep.trigger.on_frame(max_execs=args.num_frames, rt_subframes=8):   # ← EDITED: rt_subframes added
+    with camera:                                                        # ← EXISTING (4.1 + 4.2)
+        rep.modify.pose(
+            position=rep.distribution.uniform((-6, -6, 0.2), (6, 6, 4.0)),
+            look_at="/World/Drone",
+        )
+
+    with rep.get.prim_at_path("/World/Light"):                          # ← EDITED: prim_at_path
+        rep.modify.attribute("inputs:intensity", rep.distribution.uniform(500, 6000))
+        rep.modify.attribute("inputs:color", rep.distribution.uniform((0.7, 0.7, 0.6), (1.0, 1.0, 1.0)))
+        # ▼ NEW: a different sky photo, turned to face a different way
+        rep.modify.attribute("inputs:texture:file", rep.distribution.choice(SKIES))
+        rep.modify.pose(rotation=rep.distribution.uniform((0, 0, 0), (0, 0, 360)))
+
+    with rep.get.prim_at_path("/World/Sun"):                            # ← EDITED: prim_at_path
+        rep.modify.pose(rotation=rep.distribution.uniform((-80, 0, 0), (-10, 0, 360)))
+        rep.modify.attribute("inputs:intensity", rep.distribution.uniform(1000, 12000))
+        rep.modify.attribute("inputs:color", rep.distribution.uniform((1.0, 0.85, 0.7), (1.0, 1.0, 1.0)))
+
+    with rep.get.prim_at_path("/World/Drone"):                          # ← EDITED: prim_at_path
+        rep.modify.pose(rotation=rep.distribution.uniform((-20, -20, 0), (20, 20, 360)))
+
+    with distractors:                                                   # ← EXISTING (4.2)
+        rep.modify.pose(
+            position=rep.distribution.uniform((-5, -5, 0), (5, 5, 3.5)),
+            scale=rep.distribution.uniform(0.05, 0.4),
+        )
+        rep.randomizer.color(colors=rep.distribution.uniform((0, 0, 0), (1, 1, 1)))
+
+    # ▼▼▼ NEW — everything below is still INSIDE the `with rep.trigger...` block ▼▼▼
+
+    # floor: new picture at a new angle; hidden 1 frame in 5, so the sky photo's own ground shows
+    with rep.get.prim_at_path("/World/Floor/geometry/mesh"):
+        rep.randomizer.texture(textures=FLOOR_TEX, project_uvw=True,
+                               texture_rotate=rep.distribution.uniform(0, 360))
+        rep.modify.visibility(rep.distribution.choice([True, False], weights=[0.8, 0.2]))
+
+    # buildings: stand on the floor (centre at half height) in their strip, facing any direction
+    for i, (path, h) in enumerate(BUILDINGS):
+        (x0, y0), (x1, y1) = BUILDING_STRIPS[i % 4]
+        with rep.get.prim_at_path(path):
+            rep.modify.pose(position=rep.distribution.uniform((x0, y0, h / 2), (x1, y1, h / 2)),
+                            rotation=rep.distribution.uniform((0, 0, 0), (0, 0, 360)))
+            rep.modify.visibility(rep.distribution.choice([True, False], weights=[0.6, 0.4]))
+        with rep.get.prim_at_path(path + "/geometry/mesh"):
+            rep.randomizer.texture(textures=WALL_TEX, project_uvw=True,
+                                   texture_rotate=rep.distribution.choice([0.0, 90.0]))
+
+    # walls: same pattern, closer in
+    for i, (path, h) in enumerate(WALLS):
+        (x0, y0), (x1, y1) = WALL_STRIPS[i % 4]
+        with rep.get.prim_at_path(path):
+            rep.modify.pose(position=rep.distribution.uniform((x0, y0, h / 2), (x1, y1, h / 2)),
+                            rotation=rep.distribution.uniform((0, 0, 0), (0, 0, 360)))
+            rep.modify.visibility(rep.distribution.choice([True, False], weights=[0.6, 0.4]))
+        with rep.get.prim_at_path(path + "/geometry/mesh"):
+            rep.randomizer.texture(textures=WALL_TEX, project_uvw=True,
+                                   texture_rotate=rep.distribution.choice([0.0, 90.0]))
+
+    # trees & props: base on the floor, any heading, resized to 2–12 m using the scale measured in Step 4
+    for i, (path, unit) in enumerate(PROPS):
+        (x0, y0), (x1, y1) = PROP_STRIPS[i % 4]
+        with rep.get.prim_at_path(path):
+            rep.modify.pose(
+                position=rep.distribution.uniform((x0, y0, 0.0), (x1, y1, 0.0)),
+                rotation=rep.distribution.uniform((PROP_TILT_X, 0, 0), (PROP_TILT_X, 0, 360)),
+                scale=rep.distribution.uniform(unit * PROP_SIZE_M[0], unit * PROP_SIZE_M[1]),
+            )
+            rep.modify.visibility(rep.distribution.choice([True, False], weights=[0.7, 0.3]))
+    # ▲▲▲ END OF NEW ▲▲▲
+
+rep.orchestrator.run_until_complete()      # ← EXISTING, unchanged
+simulation_app.close()                     # ← EXISTING, unchanged
+```
+
+**Why objects are hidden at random rather than always shown.** If every frame contained 12 buildings, 8 walls and 8 trees, the detector would never see a drone against open sky or a bare field, and those are common at demo time. Independent hiding gives a spread from nearly empty scenes to cluttered ones across the dataset.
+
+**Why buildings and walls face random directions.** A box that always faces the camera squarely shows one flat face; random headings show corners and two faces at once, which produces the diagonal edges and shading changes a real street or courtyard has.
+
+**The Python `for` loops run once, when the script starts,** not once per frame. They write one randomiser per object into Replicator's graph (the list of instructions Replicator replays on every captured frame), which is why each object can have its own strip, height and scale.
+
+</details>
+
+### Step 6 — Generate 20 trial frames, inspect them, then regenerate the production batch
+
+<details>
+<summary>Expand Step 6</summary>
+
+> **Environment:** `env_drone`
+
+Twenty frames reveal a missing texture, a white sky or a giant tree in a couple of minutes. The first run also downloads the 4K sky photographs and the tree models, so expect it to spend extra minutes before the first frame; later runs read them from the local cache.
+
+*Run from:* `any folder`
+```bat
+rmdir /s /q C:\projects\drone_pursuit\drone_pursuit\data\raw
+mkdir C:\projects\drone_pursuit\drone_pursuit\data\raw
+python C:\projects\drone_pursuit\drone_pursuit\scripts\sdg\generate_drone_data.py --num_frames 20 --headless
+```
+
+**Linux version**
+```
+conda activate env_drone
+export OMNI_KIT_ACCEPT_EULA=YES
+rm -rf ~/projects/drone_pursuit/drone_pursuit/data/raw && mkdir -p ~/projects/drone_pursuit/drone_pursuit/data/raw
+python ~/projects/drone_pursuit/drone_pursuit/scripts/sdg/generate_drone_data.py --num_frames 20 --headless
+```
+
+**Emptying `data\raw` first** prevents old 4.2 frames from mixing into the new dataset: `BasicWriter` numbers files from `0000` again on every run, so a shorter run leaves older, higher-numbered frames in place.
+
+**Read the console before opening the images.** Search the output for `[bg]`. Each pool prints how many files were usable, and each missing file prints a `NOT FOUND` line with its path. Each prop also prints its authored size, which tells you whether a model arrived in metres (a tree around `10 x 10 x 12`) or centimetres (around `1000 x 1000 x 1200`); the script rescales both correctly.
+
+Once the trial frames pass the checkpoint below, run **4.2 Step 3** (the 2500-frame command, after emptying `data\raw` again), then **4.3** to convert the new frames.
+
+</details>
+
+> ✅ **Checkpoint 4.2B** — in the console, every `[bg] ... usable` line shows at least 1 (skies, floor textures and wall textures stop the script if they reach 0). Flipping through the 20 trial frames you see: **several different floors**, including at least one frame where the floor is absent and the sky photo's ground shows; **several different skies**, some outdoor and some indoor; **boxes with brick, wood or metal surfaces** behind the drone in some frames and open views in others; trees standing upright at plausible sizes (if `trees & props: 0 usable` printed, frames simply have no trees); and **the drone fully visible in front of all of it**, never hidden by a background object. After the production run, 4.3's drop rate should stay under about 20%, as before.
+
+### Troubleshooting
+
+| What you see | Cause | Fix |
+|---|---|---|
+| `NOT FOUND` for every NVIDIA path | No connection to NVIDIA's asset server, or you use the offline Isaac Sim asset pack, which does not include `NVIDIA/Assets/Skies` or the vegetation library | Fill `data\bg\floor`, `wall` and `sky` from Step 2; the script uses local files on their own |
+| Buildings, walls or floor pink, flat white or untextured grey in some frames | The texture had not finished loading when the frame was saved | Raise `rt_subframes=8` to `16` in the trigger line |
+| Sky pure white or black in some frames | Same loading delay, for the sky photograph | Same fix: raise `rt_subframes` |
+| More than about 1 frame in 10 washed out to white | A bright sky photo multiplied by 4.2's dome intensity of up to 6000 | In the `/World/Light` block, lower `uniform(500, 6000)` to `uniform(500, 3000)` |
+| Trees appear as bare trunks without leaves | The leaf materials failed to load, a known NVIDIA vegetation asset issue | Bare trunks are still valid clutter; to remove trees, delete the four `Vegetation` lines |
+| Trees lie on their side | The model was authored with a different "up" direction | Set `PROP_TILT_X = 90.0` (or `-90.0` if they now lie the other way) |
+| Trees float above or sink into the floor | The model's origin is not at its base | Harmless for detection; remove that model from the list if it bothers you |
+| Script stops with `none usable` | A required pool (skies, floor or wall textures) ended up empty | Read the `NOT FOUND` lines above the error; add local files to that folder |
+| Local files listed as usable but render pink | The file is not a colour map (a normal or roughness map), or it is corrupt | Open it in an image viewer; replace it with the `diff` / `color` version |
+
+</details>
+
+---
+
+
 ### Step 3 — Run the production batch of 2500 frames
 
 <details>
@@ -2975,6 +3440,7 @@ python C:\projects\drone_pursuit\drone_pursuit\scripts\sdg\generate_drone_data.p
 </details>
 
 ---
+
 
 ## 4.3 Convert Replicator Output to YOLO Format and Verify the Labels (≤1.5h)
 
