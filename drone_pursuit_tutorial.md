@@ -3814,7 +3814,7 @@ Once the trial frames pass the checkpoint below, run **4.2 Step 3** (the 2500-fr
 
 </details>
 
----
+</details>
 
 
 ---
