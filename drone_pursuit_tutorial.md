@@ -300,6 +300,29 @@ Some steps only edit files and need no environment; those say so. Commands use `
 ---
 </details>
 
+# Values to fetch from the Real Drone
+
+Some parameters throughout this project need to be replaced by the values of the real drone:
+
+| Parameter (code line) | What it is | Source | How to measure | First mentioned |
+|---|---|---|---|---|
+| `decimation = 5` | The Tello's command rate. Since `sim.dt = 1/100`, decimation = 100 ÷ measured Hz, so 20 Hz gives 5. | **Measure** the control rate, then compute | Run `measure_rate.py` (1.4 Step 6): it sends 500 neutral commands and divides by the elapsed seconds. Round down to a divisor of 100 (20 or 25). This counts commands *sent*; the drone may act on fewer. | Block A · Ch 1 · 1.4 Step 7 (code: Block C · 3.1 Part B) |
+| `obs_delay_min = 2`<br>`obs_delay_max = 5` | Video lag converted to control steps (seconds × Hz): 99–219 ms at 20 Hz gives 2–5. | **Measure** the video delay, then compute | Point the camera at a millisecond stopwatch on screen with the video window beside it, and screenshot both. The gap between the two times is the delay. Take 10 screenshots and use min × Hz and max × Hz, rounded. | Block C · Ch 3 · 3.1 Part D |
+| `observation_space = 17` | The count is set by the telemetry the Tello reports: speeds and tilt angles, no rotation rates. | **Official** (Tello SDK state list) | — | Block C · Ch 3 · 3.1 Part C |
+| `max_speed = 2.0` | Speed the simulated drone reaches at full stick. | **Measure** (the 8 m/s spec doesn't say what full SDK stick produces) | Tape two floor marks 3 m apart. Start 1 m before the first mark and send full forward stick, `send_rc_control(0, 100, 0, 0)`. Time the gap between the marks: speed = 3 ÷ seconds. Repeat 3 times and average. | Block C · Ch 3 · 3.1 Part A |
+| `vel_gain = 3.0` | How fast the stand-in stabiliser reaches the commanded speed. | **Measure** | From a hover, send full forward stick and log `get_speed_x()` every step. Find how long speed takes to reach 63% of its top value; call that τ. Then vel_gain = 1 ÷ τ. For example, τ = 0.5 s gives 2.0. | Block C · Ch 3 · 3.1 Part A |
+| `max_yaw_rate = 1.5` | Turn rate at full yaw stick. | **Measure** | Hover, send full yaw stick, `send_rc_control(0, 0, 0, 100)`, and stopwatch one full 360° turn. Then max_yaw_rate = 6.28 ÷ seconds. For example, 4.2 s gives 1.5. | Block C · Ch 3 · 3.1 Part A |
+| `cam_width = 640`<br>`cam_height = 480` | Any size with the Tello's 4:3 shape. Must match the converter and the real-frame resize. | **Your choice**; the 4:3 shape needs a quick check (the spec only says 720p) | Run `see_camera.py` and print `reader.frame.shape`. Expect `(720, 960, 3)`, which is 4:3. If it prints `(720, 1280, 3)` (16:9), change to 640×360. | Block C · Ch 3 · 3.1 Part E |
+| `cam_focal_mm = 12.0` | Calculated from the Tello's field of view. | **Official** (82.6°), **but verify**: the spec doesn't say whether that's horizontal or corner to corner | Place the Tello 1.00 m from a wall, facing it straight on. In the live video, mark where the left and right frame edges hit the wall and measure the width W. Then focal = 20.955 × 1.00 ÷ W. For example, W = 1.75 m gives 12.0. | Block C · Ch 3 · 3.1 Part E |
+| `attacker_span_m = 0.13` | Widest width of the real **target** drone, including propellers and guards. | **Measure** | Lay the target drone flat with propellers and guards on. Measure its widest point, tip to tip, with a ruler and convert to metres (e.g., 13 cm = 0.13). Even if the target is a Tello, measure it, since the spec dimensions may not include guards. | Block C · Ch 3 · 3.1 Part E |
+| `self._drift[env_ids] = (torch.rand(n, 3, device=self.device) - 0.5) * 0.15` | Range of random drift. | **Measure** | Take off over the floor you'll chase on and send zero commands for 10 s. Measure how far the drone moved from a floor mark, then speed = distance ÷ 10. Widen 0.15 if this exceeds what the simulation produces. | Block C · Ch 3 · 3.3 Step 0 |
+| `capture_ang_size = 0.19` | Frame share at capture. Depends on `cam_focal_mm` and `attacker_span_m`. | **Measured in simulation** (3.3 Step 4), can be checked on hardware | Hold the target 0.35 m (`capture_radius`) in front of the Tello's camera. Run the detector and converter and read `asz`. Repeat face-on and edge-on; the value should fall inside the spread you logged in 3.3. | Block C · Ch 3 · 3.3 Step 4 |
+| `camera = rep.create.camera(focal_length=12.0)` | Copy of `cam_focal_mm` for the synthetic images. | **Copy** of `cam_focal_mm` | — | Block D · Ch 4 · 4.1 Step 2 |
+| `spawn=sim_utils.PinholeCameraCfg(focal_length=12.0, ...)`<br>`width=640, height=480` | The camera that renders frames; copies the focal length and size. | **Copy** of `cam_focal_mm`, `cam_width`, `cam_height` | — | Block E · Ch 5 · 5.2 Step 1 |
+| `CONTROL_HZ = 20` | Must equal 100 ÷ `decimation`. | **Copy** of the measured control rate | — | Block G · Ch 7 · 7.2 Step 2 |
+| `drone.get_speed_x() / 100.0` (also y, z) | Converts the Tello's speed readings to m/s. | **Verify**: the tutorial assumes cm/s, and the unit is not confirmed in Ryze's SDK guide | During the `max_speed` test, log `get_speed_x()` at the moment the drone crosses between the marks. If the tape gives 1.0 m/s and the reading is about 100, keep ÷100. If it's about 10, use ÷10. | Block G · Ch 7 · 7.2 Step 2 |
+
+
 # Chapter 1 — Create Virtual Environments and Perform Compatibility Tests Among Libraries
 
 ## 1.0 Isolate the project before installing anything (≤1.5h)
@@ -2051,7 +2074,11 @@ And in `_reset_idx`, alongside the 2.2 randomisation, clear the history and draw
 <details>
 <summary>Expand Part E</summary>
 
-Bearings are measured as a fraction of the frame, so what `bearing_x = +0.5` means in degrees depends entirely on the lens. This step sets the simulated camera's focal length and frame shape to the Tello's, so that fraction means the same angle in training and in flight.
+**Why match the simulated camera to the Tello's lens?**
+- In this project, the way the defender drone learns if it is moving towards the attacker is by calculating how close to the center of its camera lens the attacker is. We call this `bearing`. If `bearing_x = 0; bearing_y = 0`, then the attacker is on the center, right in front of the defender. 
+- Different types of lenses produce different bearing values for the same object positions in the real world. On a wider lens, I need to turn a lot to move objects on the screen. On a narrow lens, just a little move shifts the image a lot. 
+- So if you train on a wide lens, the defender will learn abrupt moves and, if transferred to reality on a drone with a narrow lens, it will overcorrect and miss the attacker.
+- That's why it is important that the training matches the type of lens used in the physical drone. 
 
 *File to edit:* `C:\projects\drone_pursuit\drone_pursuit\source\drone_pursuit\drone_pursuit\tasks\direct\quadcopter\quadcopter_env.py`
 
