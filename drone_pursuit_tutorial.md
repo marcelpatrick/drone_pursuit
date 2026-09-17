@@ -304,7 +304,7 @@ Some steps only edit files and need no environment; those say so. Commands use `
 
 Some parameters throughout this project need to be replaced by the values of the real drone:
 
-| Parameter (code line) | What it is | Source | How to measure | First mentioned |
+| Parameter | What it is | Source | How to measure | First mentioned |
 |---|---|---|---|---|
 | `decimation = 5` | The Tello's command rate. Since `sim.dt = 1/100`, decimation = 100 ÷ measured Hz, so 20 Hz gives 5. | **Measure** the control rate, then compute | Run `measure_rate.py` (1.4 Step 6): it sends 500 neutral commands and divides by the elapsed seconds. Round down to a divisor of 100 (20 or 25). This counts commands *sent*; the drone may act on fewer. | Block A · Ch 1 · 1.4 Step 7 (code: Block C · 3.1 Part B) |
 | `obs_delay_min = 2`<br>`obs_delay_max = 5` | Video lag converted to control steps (seconds × Hz): 99–219 ms at 20 Hz gives 2–5. | **Measure** the video delay, then compute | Point the camera at a millisecond stopwatch on screen with the video window beside it, and screenshot both. The gap between the two times is the delay. Take 10 screenshots and use min × Hz and max × Hz, rounded. | Block C · Ch 3 · 3.1 Part D |
