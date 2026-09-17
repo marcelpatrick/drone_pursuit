@@ -22,7 +22,7 @@
 The project is seven self-contained pieces of work. Each block below produces one finished artifact, and the last block combines them. The block titles say what you do; the chapters inside them say how.
 
 | Block | What you do in it | Chapters | Drone in hand? | What comes out |
-|---|---|---|---|---|
+|--|---|---|---|---|
 | **A** | Install and isolate the software, then measure the real drone | 0–1 | 🔌 **YES — in 1.4 only** | Two working conda environments, three hardware measurements |
 | **B** | Build the two-drone chase scene in Isaac Sim | 2 | 💻 No | A rendering arena with a defender and a moving attacker |
 | **C** | Train the reinforcement learning policy that flies the chase | 3 | 💻 No — but needs the 1.4 numbers | `best_agent.pt` — a checkpoint that intercepts |
