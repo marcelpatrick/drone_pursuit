@@ -301,9 +301,10 @@ Some steps only edit files and need no environment; those say so. Commands use `
 </details>
 
 
-<details><summary>Expand:</summary>
-## Values to fetch from the Real Drone
 
+## Values to fetch from the Real Drone
+<details><summary>Expand:</summary>
+     
 Some parameters throughout this project need to be replaced by the values of the real drone:
 
 | Parameter | What it is | Source | How to measure | First mentioned |
