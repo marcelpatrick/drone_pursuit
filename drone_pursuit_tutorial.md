@@ -2079,7 +2079,7 @@ And in `_reset_idx`, alongside the 2.2 randomisation, clear the history and draw
 <summary>Expand Part E</summary>
 
 **Why match the simulated camera to the Tello's lens?**
-- In this project, the way the defender drone learns if it is moving towards the attacker is by calculating how close to the center of its camera lens the attacker is. We call this `bearing`. If `bearing_x = 0; bearing_y = 0`, then the attacker is on the center, right in front of the defender. 
+- In this project, the way the defender drone learns if it is moving towards the attacker is by calculating how close the attacker is to the center of the camera's field of view and whether its image is increasing (taking more of the image). We call this `bearing`. If `bearing_x = 0; bearing_y = 0`, then the attacker is on the center, right in front of the defender. 
 - Different types of lenses produce different bearing values for the same object positions in the real world. On a wider lens, I need to turn a lot to move objects on the screen. On a narrow lens, just a little move shifts the image a lot. 
 - So if you train on a wide lens, the defender will learn abrupt moves and, if transferred to reality on a drone with a narrow lens, it will overcorrect and miss the attacker.
 - That's why it is important that the training matches the type of lens used in the physical drone. 
