@@ -300,7 +300,9 @@ Some steps only edit files and need no environment; those say so. Commands use `
 ---
 </details>
 
-# Values to fetch from the Real Drone
+
+<details><summary>Expand:</summary>
+## Values to fetch from the Real Drone
 
 Some parameters throughout this project need to be replaced by the values of the real drone:
 
@@ -322,6 +324,7 @@ Some parameters throughout this project need to be replaced by the values of the
 | `CONTROL_HZ = 20` | Must equal 100 ÷ `decimation`. | **Copy** of the measured control rate | — | Block G · Ch 7 · 7.2 Step 2 |
 | `drone.get_speed_x() / 100.0` (also y, z) | Converts the Tello's speed readings to m/s. | **Verify**: the tutorial assumes cm/s, and the unit is not confirmed in Ryze's SDK guide | During the `max_speed` test, log `get_speed_x()` at the moment the drone crosses between the marks. If the tape gives 1.0 m/s and the reading is about 100, keep ÷100. If it's about 10, use ÷10. | Block G · Ch 7 · 7.2 Step 2 |
 
+</details>
 
 # Chapter 1 — Create Virtual Environments and Perform Compatibility Tests Among Libraries
 
