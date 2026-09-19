@@ -2096,13 +2096,13 @@ And in `_reset_idx`, alongside the 2.2 randomisation, clear the history and draw
     # in 5.2 AND the real drone's lens.
     cam_width = 640
     cam_height = 480                  # 4:3, matching the Tello's 960x720
-    cam_focal_mm = 12.0               # gives ~83 deg horizontal field of view
+    cam_focal_mm = 12.0               # <<< ASSUMED VALUES: VERIFY AND REPLACE WITH REAL HARDWARE MEASUREMENTS!!!
     cam_aperture_mm = 20.955          # PinholeCameraCfg default horizontal aperture
-    attacker_span_m = 0.13            # target's real width — ONLY to simulate the camera
+    attacker_span_m = 0.13            # <<< ASSUMED VALUES: VERIFY AND REPLACE WITH REAL HARDWARE MEASUREMENTS!!!
     # ▲▲▲ END OF INSERT ▲▲▲
 ```
 
-**Why 12 mm and not Isaac Lab's default 24 mm.** Isaac Lab's default gives roughly 47° of horizontal view; a Tello sees about 83°. Train on 47° and fly on 83° and every bearing corresponds to nearly twice the angle it did in training, so the defender under-steers on every correction — and nothing errors.
+**Why `cam_focal_mm = 12.0 ` and not Isaac Lab's default 24 mm.** Isaac Lab's default gives roughly 47° of horizontal view; a Tello sees about 83°. Train on 47° and fly on 83° and every bearing corresponds to nearly twice the angle it did in training, so the defender under-steers on every correction — and nothing errors.
 
 For a different camera, solve:
 
