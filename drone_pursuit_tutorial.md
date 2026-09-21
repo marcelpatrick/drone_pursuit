@@ -2082,7 +2082,9 @@ And in `_reset_idx`, alongside the 2.2 randomisation, clear the history and draw
 - In this project, the way the defender drone learns if it is moving towards the attacker is by calculating how close the attacker is to the center of the camera's field of view and whether its image is increasing (taking more of the image). We call this `bearing`. If `bearing_x = 0; bearing_y = 0`, then the attacker is on the center, right in front of the defender. 
 - Different types of lenses produce different bearing values for the same object positions in the real world. On a wider lens, I need to turn a lot to move objects on the screen. On a narrow lens, just a little move shifts the image a lot. 
 - So if you train on a wide lens, the defender will learn abrupt moves and, if transferred to reality on a drone with a narrow lens, it will overcorrect and miss the attacker.
-- That's why it is important that the training matches the type of lens used in the physical drone. 
+- That's why it is important that the training matches the type of lens used in the physical drone.
+
+Change these parameters to the real ones from the hardware you are using; otherwise, training won't match reality. **This is the most likely silent failure in the whole project.** Chapter 6.1 Step 2 exists specifically to catch it, by comparing these numbers against ones measured from a rendered frame.
 
 *File to edit:* `C:\projects\drone_pursuit\drone_pursuit\source\drone_pursuit\drone_pursuit\tasks\direct\quadcopter\quadcopter_env.py`
 
@@ -2101,19 +2103,6 @@ And in `_reset_idx`, alongside the 2.2 randomisation, clear the history and draw
     attacker_span_m = 0.13            # <<< ASSUMED VALUES: VERIFY AND REPLACE WITH REAL HARDWARE MEASUREMENTS!!!
     # ▲▲▲ END OF INSERT ▲▲▲
 ```
-
-**Why `cam_focal_mm = 12.0 ` and not Isaac Lab's default 24 mm.** Isaac Lab's default gives roughly 47° of horizontal view; a Tello sees about 83°. Train on 47° and fly on 83° and every bearing corresponds to nearly twice the angle it did in training, so the defender under-steers on every correction — and nothing errors.
-
-For a different camera, solve:
-
-```
-focal_mm = aperture_mm / (2 x tan(FOV / 2))
-         = 20.955 / (2 x tan(41.3 deg)) = 12.0     for an 83 deg lens
-```
-
-**Aspect ratio too.** A Tello outputs 4:3. Rendering square and then squashing a 4:3 photograph into it would stretch every horizontal bearing by 4/3. Render 640×480, resize real frames to 640×480, and the geometry stays consistent.
-
-**This is the most likely silent failure in the whole project.** Chapter 6.1 Step 2 exists specifically to catch it, by comparing these numbers against ones measured from a rendered frame.
 
 </details>
 
