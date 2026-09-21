@@ -1939,7 +1939,15 @@ From 1.4, Step 6. If you measured 20 commands per second:
 <details>
 <summary>Expand Part C</summary>
 
+Here are all 17 inputs the model takes: 
+
 Every entry below is something a Tello can supply in flight, or something computed from the camera. That constraint is what makes the same seventeen assemblable in Chapter 7.2 from real hardware, with the policy unchanged.
+
+They are of 4 types: 
+> 3 – own speed: how fast the drone moves forward, sideways, up.
+> 3 – own tilt: which way "down" is, so it knows how it's leaning.
+> 7 – camera view of the attacker: left/right position, up/down position, size (a proxy for distance), how each of those three changed since last step, and a seen/not-seen flag.
+> 4 – its last commands: the stick inputs it just sent - its own previous four outputs are fed back in as inputs. That's so it remembers what it just did and avoids jerky, contradictory moves.
 
 ```
 obs (17 numbers per env):
@@ -2160,7 +2168,7 @@ Simulating that blind spot means the policy meets the "too small to detect" case
 <details>
 <summary>Expand Part G</summary>
 
-This step concatenates the seventeen numbers, holds the last camera reading whenever the attacker is not visible, and computes the three rate-of-change terms. Chapter 7.2's flight script builds the same seventeen in the same order from real telemetry, so any change to this ordering must be mirrored there.
+Earlier parts built each part of the code that provides model inputs separately. This step packs them into the one list of 17 inputs the policy reads every step. The policy never sees names, only positions: it learns that slot 6 means "left/right bearing," so the order is its vocabulary. Two extras make the list honest: When the attacker drops out of view, the last sighting is kept instead of zeros, which would falsely read as "dead centre." The three change-since-last-step values tell the policy which way the attacker is drifting. Chapter 7.2 rebuilds these seventeen from the real Tello in this exact order, so if you reorder here, reorder there.
 
 *File to edit:* `C:\projects\drone_pursuit\drone_pursuit\source\drone_pursuit\drone_pursuit\tasks\direct\quadcopter\quadcopter_env.py`
 
