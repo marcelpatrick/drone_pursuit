@@ -19,7 +19,9 @@ from isaaclab.scene import InteractiveSceneCfg
 from isaaclab.sim import SimulationCfg
 from isaaclab.terrains import TerrainImporterCfg
 from isaaclab.utils import configclass
-from isaaclab.utils.math import subtract_frame_transforms
+# ▼▼▼ NEW! ▼▼▼
+from isaaclab.utils.math import subtract_frame_transforms, quat_apply
+# ▲▲▲ END OF INSERT ▲▲▲
 
 ##
 # Pre-defined configs
@@ -126,12 +128,21 @@ class QuadcopterEnvCfg(DirectRLEnvCfg):
     max_speed = 2.0          # m/s — conservative; a Tello can do more
     max_yaw_rate = 1.5       # rad/s
     vel_gain = 3.0           # how hard the stand-in stabiliser corrects
-    yaw_gain = 0.05
+    yaw_gain = 10.0           # <<< CHANGED TO 10.0. BEFORE = 0.05. Fixes ~10% of the turning error per physics tick
     # ▲▲▲ END OF INSERT ▲▲▲
     # ▼▼▼ NEW! — from project_notes.txt, converted to control steps ▼▼▼
     # Manually ads a delay to the input reading on the simulation so it mimics the expected behavior when running on hardware
     obs_delay_min = 2
     obs_delay_max = 5
+    # ▲▲▲ END OF INSERT ▲▲▲
+
+    # ▼▼▼ NEW! — camera model. MUST match the TiledCameraCfg you add ▼▼▼
+    # in 5.2 AND the real drone's lens.
+    cam_width = 640
+    cam_height = 480                  # 4:3, matching the Tello's 960x720
+    cam_focal_mm = 12.0               # <<< ASSUMED VALUES: VERIFY AND REPLACE WITH REAL HARDWARE MEASUREMENTS!!!
+    cam_aperture_mm = 20.955          # PinholeCameraCfg default horizontal aperture
+    attacker_span_m = 0.13            # <<< ASSUMED VALUES: VERIFY AND REPLACE WITH REAL HARDWARE MEASUREMENTS!!!
     # ▲▲▲ END OF INSERT ▲▲▲
 
     # reward scales
@@ -193,6 +204,12 @@ class QuadcopterEnv(DirectRLEnv):
         self._gravity_magnitude = torch.tensor(self.sim.cfg.gravity, device=self.device).norm()
         self._robot_weight = (self._robot_mass * self._gravity_magnitude).item()
 
+        # ▼▼▼ NEW — resistance to turning (yaw inertia), used to scale the yaw twist ▼▼▼
+        inertias = self._robot.root_physx_view.get_inertias()
+        self._robot_izz = inertias[0, self._body_id[0], 8].item()
+        print(f"[3.1] defender yaw inertia = {self._robot_izz:.2e} kg*m^2")
+        # ▲▲▲ END OF INSERT ▲▲▲
+
         # add handle for debug visualization (this is set to a valid handle inside set_debug_vis)
         self.set_debug_vis(self.cfg.debug_vis)
 
@@ -235,11 +252,11 @@ class QuadcopterEnv(DirectRLEnv):
         # stands in for the Tello's own stabiliser
         vel_error = desired_vel_b - self._robot.data.root_lin_vel_b
         force_b = self.cfg.vel_gain * vel_error * self._robot_mass
-        force_b[:, 2] += self._robot_weight                              # hold altitude
+        force_b -= self._robot_weight * self._robot.data.projected_gravity_b   # hold altitude ◄── CHANGED: added * self._robot.data.projected_gravity_b. "up" stays up even when tilted
 
-        self._thrust[:, 0, :] = quat_apply(self._robot.data.root_quat_w, force_b)
+        self._thrust[:, 0, :] = force_b                    # ◄── CHANGED: before: self._thrust[:, 0, :] = quat_apply(self._robot.data.root_quat_w, force_b). already in the drone's own frame
         yaw_error = desired_yaw_rate - self._robot.data.root_ang_vel_b[:, 2]
-        self._moment[:, 0, 2] = self.cfg.yaw_gain * yaw_error
+        self._moment[:, 0, 2] = self.cfg.yaw_gain * yaw_error * self._robot_izz   # ◄── CHANGED: added * self._robot_izz
         # ▲▲▲ END OF INSERT ▲▲▲
 
     # Hands those forces to the physics engine, repeatedly. It runs on every physics tick, 
@@ -327,21 +344,69 @@ class QuadcopterEnv(DirectRLEnv):
         return self._reading_history.gather(1, idx).squeeze(1)
     # ▲▲▲ END OF INSERT ▲▲▲
 
+    # ▼▼▼ NEW!: Converts position coordinates in a physical space into image positions on a camera frame ▼▼▼
+    def _camera_readings(self):
+        """Project ground truth through the camera model → what the detector would report."""
+        rel_b, _ = subtract_frame_transforms(
+            self._robot.data.root_pos_w, self._robot.data.root_quat_w,
+            self._attacker.data.root_pos_w,
+        )
+        fwd = rel_b[:, 0]
+        safe_fwd = fwd.clamp(min=0.05)
+
+        f_px = self.cfg.cam_width * self.cfg.cam_focal_mm / self.cfg.cam_aperture_mm
+        half_w = self.cfg.cam_width / 2.0
+        half_h = self.cfg.cam_height / 2.0
+
+        bearing_x = -(rel_b[:, 1] / safe_fwd) * (f_px / half_w)
+        bearing_y = -(rel_b[:, 2] / safe_fwd) * (f_px / half_h)
+        ang_size = (f_px * self.cfg.attacker_span_m / self._dist.clamp(min=0.05)) / self.cfg.cam_width
+
+        # the detector's blind spot: a box under ~8 px wide usually returns nothing
+        visible = (fwd > 0.05) & (bearing_x.abs() < 1.0) & (bearing_y.abs() < 1.0) & (ang_size > 0.012)
+        return bearing_x, bearing_y, ang_size, visible.float()
+    # ▲▲▲ END OF INSERT ▲▲▲
+
     def _get_observations(self) -> dict:
-        desired_pos_b, _ = subtract_frame_transforms(
-            self._robot.data.root_pos_w, self._robot.data.root_quat_w, self._desired_pos_w
+
+    # ▼▼▼ DELETE the hover task's whole body — it looked like this: ▼▼▼
+    #   desired_pos_b, _ = subtract_frame_transforms(
+    #       self._robot.data.root_pos_w, self._robot.data.root_quat_w, self._desired_pos_w
+    #   )
+    #   obs = torch.cat([self._robot.data.root_lin_vel_b,
+    #                    self._robot.data.root_ang_vel_b,
+    #                    self._robot.data.projected_gravity_b,
+    #                    desired_pos_b], dim=-1)
+    #   return {"policy": obs}
+    # ▲▲▲ and REPLACE it with everything below ▲▲▲
+
+            # ▼▼▼ New! - integrating all 17 model inputs into one list ▼▼▼
+        # cache the true distance — the reward (3.2) and _get_dones both read it
+        self._dist = torch.linalg.norm(
+            self._attacker.data.root_pos_w - self._robot.data.root_pos_w, dim=1
         )
-        obs = torch.cat(
-            [
-                self._robot.data.root_lin_vel_b,
-                self._robot.data.root_ang_vel_b,
-                self._robot.data.projected_gravity_b,
-                desired_pos_b,
-            ],
-            dim=-1,
-        )
-        observations = {"policy": obs}
-        return observations
+
+        bx, by, asz, vis = self._camera_readings()
+
+        # hold the previous reading wherever the attacker is not currently visible
+        bx  = torch.where(vis > 0.5, bx,  self._prev_bx)
+        by  = torch.where(vis > 0.5, by,  self._prev_by)
+        asz = torch.where(vis > 0.5, asz, self._prev_asz)
+
+        d_bx, d_by, d_asz = bx - self._prev_bx, by - self._prev_by, asz - self._prev_asz
+        self._prev_bx, self._prev_by, self._prev_asz = bx.clone(), by.clone(), asz.clone()
+
+        fresh = torch.stack([bx, by, asz, d_bx, d_by, d_asz, vis], dim=-1)
+        delayed = self._delayed_readings(fresh)
+
+        obs = torch.cat([
+            self._robot.data.root_lin_vel_b,          # 3   slots 0:3
+            self._robot.data.projected_gravity_b,     # 3   slots 3:6
+            delayed,                                  # 7   slots 6:13  ← camera
+            self._actions,                            # 4   slots 13:17
+        ], dim=-1)
+        return {"policy": obs}
+        # ▲▲▲ END OF INSERT ▲▲▲
 
     # Keeps the score of the training rewards
     def _get_rewards(self) -> torch.Tensor:
