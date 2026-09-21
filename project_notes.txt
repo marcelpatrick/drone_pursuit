@@ -1,0 +1,6 @@
+ESTIMATES - replace with real Tello measurements from 1.4
+control rate        : 20 Hz            → decimation = 5 in the cfg
+video delay         : 175 ms mean, 99–219 ms range
+                      → 2–5 control steps at 20 Hz
+telemetry available : speeds (cm/s), attitude angles. NO angular rates.
+camera              : 960x720, ~83 deg horizontal field of view
