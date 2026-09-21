@@ -2111,7 +2111,7 @@ Change these parameters to the real ones from the hardware you are using; otherw
 <details>
 <summary>Expand Part F</summary>
 
-During training the seven readings are computed from the true relative position, run *forward* through the camera model: given where the attacker really is, how large would it appear and where in frame? This is legitimate — the simulated camera really is photographing a target of known size, and rendering the frame would produce the same rectangle far more slowly. What never happens anywhere in this project is the *backward* step: taking a rectangle and dividing by an assumed width to produce metres.
+Why Part F exists: on the real drone, the defender learns about the attacker only through its camera: it draws a rectangle around it and only knows where the attacker's image is positioned on its camera frame (close to the center, more to the right, etc.) and how large (how close) it looks. The simulator knows each drone's exact coordinates (e.g., attacker 4 m ahead, 1 m left); a policy trained on those would fail in real flight. So _camera_readings() converts exact coordinates into rectangle positions on an image frame and whether the drone was spotted at all. It even copies the detector's blind spot: nothing is reported when the attacker is behind, off-screen, or under ~8 px wide.
 
 *File to edit:* `C:\projects\drone_pursuit\drone_pursuit\source\drone_pursuit\drone_pursuit\tasks\direct\quadcopter\quadcopter_env.py`
 
