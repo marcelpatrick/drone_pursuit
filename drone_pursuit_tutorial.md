@@ -2941,18 +2941,30 @@ Keeping the true metric is what lets the learning signal stay smooth while the p
 
     def _get_rewards(self) -> torch.Tensor:
 
-        # ▼▼▼ DELETE the hover task's body — it computed distance_to_goal ▼▼▼
-        #   distance_to_goal = torch.linalg.norm(self._desired_pos_w - self._robot.data.root_pos_w, dim=1)
-        #   distance_to_goal_mapped = 1 - torch.tanh(distance_to_goal / 0.8)
-        #   rewards = { ... }   ; reward = torch.sum(torch.stack(list(rewards.values())), dim=0)
-        # ▲▲▲ and REPLACE the whole body with the code below ▲▲▲
+        # ▼▼▼ DELETE : this was the reward structure of the first hover task - to hover over a fixed point. We are replacing this with the new pursuit task ▼▼▼
+        # distance_to_goal = torch.linalg.norm(self._desired_pos_w - self._robot.data.root_pos_w, dim=1)
+        # distance_to_goal_mapped = 1 - torch.tanh(distance_to_goal / 0.8)
+        # rewards = {
+        #     "lin_vel": lin_vel * self.cfg.lin_vel_reward_scale * self.step_dt,
+        #     "ang_vel": ang_vel * self.cfg.ang_vel_reward_scale * self.step_dt,
+        #     "distance_to_goal": distance_to_goal_mapped * self.cfg.distance_to_goal_reward_scale * self.step_dt,
+        # }
+        # reward = torch.sum(torch.stack(list(rewards.values())), dim=0)
 
-        # ▼▼▼ INSERT HERE! ▼▼▼
+        # ▼▼▼ NEW! - Pursuit task reward structure ▼▼▼
+        # ── BLOCK A: direction from defender to attacker ─────────────────────
+        # The closing-speed term needs to know which way "toward the attacker" is.
+        # Dividing the offset vector by its length turns it into a pure direction
+        # (length 1). clamp() stops a division by zero if the drones ever coincide.
+        # self._dist is refreshed at the top of _get_dones, which Isaac Lab runs
+        # just before this method on every step (see the note below the code).
         to_target = self._attacker.data.root_pos_w - self._robot.data.root_pos_w
         dir_to_target = to_target / self._dist.unsqueeze(1).clamp(min=1e-6)
 
-        # 1) CLOSING SPEED: my velocity, projected onto the target direction.
-        #    +1.0 means "approaching at 1 m/s"; negative means fleeing. Paid EVERY step.
+        # ── BLOCK B: the three PAYMENTS — what the defender is rewarded for ──
+        # 1) CLOSING SPEED: the part of the defender's velocity that points at
+        #    the attacker. +1.0 = approaching at 1 m/s, negative = moving away.
+        #    Paid every step, so even an untrained policy learns which way is better.
         closing = (self._robot.data.root_lin_vel_w * dir_to_target).sum(dim=1)
 
         # 2) PROXIMITY: 1 - tanh(dist/4) — a smooth 0..1 value that rises as you approach.
@@ -2961,7 +2973,9 @@ Keeping the true metric is what lets the learning signal stay smooth while the p
         # 3) CAPTURE: the one-off bonus
         captured = self._dist < self.cfg.capture_radius
 
-        # 4) SMOOTHNESS: how much the command changed since last step
+        # ── BLOCK C: the three PENALTIES — what the defender is charged for ──
+        # 4) SMOOTHNESS: how much the 4 commands changed since the last step.
+        #    Large swings cost nothing in sim but make the real Tello shake.
         action_rate = torch.sum(torch.square(self._actions - self._prev_actions), dim=1)
 
         # 5) STABILITY: penalise spinning/wobbling (same formula as the hover task)
@@ -2970,15 +2984,33 @@ Keeping the true metric is what lets the learning signal stay smooth while the p
         # 6) CRASH: same two conditions _get_dones uses for failure
         crashed = (self._robot.data.root_pos_w[:, 2] < 0.1) | (self._dist > self.cfg.arena_radius)
 
-        reward = (
-            self.cfg.closing_reward_scale * closing
-            + self.cfg.proximity_reward_scale * proximity
-            + self.cfg.capture_bonus * captured.float()
-            + self.cfg.action_rate_penalty * action_rate
-            + self.cfg.ang_vel_reward_scale * ang_vel          # new
-            + self.cfg.crash_penalty * crashed.float()         # new
-        ) * self.step_dt
+        # ── BLOCK D: weight each term and store it under a name ──────────────
+        # Each raw value above is multiplied by its dial from QuadcopterEnvCfg
+        # (Step 1). step_dt keeps totals comparable if the control rate changes.
+        # Names matter: they must match the keys of self._episode_sums in
+        # __init__, and each becomes a TensorBoard curve Episode_Reward/<name>.
+        rewards = {
+            "closing":     self.cfg.closing_reward_scale   * closing          * self.step_dt,
+            "proximity":   self.cfg.proximity_reward_scale * proximity        * self.step_dt,
+            "capture":     self.cfg.capture_bonus          * captured.float() * self.step_dt,
+            "action_rate": self.cfg.action_rate_penalty    * action_rate      * self.step_dt,
+            "ang_vel":     self.cfg.ang_vel_reward_scale   * ang_vel          * self.step_dt,
+            "crash":       self.cfg.crash_penalty          * crashed.float()  * self.step_dt,
+        }
+        # the single number PPO sees: the sum of all six terms, one value per env
+        reward = torch.sum(torch.stack(list(rewards.values())), dim=0)
+
+        # ── BLOCK E: remember this step's commands ───────────────────────────
+        # Next step's smoothness penalty compares against these.
+        # Must come AFTER action_rate was computed above.
         self._prev_actions = self._actions.clone()
+
+        # ── BLOCK F: logging (kept from the hover task) ──────────────────────
+        # Adds each term to a running total per env. _reset_idx writes the totals
+        # to TensorBoard when an episode ends, which lets you see WHICH term is
+        # driving the reward — e.g. proximity high + capture 0 = orbiting exploit.
+        for key, value in rewards.items():
+            self._episode_sums[key] += value
         return reward
         # ▲▲▲ END OF INSERT ▲▲▲
 ```
