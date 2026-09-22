@@ -3019,7 +3019,10 @@ Keeping the true metric is what lets the learning signal stay smooth while the p
 
 **Why three payments instead of only the capture bonus.** With the bonus alone, an untrained policy would have to stumble within 0.35 m of a moving attacker before receiving anything but zero. Across thousands of episodes that may never happen, and PPO cannot improve a policy whose returns are identical everywhere — that is a sparse reward. `closing` and `proximity` pay on every step, so even a bad policy gets told which direction was better. The bonus then supplies the push from "nearby" to "in contact".
 
-**Why `tanh` for proximity.** It maps distance onto a bounded 0–1 curve: a steep gradient near the target, flat far away. An unbounded `1/dist` grows without limit at small distances and produces advantage estimates large enough to destabilise the PPO update. The hover task uses the same bounded squash for its position term.
+**Why tanh for proximity?** 1 − tanh(d/4) stays between 0 and 1 and slopes at every distance the defender flies, most steeply near the attacker. An unbounded 1/d fails in two ways. First, it pays 0.5 at 2 m but 20 at 5 cm, so the few steps where a defender overshoots very close would dominate each PPO update and make the critic's predictions unreliable. Second, it pays most just outside the 0.35 m capture radius. Capturing ends the episode and stops that income, so with this project's numbers, staying at 0.36 m for the rest of the episode is worth about 18 points, against 10 for capturing, and the policy learns to hover there without capturing.
+
+<img width="1124" height="789" alt="image" src="https://github.com/user-attachments/assets/940c595f-aff5-4d5e-813d-2a6c269230e0" />
+
 
 **Why penalise the action rate.** In simulation, changing the command from +1 to −1 between steps costs nothing — the force model responds instantly. On a Tello, motors have inertia and the WiFi link drops packets, so a command stream that swings wildly produces a drone that shakes instead of flying. Published sim-to-real work identifies command smoothness as one of the decisive factors in whether a policy transfers. Keep the weight small: raise it too far and the defender becomes sluggish and stops manoeuvring.
 
