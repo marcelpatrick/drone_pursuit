@@ -2873,11 +2873,18 @@ Expected result: `RESULT: Checkpoint 3.1 passed`, with one `[??]` under item 4 w
 <details>
 <summary>Expand 3.2</summary>
 
-> **What this subchapter does:** the policy becomes whatever the reward pays for, including any loophole in it. This subchapter builds a dense reward from three payments (closing speed, proximity, capture bonus) and two penalties (jerky commands, plus the hover task's existing stability terms), then defines the four events that end an episode. It is mostly reading and deciding rather than typing, because a reward bug is only visible after a full training run — the most expensive kind of mistake in this project.
+> **What this subchapter does**: Rewrites two methods in `quadcopter_env.py`. `_get_rewards` decides how many points the defender earns on every step:
+
+- points for flying toward the attacker (closing speed)
+- points for being near it (proximity)
+- a one-off 200-point bonus for getting within 0.35 m of it (capture)
+- a small deduction for changing its commands abruptly (action rate)
+
+`_get_dones` decides which events end an episode: capture, hitting the floor, drifting beyond the arena radius, or running out of time. PPO (the training algorithm) adjusts the policy to collect as many points as possible, so these two methods define what "good pursuit" means for the training run in Chapter 3.3. The code is short, but a badly chosen weight or a missing end condition produces no error. The 3.3 training run completes normally, and only then do you see that the drone learned something unintended, such as circling the attacker at 1 m without ever capturing it. That is why each step below explains the reasoning behind every number before you type it.
 
 ### Why the reward may use the true distance when the observations may not
 
-The observations changed in 3.1, but the reward does not have to. The reward is read only by the PPO update inside skrl; once training ends it is never called again — neither `play.py` nor the Chapter 6 demo evaluates it. So it may use the true distance between the drones even though the policy never receives that number.
+Training simulation uses true distance while, in real life, the defender drone will only use the attackers position in the camera frame as input. it works because simulation training learns to map which control commands produce which physical position change, which in turn produce an image movement on the defender's camera. so in real life, it knows which control movements to do to get the attacker drone closer to the center of its camera.
 
 ```
  OBSERVATIONS ──► must be obtainable from a camera at deployment  (strict)
@@ -2926,6 +2933,8 @@ Keeping the true metric is what lets the learning signal stay smooth while the p
 
 *File to edit:* `C:\projects\drone_pursuit\drone_pursuit\source\drone_pursuit\drone_pursuit\tasks\direct\quadcopter\quadcopter_env.py`
 
+- Rewards: three payments (closing speed, proximity, capture bonus), two ongoing penalties (abrupt command changes, spinning), and a one-off crash penalty
+
 ```python
 # ── FILE: ...\tasks\direct\quadcopter\quadcopter_env.py ─────────────────────
 # ── SECTION: class QuadcopterEnv, method _get_rewards ───────────────────────
@@ -2955,11 +2964,19 @@ Keeping the true metric is what lets the learning signal stay smooth while the p
         # 4) SMOOTHNESS: how much the command changed since last step
         action_rate = torch.sum(torch.square(self._actions - self._prev_actions), dim=1)
 
+        # 5) STABILITY: penalise spinning/wobbling (same formula as the hover task)
+        ang_vel = torch.sum(torch.square(self._robot.data.root_ang_vel_b), dim=1)
+
+        # 6) CRASH: same two conditions _get_dones uses for failure
+        crashed = (self._robot.data.root_pos_w[:, 2] < 0.1) | (self._dist > self.cfg.arena_radius)
+
         reward = (
             self.cfg.closing_reward_scale * closing
             + self.cfg.proximity_reward_scale * proximity
             + self.cfg.capture_bonus * captured.float()
             + self.cfg.action_rate_penalty * action_rate
+            + self.cfg.ang_vel_reward_scale * ang_vel          # new
+            + self.cfg.crash_penalty * crashed.float()         # new
         ) * self.step_dt
         self._prev_actions = self._actions.clone()
         return reward
