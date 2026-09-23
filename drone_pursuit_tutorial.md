@@ -3038,6 +3038,8 @@ Keeping the true metric is what lets the learning signal stay smooth while the p
 
 *File to edit:* `C:\projects\drone_pursuit\drone_pursuit\source\drone_pursuit\drone_pursuit\tasks\direct\quadcopter\quadcopter_env.py`
 
+An episode ends when the agent (drone) either dies or the episode times out. Here we are also adding the success case `captured` as a condition to end the episode. 
+
 ```python
 # ── FILE: ...\tasks\direct\quadcopter\quadcopter_env.py ─────────────────────
 # ── SECTION: class QuadcopterEnv, method _get_dones ─────────────────────────
@@ -3051,13 +3053,16 @@ Keeping the true metric is what lets the learning signal stay smooth while the p
         #   return died, time_out
         # ▲▲▲ and REPLACE it with the code below ▲▲▲
 
-        # ▼▼▼ INSERT HERE! ▼▼▼
+        # ▼▼▼ NEW! adding capture (success to the ending conditions (as died)) ▼▼▼
         captured = self._dist < self.cfg.capture_radius                       # success
         crashed = self._robot.data.root_pos_w[:, 2] < 0.1                     # floor
-        escaped = self._dist > self.cfg.arena_radius                          # lost it
-        died = crashed | escaped | captured        # all three END the episode now
+        escaped = self._dist > self.cfg.arena_radius                          # lost it: attacker got away
+
+        # 1st return value: any outcome that ends the attempt, win or loss
+        terminated = crashed | escaped | captured        # all three END the episode now
+        # 2nd return value: ran out of time
         time_out = self.episode_length_buf >= self.max_episode_length - 1
-        return died, time_out
+        return terminated, time_out
         # ▲▲▲ END OF INSERT ▲▲▲
 ```
 
