@@ -2075,6 +2075,7 @@ To hand the policy a reading from 5 steps ago, the code has to keep the past rea
         self._prev_by = torch.zeros(self.num_envs, device=self.device)
         self._prev_asz = torch.zeros(self.num_envs, device=self.device)
         self._prev_actions = torch.zeros(self.num_envs, 4, device=self.device)
+        self._captured = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         # ▲▲▲ END OF INSERT ▲▲▲
 ```
 
@@ -2112,6 +2113,7 @@ And in `_reset_idx`, alongside the 2.2 randomisation, clear the history and draw
         self._prev_bx[env_ids] = 0.0
         self._prev_by[env_ids] = 0.0
         self._prev_asz[env_ids] = 0.0
+        self._prev_actions[env_ids] = 0.0
         # ▲▲▲ END OF INSERT ▲▲▲
 ```
 
@@ -2937,6 +2939,26 @@ Keeping the true metric is what lets the learning signal stay smooth while the p
 
 ```python
 # ── FILE: ...\tasks\direct\quadcopter\quadcopter_env.py ─────────────────────
+# ── SECTION: class QuadcopterEnv, method __init__ ───────────────────────
+
+
+   self._prev_actions = torch.zeros(self.num_envs, 4, device=self.device)     # ← EXISTING (anchor)
+   # ▲▲▲ END OF INSERT ▲▲▲                                                      # ← EXISTING (anchor)
+
+   # Logging                                                                    # ← EXISTING (anchor)
+   self._episode_sums = {
+       key: torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
+       for key in [
+           "closing", "proximity", "capture", "crash", "action_rate", "ang_vel",   # ◄── CHANGED: was "lin_vel", "ang_vel", "distance_to_goal"
+       ]
+   }
+
+
+```
+
+
+```python
+# ── FILE: ...\tasks\direct\quadcopter\quadcopter_env.py ─────────────────────
 # ── SECTION: class QuadcopterEnv, method _get_rewards ───────────────────────
 
     def _get_rewards(self) -> torch.Tensor:
@@ -3053,8 +3075,13 @@ An episode ends when the agent (drone) either dies or the episode times out. Her
         #   return died, time_out
         # ▲▲▲ and REPLACE it with the code below ▲▲▲
 
-        # ▼▼▼ NEW! adding capture (success to the ending conditions (as died)) ▼▼▼
+        # ▼▼▼ NEW! adding capture (success to the ending conditions (as terminated)) ▼▼▼
+        # measure the distance AFTER this step's physics — _get_rewards reads it next    
+        self._dist = torch.linalg.norm(                                                  
+            self._attacker.data.root_pos_w - self._robot.data.root_pos_w, dim=1          
+        )                                                                       
         captured = self._dist < self.cfg.capture_radius                       # success
+        self._captured = captured 
         crashed = self._robot.data.root_pos_w[:, 2] < 0.1                     # floor
         escaped = self._dist > self.cfg.arena_radius                          # lost it: attacker got away
 
@@ -3177,18 +3204,42 @@ Total reward can climb steadily while the defender never actually catches anythi
 # ── SECTION: class QuadcopterEnv, method _reset_idx — the logging block ─────
 # ──          that already exists near the top of the method            ─────
 
-        extras = dict()
-        # --- EXISTING episode-sum logging, unchanged ---
+        if env_ids is None or len(env_ids) == self.num_envs:                     # ← EXISTING (anchor)
+            env_ids = self._robot._ALL_INDICES                                   # ← EXISTING (anchor)
 
-        # ▼▼▼ INSERT HERE! — pursuit-specific metrics ▼▼▼
-        extras["Metrics/final_distance"] = self._dist[env_ids].mean().item()
-        extras["Metrics/capture_rate"] = (
-            self._dist[env_ids] < self.cfg.capture_radius
-        ).float().mean().item()
+        # Logging
+        # ▼▼▼ CHANGED — replaces final_distance_to_goal (leftover from the hover task) ▼▼▼
+        # distance between the drones when the episode ended; measured here, before
+        # the reset below moves them. Works on the very first reset too.
+        final_dist = torch.linalg.norm(
+            self._attacker.data.root_pos_w[env_ids] - self._robot.data.root_pos_w[env_ids], dim=1
+        )
+        # ▲▲▲ END OF CHANGE ▲▲▲
+        extras = dict()                                                          # ← EXISTING, unchanged from here...
+        for key in self._episode_sums.keys():
+...
+        self.extras["log"].update(extras)                                        # ...to here (first batch: rewards)
+        extras = dict()
+
+        # ▼▼▼ Replace
+        # extras["Episode_Termination/died"] = torch.count_nonzero(self.reset_terminated[env_ids]).item()
+
+        # ▼▼▼ NEW — count captures separately from deaths ▼▼▼
+        cap = self._captured[env_ids]
+        extras["Episode_Termination/captured"] = torch.count_nonzero(self.reset_terminated[env_ids] & cap).item()
+        extras["Episode_Termination/died"]     = torch.count_nonzero(self.reset_terminated[env_ids] & ~cap).item()
+        # ▲▲▲ END OF FIX ▲▲▲
+
+        extras["Episode_Termination/time_out"] = torch.count_nonzero(self.reset_time_outs[env_ids]).item()   # ← EXISTING
+
+        # ▼▼▼ 3.3 Step 2 — pursuit-specific metrics ▼▼▼
+        extras["Metrics/final_distance"]   = final_dist.mean().item()
+        extras["Metrics/capture_rate"]     = cap.float().mean().item()
         extras["Metrics/visible_fraction"] = self._prev_asz[env_ids].gt(0).float().mean().item()
         # ▲▲▲ END OF INSERT ▲▲▲
+        self.extras["log"].update(extras)                                        # ← EXISTING, keep LAST (second batch)
 
-        self.extras["log"] = dict(extras)      # ← EXISTING line, keep it LAST
+        self._robot.reset(env_ids)                                               # ← EXISTING (anchor below)
 ```
 
 | Metric | Healthy | Sick pattern → diagnosis |
