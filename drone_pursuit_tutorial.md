@@ -3097,7 +3097,83 @@ Ending the episode on capture matters: if it continued, the defender would sit j
 
 </details>
 
-> ✅ **Checkpoint 3.2** — the code compiles and the env steps, and you can answer: *"If I set `closing_reward_scale` to 0, what degenerate behaviour appears?"* (Answer: hovering at the distance where the tanh curve is steepest — proximity pays without ever closing.)
+> ✅ **Checkpoint 3.2**
+
+> ✅ **Checkpoint 3.2** — run the three tests below in order. Tests 1 and 2 prove the code runs; Test 3 proves you understand why the reward is built the way it is, which you need in 3.3 to diagnose a bad training run.
+
+**Test 1 — Check the file for typing errors (10 seconds)**
+
+> **Environment:** `env_drone`
+
+Isaac Sim takes about a minute to start, and a missing bracket or wrong indentation only shows up after that minute. `py_compile` reads the file without starting Isaac Sim and stops at the first typing error.
+
+```bat
+conda activate env_drone
+python -m py_compile C:\projects\drone_pursuit\drone_pursuit\source\drone_pursuit\drone_pursuit\tasks\direct\quadcopter\quadcopter_env.py
+```
+
+- **Pass:** nothing is printed.
+- **Fail:** `SyntaxError` or `IndentationError` with a line number → fix that line and run again.
+
+This test checks spelling and structure only. It cannot catch a name that doesn't exist, such as a reward key missing from `_episode_sums` — Test 2 does that.
+
+**Test 2 — Run every method 3.2 changed, through at least one full episode (~3 min)**
+
+> **Environment:** `env_drone`
+
+A short training run with 16 environments. `--max_iterations 10` × 24 steps per iteration = 240 steps, longer than one 200-step episode (10 s at 20 Hz), so every environment passes through `_get_dones`, `_get_rewards` and `_reset_idx` at least once. Run it from the project folder, because `train.py` writes its logs to `logs\skrl\` inside whatever folder you start it from.
+
+```bat
+cd C:\projects\drone_pursuit\drone_pursuit
+python scripts\skrl\train.py --task Template-Drone-Pursuit-Direct-v0 --num_envs 16 --headless --max_iterations 10
+tensorboard --logdir logs\skrl
+```
+
+- **Pass:** the run finishes without a `Traceback`, and TensorBoard (open http://localhost:6006, newest run) lists, under **Info**:
+  - six reward curves: `Episode_Reward/closing`, `proximity`, `capture`, `crash`, `action_rate`, `ang_vel`
+  - three ending counts: `Episode_Termination/captured`, `died`, `time_out`
+- **Fail → what to fix:**
+
+| Message or symptom | Cause |
+|---|---|
+| `KeyError: 'closing'` | `_episode_sums` in `__init__` still has the hover task's key names |
+| `AttributeError: ... '_captured'` | `self._captured = torch.zeros(...)` missing from `__init__` |
+| `NameError: name 'env_ids' is not defined` | a `[env_ids] = 0.0` line was placed in `__init__` instead of `_reset_idx` |
+| curves named `lin_vel` or `distance_to_goal` appear | the `_episode_sums` edit was not saved |
+| no `Episode_Termination/captured` curve | the "died"/"captured" split in `_reset_idx` is missing |
+
+If TensorBoard shows no curves at all, wait a minute and refresh; if still empty, rerun with `--max_iterations 20`.
+
+**Test 3 — Explain why the reward pays for closing speed (5 min thinking; optional 30–60 min experiment)**
+
+The defender spawns at the centre of its arena, at 0.5 m altitude. The attacker circles that centre at a 3 m radius, around 1.5 m altitude. Answer this before opening the answer:
+
+*If `closing_reward_scale` were 0, so proximity was the only reward for approaching, what would an untrained defender most likely learn — and why does the closing term prevent it?*
+
+<details>
+<summary>Answer</summary>
+
+**It learns to hover at its spawn point.** From the centre of the circle, the attacker is always about 3.2 m away (3 m sideways, 1 m higher) wherever it is on the circle. Hovering there earns proximity of 1 − tanh(3.2 / 4) = 0.34, which is 1.5 × 0.34 × 0.05 = **0.026 points per step**, about 5 points per episode — with no tilting (so almost no `ang_vel` or `action_rate` penalty) and no risk of the −2.5 crash penalty.
+
+**Moving toward the attacker barely pays without the closing term.** Getting 1 m closer raises proximity to 1 − tanh(2.2 / 4) = 0.50, only **+0.012 points per step** more. And the attacker keeps circling, so a position closer to it now is often farther from it 2–3 seconds later, while every move costs tilting, command changes and floor risk. During early training, the defender's random movements rarely show PPO a net gain, so PPO keeps the safe hover.
+
+**The closing term pays for the right direction immediately.** Flying at 1 m/s toward the attacker earns 2.0 × 1 × 0.05 = **+0.10 points on that same step** — about four times the entire hover income — whether or not the distance has changed much yet. PPO can then tell which command was right on the step it was issued. This is the same failure 3.3 Step 1 warns about when the attacker is too fast to catch.
+
+</details>
+
+**Optional — confirm it by experiment (~30–60 min of compute).** Only needed if you want to see the failure instead of reasoning about it.
+
+1. In `QuadcopterEnvCfg`, change `closing_reward_scale = 2.0` to `closing_reward_scale = 0.0  # TEMPORARY — Checkpoint 3.2 experiment`.
+2. Train (from `C:\projects\drone_pursuit\drone_pursuit`):
+```bat
+   python scripts\skrl\train.py --task Template-Drone-Pursuit-Direct-v0 --num_envs 2048 --headless --max_iterations 300
+```
+3. Watch the result, replacing `<run-folder>` with the newest folder in `logs\skrl\quadcopter_direct\`:
+```bat
+   python scripts\skrl\play.py --task Template-Drone-Pursuit-Direct-v0 --num_envs 16 --checkpoint logs\skrl\quadcopter_direct\<run-folder>\checkpoints\best_agent.pt
+```
+   **Expected:** in most of the 16 arenas the blue defender stays near its spawn point while the attacker circles it, and in TensorBoard `Episode_Reward/capture` stays near 0. If the defenders chase anyway, proximity alone was enough in your setup; the closing term then mainly makes learning faster, which you can compare against the capture curve of your 3.3 run.
+4. **Restore** `closing_reward_scale = 2.0`, and rename the experiment's run folder by adding `_closing0` to its name, so you don't later confuse it with a real 3.3 run.
 
 </details>
 
