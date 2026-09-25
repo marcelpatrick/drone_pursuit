@@ -3125,13 +3125,23 @@ This test checks spelling and structure only. It cannot catch a name that doesn'
 
 A short training run with 16 environments. `--max_iterations 10` × 24 steps per iteration = 240 steps, longer than one 200-step episode (10 s at 20 Hz), so every environment passes through `_get_dones`, `_get_rewards` and `_reset_idx` at least once. Run it from the project folder, because `train.py` writes its logs to `logs\skrl\` inside whatever folder you start it from.
 
+**1: run the test:
 ```bat
 cd C:\projects\drone_pursuit\drone_pursuit
 python scripts\skrl\train.py --task Template-Drone-Pursuit-Direct-v0 --num_envs 16 --headless --max_iterations 10
 tensorboard --logdir logs\skrl
 ```
 
-- **Pass:** the run finishes without a `Traceback`, and TensorBoard (open http://localhost:6006, newest run) lists, under **Info**:
+**2: once Terminal 1 finishes, open TensorBoard:
+```bat
+conda activate env_drone
+cd C:\projects\drone_pursuit\drone_pursuit
+tensorboard --logdir logs\skrl
+```
+
+- **Pass:** the run finishes without a `Traceback`, and TensorBoard (open http://localhost:6006, newest run) lists, under . Press Ctrl+C in Terminal 2 when you're done.
+
+**Info**:
   - six reward curves: `Episode_Reward/closing`, `proximity`, `capture`, `crash`, `action_rate`, `ang_vel`
   - three ending counts: `Episode_Termination/captured`, `died`, `time_out`
 - **Fail → what to fix:**
