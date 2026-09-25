@@ -3097,9 +3097,11 @@ Ending the episode on capture matters: if it continued, the defender would sit j
 
 </details>
 
-> ✅ **Checkpoint 3.2**
+### Checkpoint 3.2
 
-> ✅ **Checkpoint 3.2** — run the three tests below in order. Tests 1 and 2 prove the code runs; Test 3 proves you understand why the reward is built the way it is, which you need in 3.3 to diagnose a bad training run.
+<details><summary>Expand:</summary>
+
+> run the three tests below in order. Tests 1 and 2 prove the code runs; Test 3 proves you understand why the reward is built the way it is, which you need in 3.3 to diagnose a bad training run.
 
 **Test 1 — Check the file for typing errors (10 seconds)**
 
@@ -3177,6 +3179,7 @@ The defender spawns at the centre of its arena, at 0.5 m altitude. The attacker 
 
 </details>
 
+</details>
 ---
 
 ## 3.3 Randomise the Drone's Physics, Train with PPO, and Read the Curves (≤1.5h hands-on + background compute)
