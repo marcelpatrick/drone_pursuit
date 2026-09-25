@@ -3131,14 +3131,18 @@ cd C:\projects\drone_pursuit\drone_pursuit
 python scripts\skrl\train.py --task Template-Drone-Pursuit-Direct-v0 --num_envs 16 --headless --max_iterations 10
 ```
 
-**2: once Terminal 1 finishes, open TensorBoard:
+**2: once Terminal 1 finishes, open another Anaconda terminal and run TensorBoard:
 ```bat
 conda activate env_drone
 cd C:\projects\drone_pursuit\drone_pursuit
 tensorboard --logdir logs\skrl
 ```
+(open http://localhost:6006, newest run)
+In the browser: in the left panel under Runs, untick everything except quadcopter_direct/[last run date]_ppo_torch.
 
-- **Pass:** the run finishes without a `Traceback`, and TensorBoard (open http://localhost:6006, newest run) lists, under . Press Ctrl+C in Terminal 2 when you're done.
+- **Pass:** 
+1. The run finishes without a `Traceback`, The progress bar reached 240/240
+2. TensorBoard  lists:
 
 **Info**:
   - six reward curves: `Episode_Reward/closing`, `proximity`, `capture`, `crash`, `action_rate`, `ang_vel`
@@ -3314,16 +3318,17 @@ Total reward can climb steadily while the defender never actually catches anythi
 
         # ▼▼▼ NEW — count captures separately from deaths ▼▼▼
         cap = self._captured[env_ids]
-        extras["Episode_Termination/captured"] = torch.count_nonzero(self.reset_terminated[env_ids] & cap).item()
-        extras["Episode_Termination/died"]     = torch.count_nonzero(self.reset_terminated[env_ids] & ~cap).item()
+        extras["Episode_Termination/captured"] = torch.count_nonzero(self.reset_terminated[env_ids] & cap)
+        extras["Episode_Termination/died"]     = torch.count_nonzero(self.reset_terminated[env_ids] & ~cap)
+        extras["Episode_Termination/time_out"] = torch.count_nonzero(self.reset_time_outs[env_ids])
         # ▲▲▲ END OF FIX ▲▲▲
 
         extras["Episode_Termination/time_out"] = torch.count_nonzero(self.reset_time_outs[env_ids]).item()   # ← EXISTING
 
         # ▼▼▼ 3.3 Step 2 — pursuit-specific metrics ▼▼▼
-        extras["Metrics/final_distance"]   = final_dist.mean().item()
-        extras["Metrics/capture_rate"]     = cap.float().mean().item()
-        extras["Metrics/visible_fraction"] = self._prev_asz[env_ids].gt(0).float().mean().item()
+        extras["Metrics/final_distance"]   = final_dist.mean()
+        extras["Metrics/capture_rate"]     = cap.float().mean()
+        extras["Metrics/visible_fraction"] = self._prev_asz[env_ids].gt(0).float().mean()
         # ▲▲▲ END OF INSERT ▲▲▲
         self.extras["log"].update(extras)                                        # ← EXISTING, keep LAST (second batch)
 
