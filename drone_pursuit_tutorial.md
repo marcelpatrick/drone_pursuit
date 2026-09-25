@@ -3129,7 +3129,6 @@ A short training run with 16 environments. `--max_iterations 10` × 24 steps per
 ```bat
 cd C:\projects\drone_pursuit\drone_pursuit
 python scripts\skrl\train.py --task Template-Drone-Pursuit-Direct-v0 --num_envs 16 --headless --max_iterations 10
-tensorboard --logdir logs\skrl
 ```
 
 **2: once Terminal 1 finishes, open TensorBoard:
