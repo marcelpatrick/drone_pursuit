@@ -1868,11 +1868,11 @@ Isaac Lab's hover task outputs one thrust and three torques. **A Tello does not 
 
 That built-in stabiliser is a large amount of balancing work the policy no longer has to learn — and a large amount of behaviour the simulation must now imitate, because the policy will be trained against whatever the simulation does.
 
-Three edits to the same file.
+4 edits to the same file.
 
 *File to edit:* `C:\projects\drone_pursuit\drone_pursuit\source\drone_pursuit\drone_pursuit\tasks\direct\quadcopter\quadcopter_env.py`
 
-**Edit 1 of 3 — measure how hard the drone is to turn, in `__init__`:**
+**Edit 1 — measure how hard the drone is to turn, in `__init__`:**
 
 ```python
 # ── FILE: ...\tasks\direct\quadcopter\quadcopter_env.py ─────────────────────
@@ -1883,6 +1883,8 @@ Three edits to the same file.
         # ▼▼▼ INSERT HERE! — resistance to turning (yaw inertia), scales the yaw twist ▼▼▼
         inertias = self._robot.root_physx_view.get_inertias()
         self._robot_izz = inertias[0, self._body_id[0], 8].item()
+        self._robot_ixx = inertias[0, self._body_id[0], 0].item()     # ◄──  resistance to rolling (tipping sideways)
+        self._robot_iyy = inertias[0, self._body_id[0], 4].item()     # ◄──  resistance to pitching (nose up/down)
         print(f"[3.1] defender yaw inertia = {self._robot_izz:.2e} kg*m^2")
         # ▲▲▲ END OF INSERT ▲▲▲
 ```
@@ -1936,9 +1938,29 @@ Expect the print to show roughly `3e-05`. Mass tells you how hard the drone is t
     max_speed = 2.0          # m/s — conservative; a Tello can do more
     max_yaw_rate = 1.5       # rad/s
     vel_gain = 3.0           # how hard the stand-in stabiliser corrects speed
-    yaw_gain = 10.0          # how hard it corrects turning: ~10% of the error per physics tick
+    yaw_gain = 10.0          # <<< CHANGED TO 10.0. BEFORE = 0.05. Fixes ~10% of the turning error per physics tick             
+    att_gain = 100.0         # ◄──   how hard it pulls back to level (per unit of tilt)
+    att_damp = 20.0          # ◄──   how hard it brakes a tipping rotation
     # ▲▲▲ END OF INSERT ▲▲▲
 ```
+
+**Edit 4: - Tello's autopilot**
+
+```py
+    # Hands those forces to the physics engine, repeatedly. ...                              # ← EXISTING (anchor)
+    def _apply_action(self):                                                                  # ← EXISTING (anchor)
+        # ▼▼▼ NEW — stand-in for the Tello's level-holding autopilot, every physics tick ▼▼▼
+        g_b = self._robot.data.projected_gravity_b      # (0, 0, -1) when perfectly level
+        w_b = self._robot.data.root_ang_vel_b           # how fast it is rotating, own axes
+        # roll (tipping sideways) shows up in g_b[:, 1]; pitch (nose up/down) in g_b[:, 0]
+        self._moment[:, 0, 0] = ( self.cfg.att_gain * g_b[:, 1] - self.cfg.att_damp * w_b[:, 0]) * self._robot_ixx
+        self._moment[:, 0, 1] = (-self.cfg.att_gain * g_b[:, 0] - self.cfg.att_damp * w_b[:, 1]) * self._robot_iyy
+        # ▲▲▲ END OF NEW ▲▲▲
+        self._robot.set_external_force_and_torque(self._thrust, self._moment, body_ids=self._body_id)   # ← EXISTING
+        self._move_attacker()                                                                             # ← EXISTING
+```
+
+The real Tello's autopilot also keeps the drone level before any command arrives. Edits 1–3 only imitate its speed and turning control, so without this edit nothing corrects roll or pitch and the drone tumbles. It runs in _apply_action so it corrects on every physics tick (100 Hz), like a real stabiliser
 
 **Why the yaw twist is multiplied by inertia.** A fixed twist that suits a heavy drone is far too strong for a 30-gram Crazyflie. Each physics tick it over-corrects the turning speed about 20 times past the target. Within 20 ticks the spin speed is effectively infinite and every reading becomes `NaN`, which is exactly what the 3.1 checker catches at step 4. Multiplying by inertia works the same way the speed line multiplies by mass: `yaw_gain` then means "fix about 10% of the turning error per tick", which settles smoothly on any airframe.
 
@@ -2863,7 +2885,7 @@ Expected result: `RESULT: Checkpoint 3.1 passed`, with one `[??]` under item 4 w
 > 2. **Readings behave sensibly:** delayed values match the drawn delay (2–5 steps, about 180 ms on average) in every check. Visible bearings stay between −1 and +1. `ang_size` rises as distance falls (correlation near −1.00). `bearing_x` takes both signs, and both bearings point the right way in 100% of readings.
 > 3. **Losing sight works:** `visible` drops from 1 to 0 hundreds of times, held values stay frozen with their changes reading 0, and every mid-run reset starts from a clean slate. Roughly 100–150 resets is normal. Several hundred means drones are leaving the 0.1–2.0 m height band; recheck Part A.
 > 4. **Cfg matches `project_notes.txt`:** decimation, `obs_delay_min/max` (2 and 5), telemetry and camera lens (82 vs 83 deg) all show `[ok]`. One `[??]` is expected while the notes still hold the tutorial's example numbers, and it disappears once you enter your own Tello measurements from 1.4.
->
+> 5. Running train.py without --headless must show the blue drones staying upright and level, not flipping.
 > In the env 0 table printed above the report, a step-0 sighting at 4.12 m followed by `visible 0` is normal. The attacker starts at its spawn point, then moves onto its circle, often outside the camera's view.
 
 </details>
