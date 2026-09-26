@@ -54,8 +54,8 @@ class QuadcopterEnvWindow(BaseEnvWindow):
 class QuadcopterEnvCfg(DirectRLEnvCfg):
     # env
     episode_length_s = 10.0
-    decimation = 5              # Decimation is how many physics steps pass between policy decisions
-                                # <<< INSERT THE TELLO NUMBER HERE !!! (using dummy for now)
+    decimation = 5              # <<< INSERT THE TELLO NUMBER HERE !!! (using dummy for now)
+                                # Decimation is how many physics steps pass between policy decisions
                                 # Convertion of hertz in decimations: 
                                     # Physic engine updates / physic steps = game tick
                                     # Policy decision: every time the neural network ingests the inputs and produces the outputs
@@ -99,7 +99,7 @@ class QuadcopterEnvCfg(DirectRLEnvCfg):
     # scene
     # NEW: bumped env_spacing in the scene cfg to 2 * arena_radius (16.0) so neighboring envs' drones never visually overlap into each other's future camera views.
     scene: InteractiveSceneCfg = InteractiveSceneCfg(
-        num_envs=4096, env_spacing=2.3, replicate_physics=True, clone_in_fabric=True
+        num_envs=4096, env_spacing=16, replicate_physics=True, clone_in_fabric=True
     )
 
     # robot
@@ -148,8 +148,17 @@ class QuadcopterEnvCfg(DirectRLEnvCfg):
     # reward scales
     lin_vel_reward_scale = -0.05
     ang_vel_reward_scale = -0.01
-    distance_to_goal_reward_scale = 15.0
+    # distance_to_goal_reward_scale = 15.0          <<< commented out because it was only used for the initial test task (hoverring over a fixed point) In the pursuit task, the target is the moving attacker, not a fixed point
 
+    # ---------------------------- REWARD FUNCTION PARAMETERS -----------------------------------------------------------
+    # ▼▼▼ NEW! — the pursuit reward dials ▼▼▼
+    closing_reward_scale = 2.0      # per m/s of speed TOWARD the target
+    proximity_reward_scale = 1.5    # smooth "warmth" signal as distance shrinks
+    capture_bonus = 200.0           # paid once, at capture
+    crash_penalty = -50.0           # hit the floor / left the arena
+    action_rate_penalty = -0.02     # sim-to-real: penalise jerky command changes
+    # ▲▲▲ END OF INSERT ▲▲▲
+    # -------------------------------------------------------------------------------------------------------------------
 
 class QuadcopterEnv(DirectRLEnv):
     cfg: QuadcopterEnvCfg
@@ -187,17 +196,28 @@ class QuadcopterEnv(DirectRLEnv):
         self._prev_by = torch.zeros(self.num_envs, device=self.device)
         self._prev_asz = torch.zeros(self.num_envs, device=self.device)
         self._prev_actions = torch.zeros(self.num_envs, 4, device=self.device)
+        self._captured = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         # ▲▲▲ END OF INSERT ▲▲▲
 
         # Logging
+        # self._episode_sums = {
+        #     key: torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
+        #     for key in [
+        #         "lin_vel",
+        #         "ang_vel",
+        #         "distance_to_goal",
+        #     ]
+        # }
+
+        # Logging                                                                  
         self._episode_sums = {
             key: torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
             for key in [
-                "lin_vel",
-                "ang_vel",
-                "distance_to_goal",
+                "closing", "proximity", "capture", "crash", "action_rate", "ang_vel",   # ◄── CHANGED: was "lin_vel", "ang_vel", "distance_to_goal"
             ]
         }
+
+
         # Get specific body indices
         self._body_id = self._robot.find_bodies("body")[0]
         self._robot_mass = self._robot.root_physx_view.get_masses()[0].sum()
@@ -233,7 +253,8 @@ class QuadcopterEnv(DirectRLEnv):
         light_cfg = sim_utils.DomeLightCfg(intensity=2000.0, color=(0.75, 0.75, 0.75))
         light_cfg.func("/World/Light", light_cfg)
 
-    #   Translates the neural network's output into physical push.
+    # ------------------------------------POLICY IN ACTION---------------------------------------------------------
+    #   Translates the neural network's output/commands into physical forces.
     #   It turns the policy's 4 numbers into forces, which _apply_action then applies.
     def _pre_physics_step(self, actions: torch.Tensor):
 
@@ -265,6 +286,9 @@ class QuadcopterEnv(DirectRLEnv):
         self._robot.set_external_force_and_torque(self._thrust, self._moment, body_ids=self._body_id)
         self._move_attacker()
 
+    # --------------------------------------------------------------------------------------------------------------------------------
+
+    # Only moves the attacker. Since the attacker movement doesn't rely on the RL training or policy (this function just directly teleports it to its next position on every tick)
     # ▼▼▼ NEW  ▼▼▼
     def _move_attacker(self):
         """Kinematic attacker: circle + vertical bob, written to sim each physics tick."""
@@ -380,8 +404,9 @@ class QuadcopterEnv(DirectRLEnv):
     #   return {"policy": obs}
     # ▲▲▲ and REPLACE it with everything below ▲▲▲
 
-            # ▼▼▼ New! - integrating all 17 model inputs into one list ▼▼▼
-        # cache the true distance — the reward (3.2) and _get_dones both read it
+        # ▼▼▼ New! - integrating all 17 model inputs into one list ▼▼▼
+        # measure the true distance again for the camera readings below — _reset_idx  
+        # has just moved the drones in the envs that restarted. (_get_dones measures it separately each step.)
         self._dist = torch.linalg.norm(
             self._attacker.data.root_pos_w - self._robot.data.root_pos_w, dim=1
         )
@@ -408,29 +433,112 @@ class QuadcopterEnv(DirectRLEnv):
         return {"policy": obs}
         # ▲▲▲ END OF INSERT ▲▲▲
 
+    # --------------------------------REWARD CALCULATION------------------------------------------------------------
     # Keeps the score of the training rewards
     def _get_rewards(self) -> torch.Tensor:
         lin_vel = torch.sum(torch.square(self._robot.data.root_lin_vel_b), dim=1)
         ang_vel = torch.sum(torch.square(self._robot.data.root_ang_vel_b), dim=1)
-        distance_to_goal = torch.linalg.norm(self._desired_pos_w - self._robot.data.root_pos_w, dim=1)
-        distance_to_goal_mapped = 1 - torch.tanh(distance_to_goal / 0.8)
+
+        # ▼▼▼ DELETE : this was the reward structure of the first hover task - to hover over a fixed point. We are replacing this with the new pursuit task ▼▼▼
+        # distance_to_goal = torch.linalg.norm(self._desired_pos_w - self._robot.data.root_pos_w, dim=1)
+        # distance_to_goal_mapped = 1 - torch.tanh(distance_to_goal / 0.8)
+        # rewards = {
+        #     "lin_vel": lin_vel * self.cfg.lin_vel_reward_scale * self.step_dt,
+        #     "ang_vel": ang_vel * self.cfg.ang_vel_reward_scale * self.step_dt,
+        #     "distance_to_goal": distance_to_goal_mapped * self.cfg.distance_to_goal_reward_scale * self.step_dt,
+        # }
+        # reward = torch.sum(torch.stack(list(rewards.values())), dim=0)
+
+        # ▼▼▼ NEW! - Pursuit task reward structure ▼▼▼
+        # ── BLOCK A: direction from defender to attacker ─────────────────────
+        # The closing-speed term needs to know which way "toward the attacker" is.
+        # Dividing the offset vector by its length turns it into a pure direction
+        # (length 1). clamp() stops a division by zero if the drones ever coincide.
+        # self._dist is updated at the top of _get_dones (Step 3), which Isaac Lab      
+        # runs just before this method on every step.  
+        to_target = self._attacker.data.root_pos_w - self._robot.data.root_pos_w
+        dir_to_target = to_target / self._dist.unsqueeze(1).clamp(min=1e-6)
+
+        # ── BLOCK B: the three PAYMENTS — what the defender is rewarded for ──
+        # 1) CLOSING SPEED: the part of the defender's velocity that points at
+        #    the attacker. +1.0 = approaching at 1 m/s, negative = moving away.
+        #    Paid every step, so even an untrained policy learns which way is better.
+        closing = (self._robot.data.root_lin_vel_w * dir_to_target).sum(dim=1)
+
+        # 2) PROXIMITY: 1 - tanh(dist/4) — a smooth 0..1 value that rises as you approach.
+        proximity = 1.0 - torch.tanh(self._dist / 4.0)
+
+        # 3) CAPTURE: the one-off bonus
+        captured = self._dist < self.cfg.capture_radius
+
+        # ── BLOCK C: the three PENALTIES — what the defender is charged for ──
+        # 4) SMOOTHNESS: how much the 4 commands changed since the last step.
+        #    Large swings cost nothing in sim but make the real Tello shake.
+        action_rate = torch.sum(torch.square(self._actions - self._prev_actions), dim=1)
+
+        # 5) STABILITY: penalise spinning/wobbling (same formula as the hover task)
+        ang_vel = torch.sum(torch.square(self._robot.data.root_ang_vel_b), dim=1)
+
+        # 6) CRASH: same two conditions _get_dones uses for failure
+        crashed = (self._robot.data.root_pos_w[:, 2] < 0.1) | (self._dist > self.cfg.arena_radius)
+
+        # ── BLOCK D: weight each term and store it under a name ──────────────
+        # Each raw value above is multiplied by its dial from QuadcopterEnvCfg
+        # (Step 1). step_dt keeps totals comparable if the control rate changes.
+        # Names matter: they must match the keys of self._episode_sums in
+        # __init__, and each becomes a TensorBoard curve Episode_Reward/<name>.
         rewards = {
-            "lin_vel": lin_vel * self.cfg.lin_vel_reward_scale * self.step_dt,
-            "ang_vel": ang_vel * self.cfg.ang_vel_reward_scale * self.step_dt,
-            "distance_to_goal": distance_to_goal_mapped * self.cfg.distance_to_goal_reward_scale * self.step_dt,
+            "closing":     self.cfg.closing_reward_scale   * closing          * self.step_dt,
+            "proximity":   self.cfg.proximity_reward_scale * proximity        * self.step_dt,
+            "capture":     self.cfg.capture_bonus          * captured.float() * self.step_dt,
+            "action_rate": self.cfg.action_rate_penalty    * action_rate      * self.step_dt,
+            "ang_vel":     self.cfg.ang_vel_reward_scale   * ang_vel          * self.step_dt,
+            "crash":       self.cfg.crash_penalty          * crashed.float()  * self.step_dt,
         }
+        # the single number PPO sees: the sum of all six terms, one value per env
         reward = torch.sum(torch.stack(list(rewards.values())), dim=0)
-        # Logging
+
+        # ── BLOCK E: remember this step's commands ───────────────────────────
+        # Next step's smoothness penalty compares against these.
+        # Must come AFTER action_rate was computed above.
+        self._prev_actions = self._actions.clone()
+
+        # ── BLOCK F: logging (kept from the hover task) ──────────────────────
+        # Adds each term to a running total per env. _reset_idx writes the totals
+        # to TensorBoard when an episode ends, which lets you see WHICH term is
+        # driving the reward — e.g. proximity high + capture 0 = orbiting exploit.
         for key, value in rewards.items():
             self._episode_sums[key] += value
         return reward
+        # ▲▲▲ END OF INSERT ▲▲▲
 
     # Ends Episodes
     # is the method that decides which episodes have terminated (drone failed) or truncated (ran out of time)
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
+
+        # ▼▼▼ DELETE the hover task's body — it looked like this: ▼▼▼
+        #   time_out = self.episode_length_buf >= self.max_episode_length - 1
+        #   died = torch.logical_or(self._robot.data.root_pos_w[:, 2] < 0.1,
+        #                           self._robot.data.root_pos_w[:, 2] > 2.0)
+        #   return died, time_out
+        # ▲▲▲ and REPLACE it with the code below ▲▲▲
+
+        # ▼▼▼ NEW! adding capture (success to the ending conditions (as terminated)) ▼▼▼
+        # measure the distance AFTER this step's physics — _get_rewards reads it next    
+        self._dist = torch.linalg.norm(                                                  
+            self._attacker.data.root_pos_w - self._robot.data.root_pos_w, dim=1          
+        )                                                                                
+        captured = self._dist < self.cfg.capture_radius                       # success
+        self._captured = captured                                             # makes captured a global variable so it can be used by _reset_idx to tell if an episode terminaded from a crash or from a capture
+        crashed = self._robot.data.root_pos_w[:, 2] < 0.1                     # floor
+        escaped = self._dist > self.cfg.arena_radius                          # lost it: attacker got away
+
+        # 1st return value: any outcome that ends the attempt, win or loss
+        terminated = crashed | escaped | captured        # all three END the episode now
+        # 2nd return value: ran out of time
         time_out = self.episode_length_buf >= self.max_episode_length - 1
-        died = torch.logical_or(self._robot.data.root_pos_w[:, 2] < 0.1, self._robot.data.root_pos_w[:, 2] > 2.0)
-        return died, time_out
+        return terminated, time_out
+        # ▲▲▲ END OF INSERT ▲▲▲
 
     #  restarts only the environments whose episode just ended.
     def _reset_idx(self, env_ids: torch.Tensor | None):
@@ -438,9 +546,17 @@ class QuadcopterEnv(DirectRLEnv):
             env_ids = self._robot._ALL_INDICES
 
         # Logging
-        final_distance_to_goal = torch.linalg.norm(
-            self._desired_pos_w[env_ids] - self._robot.data.root_pos_w[env_ids], dim=1
-        ).mean()
+        # final_distance_to_goal = torch.linalg.norm(
+        #     self._desired_pos_w[env_ids] - self._robot.data.root_pos_w[env_ids], dim=1
+        # ).mean()
+
+        # ▼▼▼ NEW! — replaces final_distance_to_goal (leftover from the hover task) ▼▼▼
+        # distance between the drones when the episode ended; measured here, before
+        # the reset below moves them. Works on the very first reset too.
+        final_dist = torch.linalg.norm(
+            self._attacker.data.root_pos_w[env_ids] - self._robot.data.root_pos_w[env_ids], dim=1
+        )
+        # ▲▲▲ END OF CHANGE ▲▲▲
         extras = dict()
         for key in self._episode_sums.keys():
             episodic_sum_avg = torch.mean(self._episode_sums[key][env_ids])
@@ -449,9 +565,22 @@ class QuadcopterEnv(DirectRLEnv):
         self.extras["log"] = dict()
         self.extras["log"].update(extras)
         extras = dict()
-        extras["Episode_Termination/died"] = torch.count_nonzero(self.reset_terminated[env_ids]).item()
-        extras["Episode_Termination/time_out"] = torch.count_nonzero(self.reset_time_outs[env_ids]).item()
-        extras["Metrics/final_distance_to_goal"] = final_distance_to_goal.item()
+
+        # ▼▼▼ Replace
+        # extras["Episode_Termination/died"] = torch.count_nonzero(self.reset_terminated[env_ids]).item()
+
+        # ▼▼▼ NEW — count captures separately from deaths ▼▼▼
+        cap = self._captured[env_ids]                                                                        # ◄── NEW
+        extras["Episode_Termination/captured"] = torch.count_nonzero(self.reset_terminated[env_ids] & cap)   # ◄── NEW
+        extras["Episode_Termination/died"]     = torch.count_nonzero(self.reset_terminated[env_ids] & ~cap)  # ◄── NEW
+        extras["Episode_Termination/time_out"] = torch.count_nonzero(self.reset_time_outs[env_ids])          # ◄── NEW
+
+        # ▼▼▼ NEW 3.3 Step 2 — pursuit-specific metrics ▼▼▼
+        extras["Metrics/final_distance"]   = final_dist.mean()
+        extras["Metrics/capture_rate"]     = cap.float().mean()
+        extras["Metrics/visible_fraction"] = self._prev_asz[env_ids].gt(0).float().mean()
+        # ▲▲▲ END OF INSERT ▲▲▲
+
         self.extras["log"].update(extras)
 
         self._robot.reset(env_ids)
@@ -499,6 +628,7 @@ class QuadcopterEnv(DirectRLEnv):
         self._prev_bx[env_ids] = 0.0
         self._prev_by[env_ids] = 0.0
         self._prev_asz[env_ids] = 0.0
+        self._prev_actions[env_ids] = 0.0
         # ▲▲▲ END OF INSERT ▲▲▲
 
     def _set_debug_vis_impl(self, debug_vis: bool):
