@@ -3205,6 +3205,8 @@ The defender spawns at the centre of its arena, at 0.5 m altitude. The attacker 
 ```bat
    python scripts\skrl\train.py --task Template-Drone-Pursuit-Direct-v0 --num_envs 2048 --headless --max_iterations 300
 ```
+> Running train.py without --headless must show the blue drones staying upright and level, not flipping.
+> 
 3. Watch the result, replacing `<run-folder>` with the newest folder in `logs\skrl\quadcopter_direct\`:
 ```bat
    python scripts\skrl\play.py --task Template-Drone-Pursuit-Direct-v0 --num_envs 16 --checkpoint logs\skrl\quadcopter_direct\<run-folder>\checkpoints\best_agent.pt
