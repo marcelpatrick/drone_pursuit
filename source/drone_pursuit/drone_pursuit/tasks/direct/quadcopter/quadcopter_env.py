@@ -128,7 +128,9 @@ class QuadcopterEnvCfg(DirectRLEnvCfg):
     max_speed = 2.0          # m/s — conservative; a Tello can do more
     max_yaw_rate = 1.5       # rad/s
     vel_gain = 3.0           # how hard the stand-in stabiliser corrects
-    yaw_gain = 10.0           # <<< CHANGED TO 10.0. BEFORE = 0.05. Fixes ~10% of the turning error per physics tick
+    yaw_gain = 10.0          # <<< CHANGED TO 10.0. BEFORE = 0.05. Fixes ~10% of the turning error per physics tick
+    att_gain = 100.0         # ◄──   how hard it pulls back to level (per unit of tilt)
+    att_damp = 20.0          # ◄──   how hard it brakes a tipping rotation
     # ▲▲▲ END OF INSERT ▲▲▲
     # ▼▼▼ NEW! — from project_notes.txt, converted to control steps ▼▼▼
     # Manually ads a delay to the input reading on the simulation so it mimics the expected behavior when running on hardware
@@ -227,6 +229,8 @@ class QuadcopterEnv(DirectRLEnv):
         # ▼▼▼ NEW — resistance to turning (yaw inertia), used to scale the yaw twist ▼▼▼
         inertias = self._robot.root_physx_view.get_inertias()
         self._robot_izz = inertias[0, self._body_id[0], 8].item()
+        self._robot_ixx = inertias[0, self._body_id[0], 0].item()     # ◄──  resistance to rolling (tipping sideways)
+        self._robot_iyy = inertias[0, self._body_id[0], 4].item()     # ◄──  resistance to pitching (nose up/down)
         print(f"[3.1] defender yaw inertia = {self._robot_izz:.2e} kg*m^2")
         # ▲▲▲ END OF INSERT ▲▲▲
 
@@ -283,6 +287,15 @@ class QuadcopterEnv(DirectRLEnv):
     # Hands those forces to the physics engine, repeatedly. It runs on every physics tick, 
     # which happens more often than the network decides — so one decision gets applied several times.
     def _apply_action(self):
+
+        # ▼▼▼ NEW — stand-in for the Tello's level-holding autopilot, every physics tick ▼▼▼
+        g_b = self._robot.data.projected_gravity_b      # (0, 0, -1) when perfectly level
+        w_b = self._robot.data.root_ang_vel_b           # how fast it is rotating, own axes
+        # roll (tipping sideways) shows up in g_b[:, 1]; pitch (nose up/down) in g_b[:, 0]
+        self._moment[:, 0, 0] = ( self.cfg.att_gain * g_b[:, 1] - self.cfg.att_damp * w_b[:, 0]) * self._robot_ixx
+        self._moment[:, 0, 1] = (-self.cfg.att_gain * g_b[:, 0] - self.cfg.att_damp * w_b[:, 1]) * self._robot_iyy
+        # ▲▲▲ END OF NEW ▲▲▲
+        
         self._robot.set_external_force_and_torque(self._thrust, self._moment, body_ids=self._body_id)
         self._move_attacker()
 
