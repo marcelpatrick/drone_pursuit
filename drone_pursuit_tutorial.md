@@ -3234,11 +3234,6 @@ The defender spawns at the centre of its arena, at 0.5 m altitude. The attacker 
  
 In simulation, the defender reacts to every stick command with the exact strength set in 3.1 Part A, and it hovers perfectly still when told to. A real Tello differs in two ways. As its battery drains, its motors push less, so the same command changes its speed more slowly. And its imperfect trim (the factory correction meant to make it hover in place) makes it slide slowly sideways even when commanded to hover. You can't know either value on flight day, so this step gives every episode a slightly different drone, drawn from a range that contains the real one. The policy learns to fly all of them, which is what lets the checkpoint trained here fly the real Tello in Chapter 7.
  
-| Randomised value | What it models on the real Tello | Range per episode | Concrete effect in the simulation |
-|---|---|---|---|
-| `_thrust_scale` | How strongly the drone corrects its speed: weaker on a drained battery | 0.85 – 1.15 | At 0.85, a "fly forward at 2 m/s" command takes about 15% longer to reach 2 m/s. |
-| `_drift` | Imperfect trim: a slow slide the drone makes by itself | ±0.075 m/s per axis | At 0.07 m/s to the left, a drone commanded to hover slides 0.7 m in 10 s unless the policy steers against it. |
- 
 The three edits below work together. Edit 1 creates one thrust value and one drift direction per environment. Edit 2 draws new values every time an episode starts. Edit 3 makes the stand-in stabiliser from 3.1 Part A use them when it turns stick commands into force.
  
 Expect a lower capture rate than without randomisation, because the task is now as hard as the real drone makes it. Around 60–70% here is a healthy result.
