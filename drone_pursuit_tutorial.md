@@ -3226,53 +3226,72 @@ The defender spawns at the centre of its arena, at 0.5 m altitude. The attacker 
 
 > **What this subchapter does:** launches the real training run and manages it. First it randomises the physical properties of the simulated drone that you cannot measure on a C$115 aircraft, then it trains against a slow attacker and raises the speed in stages, then it reads the five metrics that diagnose a pursuit task specifically. It ends by measuring `capture_ang_size` — the share of frame the attacker fills at capture — which Chapter 6.2 needs because it has no simulator to ask for distance. Deliverable: a checkpoint that reliably intercepts, and one calibrated constant.
 
-### Step 0 — Randomise the physical properties you cannot measure
-
+### Step 0 — Randomise the thrust and drift you cannot measure
+ 
 <details>
 <summary>Expand Step 0</summary>
-
 > **Environment:** none needed — you are editing files.
-
-A Tello's mass changes with battery and wear, its available thrust sags as the battery drains, and it drifts because its trim is imperfect. You cannot measure any of these precisely, so instead of guessing one value, each episode trains against a slightly different drone drawn from a range that contains the real one.
-
+ 
+In simulation, the defender reacts to every stick command with the exact strength set in 3.1 Part A, and it hovers perfectly still when told to. A real Tello differs in two ways. As its battery drains, its motors push less, so the same command changes its speed more slowly. And its imperfect trim (the factory correction meant to make it hover in place) makes it slide slowly sideways even when commanded to hover. You can't know either value on flight day, so this step gives every episode a slightly different drone, drawn from a range that contains the real one. The policy learns to fly all of them, which is what lets the checkpoint trained here fly the real Tello in Chapter 7.
+ 
+| Randomised value | What it models on the real Tello | Range per episode | Concrete effect in the simulation |
+|---|---|---|---|
+| `_thrust_scale` | How strongly the drone corrects its speed: weaker on a drained battery | 0.85 – 1.15 | At 0.85, a "fly forward at 2 m/s" command takes about 15% longer to reach 2 m/s. |
+| `_drift` | Imperfect trim: a slow slide the drone makes by itself | ±0.075 m/s per axis | At 0.07 m/s to the left, a drone commanded to hover slides 0.7 m in 10 s unless the policy steers against it. |
+ 
+The three edits below work together. Edit 1 creates one thrust value and one drift direction per environment. Edit 2 draws new values every time an episode starts. Edit 3 makes the stand-in stabiliser from 3.1 Part A use them when it turns stick commands into force.
+ 
+Expect a lower capture rate than without randomisation, because the task is now as hard as the real drone makes it. Around 60–70% here is a healthy result.
+ 
 *File to edit:* `C:\projects\drone_pursuit\drone_pursuit\source\drone_pursuit\drone_pursuit\tasks\direct\quadcopter\quadcopter_env.py`
-
+ 
+**Edit 1 of 3 — create storage for each environment's values, in `__init__`:**
+ 
 ```python
 # ── FILE: ...\tasks\direct\quadcopter\quadcopter_env.py ─────────────────────
 # ── SECTION: class QuadcopterEnv, method __init__ ───────────────────────────
-
+ 
         self._prev_actions = torch.zeros(self.num_envs, 4, device=self.device)  # ← from 3.1 D
-
-        # ▼▼▼ INSERT HERE! — allocate the randomised-drone buffers ▼▼▼
-        self._mass_scale = torch.ones(self.num_envs, device=self.device)
+ 
+        # ▼▼▼ INSERT HERE! ▼▼▼
         self._thrust_scale = torch.ones(self.num_envs, device=self.device)
         self._drift = torch.zeros(self.num_envs, 3, device=self.device)
         # ▲▲▲ END OF INSERT ▲▲▲
-
-
+```
+ 
+**Edit 2 of 3 — draw a new drone at every episode start, in `_reset_idx`:**
+ 
+```python
 # ── SECTION: class QuadcopterEnv, method _reset_idx ─────────────────────────
-
+ 
         self._prev_asz[env_ids] = 0.0            # ← EXISTING, from 3.1 Part D
-
-        # ▼▼▼ INSERT HERE! — draw a slightly different drone for each new episode ▼▼▼
+ 
+        # ▼▼▼ INSERT HERE! ▼▼▼
         n = len(env_ids)
-        # mass varies with battery charge and wear
-        self._mass_scale[env_ids] = 1.0 + (torch.rand(n, device=self.device) - 0.5) * 0.2
-        # available thrust falls as the battery drains
+        # battery state: 0.85 (drained) to 1.15 (strong)
         self._thrust_scale[env_ids] = 0.85 + torch.rand(n, device=self.device) * 0.3
-        # cheap drones drift — a small constant push in a random direction
+        # trim error: up to 0.075 m/s along each axis
         self._drift[env_ids] = (torch.rand(n, 3, device=self.device) - 0.5) * 0.15
         # ▲▲▲ END OF INSERT ▲▲▲
 ```
-
-Then apply them where the force is built, in `_pre_physics_step` (Part A), and add small Gaussian noise to the readings before they enter the delay buffer in `_get_observations` (Part G). The detector's rectangle jitters by a few pixels between frames, and a policy that only ever saw perfectly smooth bearings will chase that jitter.
-
-**Randomisation matters more than accuracy here.** A policy that works across a wide band of possible drones works on the actual one; a policy tuned to your single best guess fails wherever that guess was wrong, and you cannot tell which parameter was wrong from the flight.
-
-**A note on wind.** `_drift` is a constant push per episode, which represents imperfect trim well and wind poorly — real wind gusts and changes direction. This tutorial assumes calm conditions, and that assumption is load-bearing: on a breezy day the disturbance exceeds anything the policy trained against. Modelling wind would mean varying `_drift` *during* an episode, which is a harder task needing its own training run.
-
-**Expect a lower capture rate than an unrandomised run.** You have made the task harder in the ways reality is harder. A policy capturing 60–70% under randomisation is more likely to fly than one capturing 95% under ideal conditions, because the second was never solving the real problem.
-
+ 
+**Edit 3 of 3 — apply them to the stand-in stabiliser, in `_pre_physics_step`:**
+ 
+```python
+# ── SECTION: class QuadcopterEnv, method _pre_physics_step ──────────────────
+ 
+        # ▼▼▼ REPLACE these two lines from 3.1 Part A ▼▼▼
+        #   vel_error = desired_vel_b - self._robot.data.root_lin_vel_b
+        #   force_b = self.cfg.vel_gain * vel_error * self._robot_mass
+        # ▼▼▼ WITH ▼▼▼
+        # drift: the drone settles at the commanded speed PLUS its trim error
+        vel_error = (desired_vel_b + self._drift) - self._robot.data.root_lin_vel_b
+        # thrust: a drained battery corrects speed errors more weakly
+        # (.unsqueeze(-1) lets each env's single value scale all 3 force directions)
+        force_b = self.cfg.vel_gain * vel_error * self._robot_mass * self._thrust_scale.unsqueeze(-1)
+        # ▲▲▲ END OF REPLACE ▲▲▲
+```
+ 
 </details>
 
 ### Step 1 — Start training against a slow attacker
