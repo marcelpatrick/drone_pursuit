@@ -3233,7 +3233,7 @@ The defender spawns at the centre of its arena, at 0.5 m altitude. The attacker 
      
 > **Environment:** none needed — you are editing files.
  
-In simulation, the defender reacts to every stick command with the exact strength set in 3.1 Part A, it hovers perfectly still when told to, and its seven camera readings (3.1 Part F) are perfectly smooth. A real Tello differs in three ways. As its battery drains, its motors push less, so the same command changes its speed more slowly. Its imperfect trim (the factory correction meant to make it hover in place) makes it slide slowly sideways even when commanded to hover. And the detector's rectangle (Chapter 6.1) shifts by a few pixels between frames even when the attacker holds still. You can't know the exact values on flight day, so this step gives every episode a slightly different drone, and every reading a small random error. The policy learns to fly all of them, which is what lets the checkpoint trained here fly the real Tello in Chapter 7.
+In simulation, the defender reacts to every stick command with the exact strength set in 3.1 Part A, it hovers perfectly still when told to, and its seven camera readings (3.1 Part F) are perfectly smooth. A real Tello differs in three ways. As its battery drains, its motors push less, so the same command changes its speed more slowly. Its imperfect trim (the factory correction meant to make it hover in place) makes it slide slowly sideways even when commanded to hover. And the detector's rectangle (Chapter 6.1) shifts by a few pixels between frames even when the attacker holds still. You can't know the exact values on flight day, so this step gives every episode a slightly different drone condition (battery level, trim - parameter in the built-in flight controls that offsets stabilization imperfections), and every reading a small random error. The policy learns to fly all of them, which is what lets the checkpoint-trained here fly the real Tello in Chapter 7.
  
 Edits 1–3 handle thrust and drift. Edit 1 creates one thrust value and one drift direction per environment, Edit 2 draws new values every time an episode starts, and Edit 3 makes the stand-in stabiliser from 3.1 Part A use them. Edits 4–5 handle reading noise. Edit 4 adds the noise size to the config, and Edit 5 adds the noise to the three readings in `_get_observations`.
  
@@ -3257,7 +3257,7 @@ Expect capture rate to climb more slowly than it would without randomisation, be
         # ▲▲▲ END OF INSERT ▲▲▲
 ```
  
-**Edit 2 of 5 — draw a new drone at every episode start, in `_reset_idx`:**
+**Edit 2 of 5 — draw new battery and trim values at every episode start, in `_reset_idx`:**
  
 ```python
 # ── SECTION: class QuadcopterEnv, method _reset_idx ─────────────────────────
