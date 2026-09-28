@@ -3226,27 +3226,30 @@ The defender spawns at the centre of its arena, at 0.5 m altitude. The attacker 
 
 > **What this subchapter does:** launches the real training run and manages it. First it randomises the physical properties of the simulated drone that you cannot measure on a C$115 aircraft, then it trains against a slow attacker and raises the speed in stages, then it reads the five metrics that diagnose a pursuit task specifically. It ends by measuring `capture_ang_size` — the share of frame the attacker fills at capture — which Chapter 6.2 needs because it has no simulator to ask for distance. Deliverable: a checkpoint that reliably intercepts, and one calibrated constant.
 
-### Step 0 — Randomise the thrust and drift you cannot measure
+### Step 0 — Randomise thrust, drift and camera-reading noise
  
 <details>
 <summary>Expand Step 0</summary>
+     
 > **Environment:** none needed — you are editing files.
  
-In simulation, the defender reacts to every stick command with the exact strength set in 3.1 Part A, and it hovers perfectly still when told to. A real Tello differs in two ways. As its battery drains, its motors push less, so the same command changes its speed more slowly. And its imperfect trim (the factory correction meant to make it hover in place) makes it slide slowly sideways even when commanded to hover. You can't know either value on flight day, so this step gives every episode a slightly different drone, drawn from a range that contains the real one. The policy learns to fly all of them, which is what lets the checkpoint trained here fly the real Tello in Chapter 7.
+In simulation, the defender reacts to every stick command with the exact strength set in 3.1 Part A, it hovers perfectly still when told to, and its seven camera readings (3.1 Part F) are perfectly smooth. A real Tello differs in three ways. As its battery drains, its motors push less, so the same command changes its speed more slowly. Its imperfect trim (the factory correction meant to make it hover in place) makes it slide slowly sideways even when commanded to hover. And the detector's rectangle (Chapter 6.1) shifts by a few pixels between frames even when the attacker holds still. You can't know the exact values on flight day, so this step gives every episode a slightly different drone, and every reading a small random error. The policy learns to fly all of them, which is what lets the checkpoint trained here fly the real Tello in Chapter 7.
  
-The three edits below work together. Edit 1 creates one thrust value and one drift direction per environment. Edit 2 draws new values every time an episode starts. Edit 3 makes the stand-in stabiliser from 3.1 Part A use them when it turns stick commands into force.
+Edits 1–3 handle thrust and drift. Edit 1 creates one thrust value and one drift direction per environment, Edit 2 draws new values every time an episode starts, and Edit 3 makes the stand-in stabiliser from 3.1 Part A use them. Edits 4–5 handle reading noise. Edit 4 adds the noise size to the config, and Edit 5 adds the noise to the three readings in `_get_observations`.
  
-Expect a lower capture rate than without randomisation, because the task is now as hard as the real drone makes it. Around 60–70% here is a healthy result.
+The noise is added **only to readings of a visible attacker, and before the delay buffer**, so `check_3_1.py` still passes. When the attacker is out of view, the hold lines in 3.1 Part G replace the noisy value with the last sighting, so held values stay frozen and their changes still read 0 (checker item 3). Adding the noise before the delay buffer means the policy receives exactly what the buffer returns (checker item 1). The noisy bearings are clipped to −1…+1 and the width kept above 0 (checker item 2).
+ 
+Expect capture rate to climb more slowly than it would without randomisation, because the task is now as hard as the real drone makes it. The 80% targets in Step 3 and Checkpoint 3.3 still apply.
  
 *File to edit:* `C:\projects\drone_pursuit\drone_pursuit\source\drone_pursuit\drone_pursuit\tasks\direct\quadcopter\quadcopter_env.py`
  
-**Edit 1 of 3 — create storage for each environment's values, in `__init__`:**
+**Edit 1 of 5 — create storage for each environment's values, in `__init__`:**
  
 ```python
 # ── FILE: ...\tasks\direct\quadcopter\quadcopter_env.py ─────────────────────
 # ── SECTION: class QuadcopterEnv, method __init__ ───────────────────────────
  
-        self._prev_actions = torch.zeros(self.num_envs, 4, device=self.device)  # ← from 3.1 D
+        self._prev_actions = torch.zeros(self.num_envs, 4, device=self.device)  # ← EXISTING, from 3.1 D
  
         # ▼▼▼ INSERT HERE! ▼▼▼
         self._thrust_scale = torch.ones(self.num_envs, device=self.device)
@@ -3254,15 +3257,14 @@ Expect a lower capture rate than without randomisation, because the task is now 
         # ▲▲▲ END OF INSERT ▲▲▲
 ```
  
-**Edit 2 of 3 — draw a new drone at every episode start, in `_reset_idx`:**
+**Edit 2 of 5 — draw a new drone at every episode start, in `_reset_idx`:**
  
 ```python
 # ── SECTION: class QuadcopterEnv, method _reset_idx ─────────────────────────
  
         self._prev_asz[env_ids] = 0.0            # ← EXISTING, from 3.1 Part D
  
-        # ▼▼▼ INSERT HERE! ▼▼▼
-        n = len(env_ids)
+        # ▼▼▼ INSERT HERE! (n = len(env_ids) is already defined above, in the 2.2 block) ▼▼▼
         # battery state: 0.85 (drained) to 1.15 (strong)
         self._thrust_scale[env_ids] = 0.85 + torch.rand(n, device=self.device) * 0.3
         # trim error: up to 0.075 m/s along each axis
@@ -3270,7 +3272,7 @@ Expect a lower capture rate than without randomisation, because the task is now 
         # ▲▲▲ END OF INSERT ▲▲▲
 ```
  
-**Edit 3 of 3 — apply them to the stand-in stabiliser, in `_pre_physics_step`:**
+**Edit 3 of 5 — apply them to the stand-in stabiliser, in `_pre_physics_step`:**
  
 ```python
 # ── SECTION: class QuadcopterEnv, method _pre_physics_step ──────────────────
@@ -3287,7 +3289,38 @@ Expect a lower capture rate than without randomisation, because the task is now 
         # ▲▲▲ END OF REPLACE ▲▲▲
 ```
  
+**Edit 4 of 5 — the noise size, in the config class:**
+ 
+```python
+# ── SECTION: class QuadcopterEnvCfg, below the 3.1 Part E camera model ──────
+ 
+    attacker_span_m = 0.13            # ← EXISTING, from 3.1 Part E
+ 
+    # ▼▼▼ INSERT HERE! ▼▼▼
+    reading_noise_px = 2.0            # detector jitter, in pixels (typical size of the error)
+    # ▲▲▲ END OF INSERT ▲▲▲
+```
+ 
+**Edit 5 of 5 — add the jitter to the readings, in `_get_observations`:**
+ 
+```python
+# ── SECTION: class QuadcopterEnv, method _get_observations ──────────────────
+ 
+        bx, by, asz, vis = self._camera_readings()        # ← EXISTING, from 3.1 Part G
+ 
+        # ▼▼▼ INSERT HERE! — MUST stay above the three torch.where hold lines ▼▼▼
+        px = self.cfg.reading_noise_px
+        bx  = (bx  + torch.randn_like(bx)  * px / (self.cfg.cam_width / 2)).clamp(-1.0, 1.0)
+        by  = (by  + torch.randn_like(by)  * px / (self.cfg.cam_height / 2)).clamp(-1.0, 1.0)
+        asz = (asz + torch.randn_like(asz) * px / self.cfg.cam_width).clamp(min=1e-3)
+        # ▲▲▲ END OF INSERT ▲▲▲
+ 
+        # hold the previous reading wherever the attacker is not currently visible   # ← EXISTING
+        bx  = torch.where(vis > 0.5, bx,  self._prev_bx)                              # ← EXISTING
+```
+ 
 </details>
+ 
 
 ### Step 1 — Start training against a slow attacker
 
