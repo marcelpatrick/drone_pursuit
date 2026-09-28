@@ -310,7 +310,7 @@ Some parameters throughout this project need to be replaced by the values of the
 | Parameter | What it is | Source | How to measure | First mentioned |
 |---|---|---|---|---|
 | `decimation = 5` | The Tello's command rate. Since `sim.dt = 1/100`, decimation = 100 ÷ measured Hz, so 20 Hz gives 5. | **Measure** the control rate, then compute | Run `measure_rate.py` (1.4 Step 6): it sends 500 neutral commands and divides by the elapsed seconds. Round down to a divisor of 100 (20 or 25). This counts commands *sent*; the drone may act on fewer. | Block A · Ch 1 · 1.4 Step 7 (code: Block C · 3.1 Part B) |
-| `obs_delay_min = 2`<br>`obs_delay_max = 5` | Video lag converted to control steps (seconds × Hz): 99–219 ms at 20 Hz gives 2–5. | **Measure** the video delay, then compute | Point the camera at a millisecond stopwatch on screen with the video window beside it, and screenshot both. The gap between the two times is the delay. Take 10 screenshots and use min × Hz and max × Hz, rounded. | Block C · Ch 3 · 3.1 Part D |
+| `obs_delay_min = 2`<br>`obs_delay_max = 6` | Video lag converted to control steps (seconds × Hz): 99–219 ms at 20 Hz gives 2–5. | **Measure** the video delay, then compute | Point the camera at a millisecond stopwatch on screen with the video window beside it, and screenshot both. The gap between the two times is the delay. Take 10 screenshots and use min × Hz and max × Hz, rounded. | Block C · Ch 3 · 3.1 Part D |
 | `observation_space = 17` | The count is set by the telemetry the Tello reports: speeds and tilt angles, no rotation rates. | **Official** (Tello SDK state list) | — | Block C · Ch 3 · 3.1 Part C |
 | `max_speed = 2.0` | Speed the simulated drone reaches at full stick. | **Measure** (the 8 m/s spec doesn't say what full SDK stick produces) | Tape two floor marks 3 m apart. Start 1 m before the first mark and send full forward stick, `send_rc_control(0, 100, 0, 0)`. Time the gap between the marks: speed = 3 ÷ seconds. Repeat 3 times and average. | Block C · Ch 3 · 3.1 Part A |
 | `vel_gain = 3.0` | How fast the stand-in stabiliser reaches the commanded speed. | **Measure** | From a hover, send full forward stick and log `get_speed_x()` every step. Find how long speed takes to reach 63% of its top value; call that τ. Then vel_gain = 1 ÷ τ. For example, τ = 0.5 s gives 2.0. | Block C · Ch 3 · 3.1 Part A |
@@ -1834,7 +1834,7 @@ C:\projects\drone_pursuit\drone_pursuit\source\drone_pursuit\drone_pursuit\tasks
 
 These are the parameters in this chapter that need to be swapped by the real measurements from the Tello drone hardware: 
 - `decimation = 5` (3.1 Part B), from the control rate. Calculate it as 100 ÷ your measured Hz, rounded to a whole number.
-- `obs_delay_min = 2` and obs_delay_max = 5 (3.1 Part D), from the video delay. Calculate each as delay in seconds × your control rate in Hz.
+- `obs_delay_min = 2` and obs_delay_max = 6 (3.1 Part D), from the video delay. Calculate each as delay in seconds × your control rate in Hz.
 - `observation_space = 17` (3.1 Part C). Change it only if the telemetry differs, which is unlikely.
 
 **No drone yet? Create a placeholder notes file first.** Save this as `C:\projects\drone_pursuit\drone_pursuit\project_notes.txt`:
@@ -2069,7 +2069,7 @@ Manually ads a delay to the input reading on the simulation so it mimics the exp
     yaw_gain = 10.0              # ← ADJUST !!!: from 0.05 to 10.0: EXISTING, from Part A
 
     obs_delay_min = 2
-    obs_delay_max = 5
+    obs_delay_max = 6
     # ▲▲▲ END OF INSERT ▲▲▲
 ```
 
@@ -2164,7 +2164,7 @@ Change these parameters to the real ones from the hardware you are using; otherw
 # ── FILE: ...\tasks\direct\quadcopter\quadcopter_env.py ─────────────────────
 # ── SECTION: class QuadcopterEnvCfg, below the Part D delay constants ───────
 
-    obs_delay_max = 5            # ← EXISTING, from Part D
+    obs_delay_max = 6            # ← EXISTING, from Part D
 
     # ▼▼▼ INSERT HERE! — camera model. MUST match the TiledCameraCfg you add ▼▼▼
     # in 5.2 AND the real drone's lens.
@@ -6094,7 +6094,7 @@ yolo detect train data=C:\projects\drone_pursuit\drone_pursuit\data\real\drone.y
 
     max_speed = 2.0        # ◄── LOWER if max forward command produced less speed
     vel_gain = 3.0         # ◄── RAISE if the real drone accelerated faster than sim
-    obs_delay_max = 5      # ◄── RAISE if the drone overshoots consistently
+    obs_delay_max = 6      # ◄── RAISE if the drone overshoots consistently
     # and in _reset_idx, widen the 0.15 multiplier on self._drift if the real
     # residual velocity at zero command exceeds the randomised range
 ```
