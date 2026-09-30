@@ -689,7 +689,7 @@ C:\projects\drone_pursuit\                 ← the OUTER folder, created in 1.0
     ├── models\                              the two ONNX files — the transfer
     ├── data\                                images, labels, real footage
     ├── flights\                             Chapter 7 flight recordings
-    ├── logs\                                training runs (auto-created)
+    ├── logs\                                training runs (auto-created in the folder train.py is run from)
     └── runs\                                YOLO runs (auto-created)
 ```
 
@@ -698,6 +698,8 @@ C:\projects\drone_pursuit\                 ← the OUTER folder, created in 1.0
 Some of those folders do not exist yet. **Each is created in the subchapter that first needs it**, so nothing is made before you know what it is for. Watch for a short `mkdir` line at the start of those subchapters.
 
 Two kinds of folder never need creating: `data\yolo\` is made by Chapter 4.3's conversion script, and `logs\` and `runs\` are made by the training tools when they first write to them.
+
+Always run train.py and play.py from the project root. They create logs\ inside whichever folder you run them from. Running them from scripts\skrl\ or source\drone_pursuit\ scatters checkpoints across several logs\ folders. TensorBoard then shows only some of your runs, and it becomes easy to resume or export the wrong checkpoint.
 
 **Why the manual ones matter.** Windows will not invent a folder for you, and Python's `open()` fails if the parent folder is missing. The `flights\` folder in Chapter 7 is the sharpest case: the flight script opens its log immediately after takeoff, so a missing folder crashes it with a drone already in the air.
 
@@ -709,7 +711,7 @@ Trains the wizard's placeholder cartpole for 20 iterations. Nothing here concern
 
 The wizard generates a cartpole placeholder task registered as `Template-Drone-Pursuit-Direct-v0` (check the exact name in `C:\projects\drone_pursuit\drone_pursuit\source\drone_pursuit\drone_pursuit\tasks\direct\drone_pursuit\__init__.py`):
 
-*Run from:* `any folder`
+*Run from:* `C:\projects\drone_pursuit\drone_pursuit`
 ```bat
 python C:\projects\drone_pursuit\drone_pursuit\scripts\list_envs.py
 python C:\projects\drone_pursuit\drone_pursuit\scripts\skrl\train.py --task Template-Drone-Pursuit-Direct-v0 --num_envs 64 --headless --max_iterations 20
@@ -839,13 +841,13 @@ Runs your copied task end to end, to prove the swap in Step 5 worked before Chap
 
 - train.py: proves the environment builds and learns — but runs `--headless`, so you see nothing fly. It also writes a checkpoint.
 
-*Run from:* `any folder`
+*Run from:* `C:\projects\drone_pursuit\drone_pursuit`
 ```bat
 python C:\projects\drone_pursuit\drone_pursuit\scripts\skrl\train.py --task Template-Drone-Pursuit-Direct-v0 --num_envs 2048 --headless --max_iterations 20
 ```
 - play.py: runs a new simulation where drones act using what they learned during training. They no longer learn here. It is a net new simulation, not a recording of the training.
 
-*Run from:* `any folder`
+*Run from:* `C:\projects\drone_pursuit\drone_pursuit`
 ```bat
 python C:\projects\drone_pursuit\drone_pursuit\scripts\skrl\play.py --task Template-Drone-Pursuit-Direct-v0 --num_envs 32
 ```
@@ -1494,7 +1496,7 @@ Every line indexes by `env_ids`. Writing the whole table instead would teleport 
 
 Nothing has been trained, so there is nothing to play back. The quickest way to see the scene is to run training for a few iterations *without* `--headless`, which opens the viewport while an untrained policy emits random actions. What you are checking is that the attacker exists in every cloned environment and that the defender's force pipeline still works.
 
-*Run from:* `any folder` — *the script lives in:* `C:\projects\drone_pursuit\drone_pursuit\scripts\skrl\`
+*Run from:* `C:\projects\drone_pursuit\drone_pursuit` — *the script lives in:* `C:\projects\drone_pursuit\drone_pursuit\scripts\skrl\`
 ```bat
 python C:\projects\drone_pursuit\drone_pursuit\scripts\skrl\train.py --task Template-Drone-Pursuit-Direct-v0 --num_envs 16
 ```
@@ -1774,7 +1776,7 @@ In ``QuadcopterEnvCfg``, replace the existing robot: line with:
 
 Run 16 environments without `--headless` again. Motion has to be smooth here because Chapter 3.1 computes the attacker's apparent size and bearing from this position each step, and a stuttering path would produce jumpy readings that the policy learns to distrust.
 
-*Run from:* `any folder` — *the script lives in:* `C:\projects\drone_pursuit\drone_pursuit\scripts\skrl\`
+*Run from:* `C:\projects\drone_pursuit\drone_pursuit` — *the script lives in:* `C:\projects\drone_pursuit\drone_pursuit\scripts\skrl\`
 ```bat
 python C:\projects\drone_pursuit\drone_pursuit\scripts\skrl\train.py --task Template-Drone-Pursuit-Direct-v0 --num_envs 16
 ```
@@ -3391,7 +3393,7 @@ Set `attacker_speed = 0.3` before launching. At the full 0.6 m/s an untrained po
     attacker_speed = 0.3       # ◄── CHANGE for the first curriculum stage
 ```
 
-*Run from:* `any folder` — *the script lives in:* `C:\projects\drone_pursuit\drone_pursuit\scripts\skrl\`
+*Run from:* `C:\projects\drone_pursuit\drone_pursuit` — *the script lives in:* `C:\projects\drone_pursuit\drone_pursuit\scripts\skrl\`
 ```bat
 python C:\projects\drone_pursuit\drone_pursuit\scripts\skrl\train.py --task Template-Drone-Pursuit-Direct-v0 --num_envs 2048 --headless --max_iterations 1500
 tensorboard --logdir C:\projects\drone_pursuit\drone_pursuit\logs\skrl
@@ -3456,7 +3458,7 @@ Chapter 6.2 has to declare a capture using only the camera, because in the real 
 
 Add logging so that on every step where `_dist` first drops below `capture_radius`, the corresponding `ang_size` is recorded, then run `play.py` for a few dozen episodes and look at the distribution.
 
-*Run from:* `any folder` — *the script lives in:* `C:\projects\drone_pursuit\drone_pursuit\scripts\skrl\`
+*Run from:* `C:\projects\drone_pursuit\drone_pursuit` — *the script lives in:* `C:\projects\drone_pursuit\drone_pursuit\scripts\skrl\`
 ```bat
 python C:\projects\drone_pursuit\drone_pursuit\scripts\skrl\play.py --task Template-Drone-Pursuit-Direct-v0 --num_envs 16
 ```
@@ -3489,7 +3491,7 @@ You are not choosing this number freely. You set `capture_radius` in metres in 2
 
 > **Environment:** `env_drone`
 
-*Run from:* `any folder` — *the script lives in:* `C:\projects\drone_pursuit\drone_pursuit\scripts\skrl\`
+*Run from:* `C:\projects\drone_pursuit\drone_pursuit` — *the script lives in:* `C:\projects\drone_pursuit\drone_pursuit\scripts\skrl\`
 ```bat
 python C:\projects\drone_pursuit\drone_pursuit\scripts\skrl\play.py --task Template-Drone-Pursuit-Direct-v0 --num_envs 16
 ```
@@ -5168,7 +5170,7 @@ The focal length here must equal `cam_focal_mm` from 3.1 Part E. If they differ,
 
 Then run `play.py` with your Chapter-3 checkpoint and dump `self._camera.data.output["rgb"]` to PNGs. Save about 20 frames spread across the approach, not 20 from the final second.
 
-*Run from:* `any folder` — *frames go to:* `C:\projects\drone_pursuit\drone_pursuit\data\arena_frames\`
+*Run from:* `C:\projects\drone_pursuit\drone_pursuit` — *frames go to:* `C:\projects\drone_pursuit\drone_pursuit\data\arena_frames\`
 ```bat
 python C:\projects\drone_pursuit\drone_pursuit\scripts\skrl\play.py --task Template-Drone-Pursuit-Direct-v0 --num_envs 1 --enable_cameras
 ```
