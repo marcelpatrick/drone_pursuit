@@ -3690,6 +3690,8 @@ How to read it:
 - **"in view"** is the share of captures where the attacker was inside the camera frame. Below about 80% means the defender often reaches the attacker from outside its view. Chapter 6 cannot confirm those captures from the camera, so expect its camera-declared capture count to be lower than the simulator's by about that share.
 - **`ang_size` spreads widely** because each episode's attacker has a different width. With the 3.1 Part E camera, an attacker at exactly 0.35 m fills `(cam_focal_mm ÷ cam_aperture_mm) × width ÷ 0.35` of the frame: 0.13 for an 8 cm drone, 0.57 for a 35 cm one. Values spread upward from there, because captures are detected once per decision step (20 per second), so the defender is often already slightly closer than 0.35 m.
 - **Time-to-contact** does not depend on width, but it does depend on how fast the defender closes. Judge it by its spread: if p90 is no more than about twice p10 (as in the example, 0.41 vs 0.18), the defender arrives at a consistent closing speed and a time-to-contact rule will work.
+- If it spreads more it means the closing speed from the defender to its target also varies widely depending on the size of the drone. This means that the success metric "capture" will mean different distances for different attacker sizes. Eg: A 0.24 s threshold would therefore fire anywhere between about 0.2 m and 0.6 m, depending on how fast the defender is flying.
+- If you are ok with this spread, choose the capture rule below to = ttc, if not choose, "none". If you know the exact attacker size than replace it in attacker_span_m, reduce attacker_span_range and choose and_size. Knowing the exact attacker size yields better results as it is easier to train. 
 
 **Choose the capture rule Chapter 6 will use:**
 
@@ -3709,12 +3711,15 @@ Store both values even if you only use one: 5.2 anchors its camera block on `cap
     reading_noise_px = 2.0            # ← EXISTING, from 3.3 Step 0
 
     # CHANGE: was True for the measurement above
-    log_capture_size = False
+    log_capture_size = False   <<< change it to false now
 
-    # ▼▼▼ INSERT HERE! — YOUR measured medians, not these examples ▼▼▼
-    capture_rule = "ttc"              # "ang_size" (known target width) or "ttc" (unknown width)
-    capture_ang_size = 0.301          # median frame share at capture — 3.3 Step 4
-    capture_ttc_s = 0.27              # median time-to-contact at capture, seconds — 3.3 Step 4
+    # ▼▼▼ INSERT HERE! — YOUR measured medians - replace these values  ▼▼▼
+    capture_rule = "ttc"              # "ang_size" (known target width) or "ttc" (unknown width) or "none" (safety stop only)
+    capture_ang_size = 0.4            # get median ang_size after running `python scripts\skrl\play.py
+                                        # --task Template-Drone-Pursuit-Direct-v0 --num_envs 64 --headless --checkpoint
+                                        # C:\projects\drone_pursuit\drone_pursuit\logs\skrl\quadcopter_direct\
+                                        #<run-folder>\checkpoints\best_agent.pt`
+    capture_ttc_s = 0.27              # get median time-to-contact at capture, seconds — 3.3 Step 4
     # ▲▲▲ END OF INSERT ▲▲▲
 ```
 
