@@ -3440,7 +3440,7 @@ Replace the path to where your latest train checkpoint was stored: `   python sc
 
 in this case:
 ```bat
-python scripts\skrl\train.py --task Template-Drone-Pursuit-Direct-v0 --num_envs 2048 --headless --max_iterations 1500 --checkpoint C:\projects\drone_pursuit\drone_pursuit\logs\skrl\quadcopter_direct\2026-09-26_14-33-37_ppo_torch\checkpoints\best_agent.pt
+python scripts\skrl\train.py --task Template-Drone-Pursuit-Direct-v0 --num_envs 2048 --headless --max_iterations 170 --checkpoint C:\projects\drone_pursuit\drone_pursuit\logs\skrl\quadcopter_direct\2026-09-26_14-33-37_ppo_torch\checkpoints\best_agent.pt
 ```
 
 **Check that the resumed run worked.** Check the same three charts as Step 2, now for the new run, plus two things that confirm the resume itself worked.
@@ -3477,6 +3477,25 @@ Tick only the new run (you can also tick the run you resumed from, to compare), 
 | **Episode / Total timesteps (mean)** | Likely jumps up at first, since chases take longer, then falls again | falling toward the end |
 
 If all pass, this stage is done. You can either raise `attacker_speed` again toward 1.0, resuming from this new run's `best_agent.pt`, or move on to Step 4.
+
+-> **LEARNINGS**: 
+I first ran this training with `--max_iterations = 1500`. 
+It presented the following curve: 
+<img width="2617" height="724" alt="image" src="https://github.com/user-attachments/assets/2e3502bb-66ad-45c9-8087-efa09d1eebab" />
+
+This pattern is called policy collapse: PPO had a good policy, kept updating it, and one series of updates made it worse. The smaller dip around step 7k is the same thing on a smaller scale. It is not caused by the speed change or by your code. Long runs past the point where the task is solved give PPO more chances for this to happen
+
+Then, I reduced to `--max_iterations = 1500` to stop training where results were still favorable and it worked
+<img width="2629" height="733" alt="image" src="https://github.com/user-attachments/assets/bfc9ef11-229c-4ce5-ba34-1e30575c6e41" />
+
+If all tests pass, Checkpoint 3.3 item 1 is met. Record this path in project_notes.txt, since Chapters 6 and 7 need it:
+```
+best training run at 3.3 - Step 3:
+C:\projects\drone_pursuit\drone_pursuit\logs\skrl\quadcopter_direct\[your folder for the best run]\checkpoints\best_agent.pt
+
+# in this case
+C:\projects\drone_pursuit\drone_pursuit\logs\skrl\quadcopter_direct\2026-09-30_12-11-45_ppo_torch\checkpoints\best_agent.pt
+```
 
 </details>
 
