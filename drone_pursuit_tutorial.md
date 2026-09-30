@@ -3443,7 +3443,40 @@ in this case:
 python scripts\skrl\train.py --task Template-Drone-Pursuit-Direct-v0 --num_envs 2048 --headless --max_iterations 1500 --checkpoint C:\projects\drone_pursuit\drone_pursuit\logs\skrl\quadcopter_direct\2026-09-26_14-33-37_ppo_torch\checkpoints\best_agent.pt
 ```
 
-Repeat toward 1.0 m/s if you want a harder chase. This staged difficulty is curriculum learning in its simplest form; the adaptive environment generator in the Tsinghua paper is the same instinct built as a research system.
+**Check that the resumed run worked.** Check the same three charts as Step 2, now for the new run, plus two things that confirm the resume itself worked.
+
+**1. In the terminal, at the start of the run: the checkpoint loaded.** Look for a line like:
+
+```
+[INFO] Loading model checkpoint from: C:\...\2026-09-26_14-33-37_ppo_torch\checkpoints\best_agent.pt
+```
+
+If it isn't there, the run started from an untrained policy.
+
+**2. In the new run's settings file: the speed really is 0.6.** Open:
+
+```
+C:\projects\drone_pursuit\drone_pursuit\logs\skrl\quadcopter_direct\<new run folder>\params\env.yaml
+```
+
+The new run folder is the one dated today. Search the file for `attacker_speed`; it must read `0.6`. This proves which speed the run actually trained at.
+
+**3. In TensorBoard: the three charts.** Start it from the project root:
+
+```bat
+cd C:\projects\drone_pursuit\drone_pursuit
+tensorboard --logdir logs\skrl
+```
+
+Tick only the new run (you can also tick the run you resumed from, to compare), then check:
+
+| Chart | What to expect after resuming | Pass (Checkpoint 3.3 item 1) |
+|---|---|---|
+| **Info / Metrics/capture_rate** | Starts well above 0 but below the previous run's final value, because the attacker is now twice as fast, then climbs. If it starts near 0 like a fresh run, the checkpoint did not load (see check 1). | ends at **0.8 or higher** |
+| **Info / Episode_Termination/died** vs **captured** | May rise briefly as the defender pushes harder, then falls | `died` under 1/10 of `captured` |
+| **Episode / Total timesteps (mean)** | Likely jumps up at first, since chases take longer, then falls again | falling toward the end |
+
+If all pass, this stage is done. You can either raise `attacker_speed` again toward 1.0, resuming from this new run's `best_agent.pt`, or move on to Step 4.
 
 </details>
 
