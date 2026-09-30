@@ -3646,7 +3646,6 @@ At every capture, this block asks `_camera_readings()` (3.1 Part F) what the cam
 
         # ▼▼▼ INSERT HERE! ▼▼▼
         if self.cfg.log_capture_size and captured.any():
-            # camera reading at the capture moment (no noise, no delay)
             _, _, asz, vis = self._camera_readings()
             # time-to-contact = distance ÷ closing speed (what the camera's growth rate estimates)
             dir_to = (self._attacker.data.root_pos_w - self._robot.data.root_pos_w) / self._dist.unsqueeze(1).clamp(min=1e-6)
@@ -3655,7 +3654,7 @@ At every capture, this block asks `_camera_readings()` (3.1 Part F) what the cam
             self._capture_log += torch.stack([asz[captured], vis[captured], ttc[captured]], dim=1).tolist()
             if len(self._capture_log) >= 200:
                 t = torch.tensor(self._capture_log)
-                seen = t[t[:, 1] > 0.5]      # only captures where the attacker was in frame
+                seen = t[t[:, 1] > 0.5]
                 if len(seen) > 0:
                     qs = torch.tensor([0.1, 0.5, 0.9])
                     a, c = torch.quantile(seen[:, 0], qs), torch.quantile(seen[:, 2], qs)
