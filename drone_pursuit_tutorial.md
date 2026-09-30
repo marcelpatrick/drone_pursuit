@@ -3119,6 +3119,55 @@ Ending the episode on capture matters: if it continued, the defender would sit j
 
 </details>
 
+### Step 4 — Log captures separately from crashes
+
+<details>
+<summary>Expand Step 4</summary>
+
+> **Environment:** none needed — you are editing files.
+
+The hover task counted every early ending as `died`, because crashing was the only way an episode could end early. Step 3 made capture end episodes early too, so without this edit every success would show up in TensorBoard as a crash. This step uses `self._captured`, set in Step 3, to split endings into `captured` and `died`, and adds `capture_rate`: the share of ending episodes that ended in a capture. 3.3 Step 2 reads these charts to decide whether training worked.
+
+*File to edit:* `C:\projects\drone_pursuit\drone_pursuit\source\drone_pursuit\drone_pursuit\tasks\direct\quadcopter\quadcopter_env.py`
+
+```python
+# ── FILE: ...\tasks\direct\quadcopter\quadcopter_env.py ─────────────────────
+# ── SECTION: class QuadcopterEnv, method _reset_idx — the logging block ─────
+
+        if env_ids is None or len(env_ids) == self.num_envs:      # ← EXISTING (anchor)
+            env_ids = self._robot._ALL_INDICES                    # ← EXISTING (anchor)
+
+        # ▼▼▼ DELETE the hover task's final-distance lines: ▼▼▼
+        #   final_distance_to_goal = torch.linalg.norm(
+        #       self._desired_pos_w[env_ids] - self._robot.data.root_pos_w[env_ids], dim=1
+        #   ).mean()
+        # ▲▲▲
+
+        extras = dict()                                           # ← EXISTING, unchanged from here...
+        for key in self._episode_sums.keys():
+            ...
+        self.extras["log"].update(extras)
+        extras = dict()                                           # ...to here
+
+        # ▼▼▼ DELETE the hover task's three lines: ▼▼▼
+        #   extras["Episode_Termination/died"] = torch.count_nonzero(self.reset_terminated[env_ids]).item()
+        #   extras["Episode_Termination/time_out"] = torch.count_nonzero(self.reset_time_outs[env_ids]).item()
+        #   extras["Metrics/final_distance_to_goal"] = final_distance_to_goal.item()
+        # ▼▼▼ and REPLACE them with: ▼▼▼
+        cap = self._captured[env_ids]      # True where the ending episode was a capture (set in Step 3)
+        extras["Episode_Termination/captured"] = torch.count_nonzero(self.reset_terminated[env_ids] & cap).item()
+        extras["Episode_Termination/died"]     = torch.count_nonzero(self.reset_terminated[env_ids] & ~cap).item()
+        extras["Episode_Termination/time_out"] = torch.count_nonzero(self.reset_time_outs[env_ids]).item()
+        extras["Metrics/capture_rate"]         = cap.float().mean().item()
+        # ▲▲▲ END OF INSERT ▲▲▲
+
+        self.extras["log"].update(extras)                         # ← EXISTING, keep it LAST
+```
+
+`died` now counts both hitting the floor and leaving the arena, since both are early endings that are not captures.
+
+</details>
+
 ### Checkpoint 3.2
 
 <details><summary>Expand:</summary>
@@ -3169,6 +3218,7 @@ In the browser: in the left panel under Runs, untick everything except quadcopte
 **Info**:
   - six reward curves: `Episode_Reward/closing`, `proximity`, `capture`, `crash`, `action_rate`, `ang_vel`
   - three ending counts: `Episode_Termination/captured`, `died`, `time_out`
+  - `Metrics/capture_rate`
 - **Fail → what to fix:**
 
 | Message or symptom | Cause |
@@ -3177,7 +3227,7 @@ In the browser: in the left panel under Runs, untick everything except quadcopte
 | `AttributeError: ... '_captured'` | `self._captured = torch.zeros(...)` missing from `__init__` |
 | `NameError: name 'env_ids' is not defined` | a `[env_ids] = 0.0` line was placed in `__init__` instead of `_reset_idx` |
 | curves named `lin_vel` or `distance_to_goal` appear | the `_episode_sums` edit was not saved |
-| no `Episode_Termination/captured` curve | the "died"/"captured" split in `_reset_idx` is missing |
+| no `Episode_Termination/captured` or `Metrics/capture_rate` curve | 3.2 Step 4 was not applied |
 
 If TensorBoard shows no curves at all, wait a minute and refresh; if still empty, rerun with `--max_iterations 20`.
 
@@ -3224,7 +3274,7 @@ The defender spawns at the centre of its arena, at 0.5 m altitude. The attacker 
 <details>
 <summary>Expand 3.3</summary>
 
-> **What this subchapter does:** launches the real training run and manages it. First it randomises the physical properties of the simulated drone that you cannot measure on a C$115 aircraft, then it trains against a slow attacker and raises the speed in stages, then it reads the five metrics that diagnose a pursuit task specifically. It ends by measuring `capture_ang_size` — the share of frame the attacker fills at capture — which Chapter 6.2 needs because it has no simulator to ask for distance. Deliverable: a checkpoint that reliably intercepts, and one calibrated constant.
+> **What this subchapter does:** launches the real training run and manages it. First it randomises the physical properties of the simulated drone that you cannot measure on a C$115 aircraft, then it trains against a slow attacker and raises the speed in stages, then it checks three TensorBoard charts that show whether the defender actually captures. It ends by measuring `capture_ang_size` — the share of frame the attacker fills at capture — which Chapter 6.2 needs because it has no simulator to ask for distance. Deliverable: a checkpoint that reliably intercepts, and one calibrated constant.
 
 ### Step 0 — Randomise thrust, drift and camera-reading noise
  
@@ -3351,68 +3401,26 @@ Expect roughly 30–90 min depending on GPU. Block D is fully independent of thi
 
 </details>
 
-### Step 2 — Log and interpret the pursuit-specific metrics
+### Step 2 — Check in TensorBoard that the defender learned to catch the attacker
 
 <details>
 <summary>Expand Step 2</summary>
 
-> **Environment:** none needed — you are editing files.
+> **Environment:** none needed — you are reading TensorBoard.
 
-Total reward can climb steadily while the defender never actually catches anything, because proximity and closing pay continuously. This step adds five task-specific numbers to the logging dictionary the built-in tasks already use, and gives the failure signature for each.
+What this stage is testing is simple: after adding noise and randomness to the simulation and training against the slow attacker (0.3 m/s), does the defender actually catch it, without crashing?
 
-*File to edit:* `C:\projects\drone_pursuit\drone_pursuit\source\drone_pursuit\drone_pursuit\tasks\direct\quadcopter\quadcopter_env.py`
+TensorBoard's main curve, total reward, can't answer that. The defender earns reward on every step it is near the attacker or flying toward it, so the curve can rise while it never makes a capture. The charts below come from the logging added in 3.2 Step 4. Read them near the end of the Step 1 run:
 
-```python
-# ── FILE: ...\tasks\direct\quadcopter\quadcopter_env.py ─────────────────────
-# ── SECTION: class QuadcopterEnv, method _reset_idx — the logging block ─────
-# ──          that already exists near the top of the method            ─────
+| # | Chart name in TensorBoard | What it shows | Pass if… | Example run |
+|---|---|---|---|---|
+| 1 | **Info / Metrics/capture_rate** | Share of ending episodes that were captures (0–1) | ends at **0.8 or higher** | 0.98 |
+| 2 | **Info / Episode_Termination/captured** vs **Info / Episode_Termination/died** | How many episodes ended in a capture vs a crash or leaving the arena, at each logging point | `died` is **under 1/10** of `captured` | 31 vs 0.25 |
+| 3 | **Episode / Total timesteps (mean)** — the middle of the three "Total timesteps" cards | Average episode length, in decisions (20 per second; 200 = the 10 s limit) | **falls** after its early peak: captures happen sooner | 155 → 67 |
 
-        if env_ids is None or len(env_ids) == self.num_envs:                     # ← EXISTING (anchor)
-            env_ids = self._robot._ALL_INDICES                                   # ← EXISTING (anchor)
+If all three pass, the defender catches the attacker despite the randomised physics and noisy camera readings. Move on to Step 3.
 
-        # Logging
-        # ▼▼▼ CHANGED — replaces final_distance_to_goal (leftover from the hover task) ▼▼▼
-        # distance between the drones when the episode ended; measured here, before
-        # the reset below moves them. Works on the very first reset too.
-        final_dist = torch.linalg.norm(
-            self._attacker.data.root_pos_w[env_ids] - self._robot.data.root_pos_w[env_ids], dim=1
-        )
-        # ▲▲▲ END OF CHANGE ▲▲▲
-        extras = dict()                                                          # ← EXISTING, unchanged from here...
-        for key in self._episode_sums.keys():
-...
-        self.extras["log"].update(extras)                                        # ...to here (first batch: rewards)
-        extras = dict()
-
-        # ▼▼▼ Replace
-        # extras["Episode_Termination/died"] = torch.count_nonzero(self.reset_terminated[env_ids]).item()
-
-        # ▼▼▼ NEW — count captures separately from deaths ▼▼▼
-        cap = self._captured[env_ids]
-        extras["Episode_Termination/captured"] = torch.count_nonzero(self.reset_terminated[env_ids] & cap)
-        extras["Episode_Termination/died"]     = torch.count_nonzero(self.reset_terminated[env_ids] & ~cap)
-        extras["Episode_Termination/time_out"] = torch.count_nonzero(self.reset_time_outs[env_ids])
-        # ▲▲▲ END OF FIX ▲▲▲
-
-        extras["Episode_Termination/time_out"] = torch.count_nonzero(self.reset_time_outs[env_ids]).item()   # ← EXISTING
-
-        # ▼▼▼ 3.3 Step 2 — pursuit-specific metrics ▼▼▼
-        extras["Metrics/final_distance"]   = final_dist.mean()
-        extras["Metrics/capture_rate"]     = cap.float().mean()
-        extras["Metrics/visible_fraction"] = self._prev_asz[env_ids].gt(0).float().mean()
-        # ▲▲▲ END OF INSERT ▲▲▲
-        self.extras["log"].update(extras)                                        # ← EXISTING, keep LAST (second batch)
-
-        self._robot.reset(env_ids)                                               # ← EXISTING (anchor below)
-```
-
-| Metric | Healthy | Sick pattern → diagnosis |
-|---|---|---|
-| **capture rate** (fraction of episodes ending in capture) | climbs past 50–80% | stuck at 0% while reward climbs → orbiting exploit (see 3.2) |
-| **mean final distance** | falls toward capture_radius | plateaus at a fixed radius → orbiting again, or the attacker is simply faster than `max_speed` |
-| **episode length** | *falls* as captures come sooner | pinned at max → nobody is catching anybody |
-| **crash rate** | < 10% after the early phase | high forever → stability penalties too weak against the closing reward (diving into the floor) |
-| **lost-sight fraction** (mean of `visible`) | rises toward ~0.9 as the policy learns to keep the attacker in frame | falling → the defender is flying blind and the reward is not making that costly |
+If capture rate stays below 0.8, keep training or recheck the 3.2 reward before raising the attacker's speed.
 
 </details>
 
