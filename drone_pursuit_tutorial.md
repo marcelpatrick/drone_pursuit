@@ -3504,37 +3504,120 @@ C:\projects\drone_pursuit\drone_pursuit\logs\skrl\quadcopter_direct\2026-09-30_1
 <details>
 <summary>Expand Step 4</summary>
 
-> **Environment:** `env_drone`
+> **Environment:** none needed for the edits; `env_drone` to run `play.py`.
 
-Chapter 6.2 has to declare a capture using only the camera, because in the real world no simulator reports distance. What it needs is a threshold on `ang_size` — the share of frame width the attacker fills at the moment `_dist` crosses `capture_radius`. Right now is the only point in the project where both quantities exist at the same time, which is why this measurement happens here rather than in Chapter 6.
+In simulation, a capture is declared when the true distance between the drones drops below `capture_radius` (0.35 m). A real camera cannot measure distance, so Chapter 6.2 and Chapter 7 must declare a capture from the picture alone: "the attacker fills at least this share of the frame width." That share is `capture_ang_size`. This step measures it by recording `ang_size` (the share of the frame width the attacker fills, reading 3 of the seven camera readings) at every capture, while the trained policy chases. Right now is the only point in the project where the true distance and the camera reading exist at the same moment, which is why the measurement happens here rather than in Chapter 6.
 
-Add logging so that on every step where `_dist` first drops below `capture_radius`, the corresponding `ang_size` is recorded, then run `play.py` for a few dozen episodes and look at the distribution.
+You are not choosing this number freely. You set `capture_radius` in metres in 2.1, and the camera geometry from 3.1 Part E determines what that distance looks like on the frame. This step reads off the answer and stores it as a fixed number in the config, because Chapter 6 reads it from there and Chapter 7's flight script, which runs without Isaac Lab, needs it written down.
 
-*Run from:* `C:\projects\drone_pursuit\drone_pursuit` — *the script lives in:* `C:\projects\drone_pursuit\drone_pursuit\scripts\skrl\`
-```bat
-python C:\projects\drone_pursuit\drone_pursuit\scripts\skrl\play.py --task Template-Drone-Pursuit-Direct-v0 --num_envs 16
-```
-
-You get a spread rather than a single value, because the attacker's rectangle is wider seen face-on than edge-on. Pick from that spread according to the error you prefer: the **low end** declares capture eagerly and occasionally claims one it did not earn; the **median** is balanced; the **high end** only confirms certain captures and silently misses real ones.
+Four edits to the same file, then one run.
 
 *File to edit:* `C:\projects\drone_pursuit\drone_pursuit\source\drone_pursuit\drone_pursuit\tasks\direct\quadcopter\quadcopter_env.py`
 
+**Edit 1 of 4 — a switch that turns the measurement on, in the config class:**
+
+The switch keeps this logging from running, and slowing down, future training runs.
+
 ```python
 # ── FILE: ...\tasks\direct\quadcopter\quadcopter_env.py ─────────────────────
-# ── SECTION: class QuadcopterEnvCfg, below the Part E camera model ──────────
+# ── SECTION: class QuadcopterEnvCfg, below reading_noise_px ─────────────────
 
-    attacker_span_m = 0.13       # ← EXISTING, from 3.1 Part E
+    reading_noise_px = 2.0            # ← EXISTING, from 3.3 Step 0
 
-    # ▼▼▼ INSERT HERE! — YOUR measured value, not this placeholder ▼▼▼
-    capture_ang_size = 0.19      # frame share at capture — read off in this step
+    # ▼▼▼ INSERT HERE! ▼▼▼
+    log_capture_size = True           # 3.3 Step 4: print ang_size at capture. Set False when done.
     # ▲▲▲ END OF INSERT ▲▲▲
 ```
 
-Record it in `C:\projects\drone_pursuit\drone_pursuit\project_notes.txt` alongside the 1.4 measurements — values you derive by measurement are not in the lockfile and are not recoverable from it.
+**Edit 2 of 4 — storage for the measurements, in `__init__`:**
 
-You are not choosing this number freely. You set `capture_radius` in metres in 2.1, and the camera geometry from 3.1 Part E determines what that distance looks like in pixels. This step reads off the answer.
+```python
+# ── SECTION: class QuadcopterEnv, method __init__ ───────────────────────────
+
+        self._drift = torch.zeros(self.num_envs, 3, device=self.device)     # ← EXISTING, from 3.3 Step 0
+
+        # ▼▼▼ INSERT HERE! ▼▼▼
+        self._capture_log = []            # (ang_size, visible) at each capture, for 3.3 Step 4
+        # ▲▲▲ END OF INSERT ▲▲▲
+```
+
+**Edit 3 of 4 — record the camera reading at each capture, in `_get_dones`:**
+
+At every capture, this block asks `_camera_readings()` (3.1 Part F) what the camera would report at that exact moment, and collects the `ang_size` value and whether the attacker was in frame. After 200 captures it prints a summary and starts a new batch. `_camera_readings()` uses `self._dist`, which `_get_dones` has just measured, so the reading matches the capture moment.
+
+```python
+# ── SECTION: class QuadcopterEnv, method _get_dones ─────────────────────────
+
+        captured = self._dist < self.cfg.capture_radius                       # ← EXISTING
+        self._captured = captured                                             # ← EXISTING
+
+        # ▼▼▼ INSERT HERE! ▼▼▼
+        if self.cfg.log_capture_size and captured.any():
+            # camera reading at the capture moment (no noise, no delay)
+            _, _, asz, vis = self._camera_readings()
+            self._capture_log += torch.stack([asz[captured], vis[captured]], dim=1).tolist()
+            if len(self._capture_log) >= 200:
+                t = torch.tensor(self._capture_log)
+                seen = t[t[:, 1] > 0.5, 0]      # only captures where the attacker was in frame
+                if len(seen) > 0:
+                    q = torch.quantile(seen, torch.tensor([0.0, 0.1, 0.5, 0.9, 1.0]))
+                    print(f"[3.3 Step 4] {len(t)} captures | in view at capture: {len(seen) / len(t):.0%} | "
+                          f"ang_size min {q[0]:.3f}  p10 {q[1]:.3f}  MEDIAN {q[2]:.3f}  p90 {q[3]:.3f}  max {q[4]:.3f}")
+                else:
+                    print(f"[3.3 Step 4] {len(t)} captures, attacker never in view at capture")
+                self._capture_log = []
+        # ▲▲▲ END OF INSERT ▲▲▲
+```
+
+**Run the trained policy and read the printout:**
+
+> **Environment:** `env_drone`
+
+Keep `attacker_speed` at the value of the checkpoint you load (0.6 after Step 3). Replace `<run-folder>` with the Step 3 run that passed, e.g. `2026-09-30_12-11-45_ppo_torch`.
+
+*Run from:* `C:\projects\drone_pursuit\drone_pursuit`
+```bat
+cd C:\projects\drone_pursuit\drone_pursuit
+python scripts\skrl\play.py --task Template-Drone-Pursuit-Direct-v0 --num_envs 64 --headless --checkpoint C:\projects\drone_pursuit\drone_pursuit\logs\skrl\quadcopter_direct\<run-folder>\checkpoints\best_agent.pt
+```
+
+With 64 drones capturing every few seconds, a `[3.3 Step 4]` line prints within a minute or two. Wait for three or four lines, then stop with **Ctrl+C**. A line looks like this (example numbers):
+
+```
+[3.3 Step 4] 200 captures | in view at capture: 93% | ang_size min 0.214  p10 0.218  MEDIAN 0.231  p90 0.262  max 0.305
+```
+
+- **MEDIAN** is the value to use. If the lines differ slightly, take a value near the middle of their medians.
+- **The minimum should be about 0.21.** With the 3.1 Part E camera (focal length 12 mm, sensor width 20.955 mm) and a 0.13 m attacker, an attacker exactly 0.35 m away fills 0.213 of the frame width. Captures are detected once per decision step (20 per second), so the defender is often already slightly closer than 0.35 m, which spreads the values upward from 0.21. A minimum far from 0.21 means `cam_focal_mm`, `cam_aperture_mm` or `attacker_span_m` differ from these values; recompute the expected minimum as `(cam_focal_mm / cam_aperture_mm) × attacker_span_m / capture_radius`.
+- **"in view at capture"** is the share of captures where the attacker was inside the camera frame. Below about 80% means the defender often reaches the attacker from outside its view. Chapter 6 cannot confirm those captures from the camera, so expect its camera-declared capture count to be lower than the simulator's by about that share.
+
+**Edit 4 of 4 — store your measured value, and switch the measurement off:**
+
+```python
+# ── SECTION: class QuadcopterEnvCfg, below reading_noise_px ─────────────────
+
+    reading_noise_px = 2.0            # ← EXISTING, from 3.3 Step 0
+
+    # CHANGE: was True for the measurement above
+    log_capture_size = False
+
+    # ▼▼▼ INSERT HERE! — YOUR measured MEDIAN, not this example ▼▼▼
+    capture_ang_size = 0.231          # frame share at capture — measured in 3.3 Step 4
+    # ▲▲▲ END OF INSERT ▲▲▲
+```
+
+Record it in `C:\projects\drone_pursuit\drone_pursuit\project_notes.txt` alongside the 1.4 measurements, for example:
+
+```
+capture_ang_size    : 0.231  (median at capture, 3.3 Step 4, attacker_speed 0.6, in view 93%)
+```
+
+Values you derive by measurement are not in the lockfile and are not recoverable from it.
+
+**Why the values spread, and why that changes later.** In simulation, `_camera_readings()` computes `ang_size` from the distance alone, so the attacker's orientation has no effect and the spread comes only from how far inside 0.35 m each capture happens. A real detector's box is wider when the attacker is seen face-on than edge-on, so the spread grows once real boxes are used. Chapter 7.4 re-checks this value against the real detector.
 
 </details>
+
 
 ### Step 5 — Play the trained policy and check for interception
 
