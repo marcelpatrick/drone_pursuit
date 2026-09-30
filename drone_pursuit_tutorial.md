@@ -3271,6 +3271,93 @@ The defender spawns at the centre of its arena, at 0.5 m altitude. The attacker 
 </details>
 ---
 
+## 3.2B Randomise the Attacker's Size So the Policy Does Not Assume It (≤1h)
+
+<details>
+<summary>Expand 3.2B</summary>
+
+> **What this subchapter does:** Until now, `_camera_readings()` (3.1 Part F) computed the attacker's frame share (`ang_size`) from one fixed width, `attacker_span_m = 0.13`. A policy trained that way learns "this frame share means this distance", which is only true for a 0.13 m target. The real attacker's width is often unknown, and drones range from about 8 cm to 35 cm tip to tip. This subchapter gives the simulated attacker a different width every episode, anywhere in that range, so the policy cannot rely on one size. The reward still uses the true distance (3.2), so the policy is paid for actually getting close. The only way to do that across all sizes is to judge closeness from how fast the attacker grows in the frame (`d_ang_size` relative to `ang_size`), which does not depend on size. The 3.3 training run then learns that behaviour.
+
+### Why the width matters, in numbers
+
+With the 3.1 Part E camera, a target's frame share at a given distance is proportional to its width. A 0.13 m-wide attacker fills 0.21 of the frame at 0.35 m. A 0.35 m-wide attacker fills the same 0.21 at about 0.95 m, and an 8 cm one only at about 0.22 m. A policy trained on 0.13 m alone would slow down too early against the large drone and arrive too fast against the small one.
+
+What does **not** change: the bearings (readings 1–2) and the visibility rule (a box under ~8 pixels is not detected) are unaffected by width, and so is the reward.
+
+### Step 1 — Add the width range to the config class
+
+> **Environment:** none needed — you are editing files.
+
+*File to edit:* `C:\projects\drone_pursuit\drone_pursuit\source\drone_pursuit\drone_pursuit\tasks\direct\quadcopter\quadcopter_env.py`
+
+```python
+# ── FILE: ...\tasks\direct\quadcopter\quadcopter_env.py ─────────────────────
+# ── SECTION: class QuadcopterEnvCfg, the 3.1 Part E camera model ────────────
+
+    attacker_span_m = 0.13            # ← EXISTING, from 3.1 Part E. From now on only the TYPICAL
+                                      #   width: check_3_1.py reads it; training uses the range below
+
+    # ▼▼▼ INSERT HERE! ▼▼▼
+    attacker_span_range = (0.08, 0.35)   # metres, tip to tip incl. guards: smallest and largest target expected
+    # ▲▲▲ END OF INSERT ▲▲▲
+```
+
+If you do know your target's width, you can narrow the range around it (for example `(0.11, 0.15)` for a 13 cm target), which trains faster.
+
+### Step 2 — Create storage for each environment's width, in `__init__`
+
+```python
+# ── SECTION: class QuadcopterEnv, method __init__ ───────────────────────────
+
+        self._captured = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)   # ← EXISTING, from 3.1 Part D
+
+        # ▼▼▼ INSERT HERE! ▼▼▼
+        self._span = torch.full((self.num_envs,), self.cfg.attacker_span_m, device=self.device)   # attacker width per env
+        # ▲▲▲ END OF INSERT ▲▲▲
+```
+
+### Step 3 — Draw a new width at every episode start, in `_reset_idx`
+
+```python
+# ── SECTION: class QuadcopterEnv, method _reset_idx ─────────────────────────
+
+        self._prev_actions[env_ids] = 0.0        # ← EXISTING, from 3.1 Part D
+
+        # ▼▼▼ INSERT HERE! (n = len(env_ids) is already defined above, in the 2.2 block) ▼▼▼
+        self._span[env_ids] = torch.empty(n, device=self.device).uniform_(*self.cfg.attacker_span_range)
+        # ▲▲▲ END OF INSERT ▲▲▲
+```
+
+The width stays fixed for the whole episode, as a real attacker's would.
+
+### Step 4 — Use each environment's width in the camera readings
+
+```python
+# ── SECTION: class QuadcopterEnv, method _camera_readings ───────────────────
+
+        # BEFORE:
+        # ang_size = (f_px * self.cfg.attacker_span_m / self._dist.clamp(min=0.05)) / self.cfg.cam_width
+        # AFTER:
+        ang_size = (f_px * self._span / self._dist.clamp(min=0.05)) / self.cfg.cam_width
+```
+
+### What this changes later in the tutorial
+
+- **3.3 training** takes longer to reach the 80% capture-rate target, because judging distance from growth is harder than reading it from size.
+- **3.3 Step 4** records the frame share *and* the time-to-contact (distance ÷ closing speed) at every capture. With random widths, the frame share at capture spreads widely, so a single `capture_ang_size` is only valid if you know your target's width.
+- **Chapter 6.1's `captured()`** can use either rule: a frame-share threshold (only with a known width), or a time-to-contact threshold, which the camera can estimate as `ang_size ÷ (d_ang_size × 20)` without knowing the width. Time-to-contact is a time, not a distance: a 0.35 s threshold fires at 0.35 m when closing at 1 m/s, and at 0.70 m when closing at 2 m/s.
+- **"Values to fetch from the Real Drone"**: the `attacker_span_m` row becomes optional. Measure it if you can, and narrow `attacker_span_range` around it.
+- **`check_3_1.py`** assumes one fixed width. Run it before this subchapter, as 3.1 already requires. Run afterwards, its item 2 `ang_size` checks report a warning or failure by design.
+
+> ✅ **Checkpoint 3.2B**
+> 1. `python -m py_compile ...\quadcopter_env.py` prints nothing.
+> 2. A 10-iteration run with 16 environments (the 3.2 Test 2 command) finishes without a `Traceback`.
+> 3. That run's `logs\skrl\quadcopter_direct\<run-folder>\params\env.yaml` contains `attacker_span_range` with your two values.
+
+</details>
+
+---
+
 ## 3.3 Randomise the Drone's Physics, Train with PPO, and Read the Curves (≤1.5h hands-on + background compute)
 
 <details>
@@ -3499,16 +3586,21 @@ C:\projects\drone_pursuit\drone_pursuit\logs\skrl\quadcopter_direct\2026-09-30_1
 
 </details>
 
-### Step 4 — Measure the frame share at capture (5 minutes, saves an hour in Chapter 6)
+### Step 4 — Measure the frame share and time-to-contact at capture (5 minutes, saves an hour in Chapter 6)
 
 <details>
 <summary>Expand Step 4</summary>
 
 > **Environment:** none needed for the edits; `env_drone` to run `play.py`.
 
-In simulation, a capture is declared when the true distance between the drones drops below `capture_radius` (0.35 m). A real camera cannot measure distance, so Chapter 6.2 and Chapter 7 must declare a capture from the picture alone: "the attacker fills at least this share of the frame width." That share is `capture_ang_size`. This step measures it by recording `ang_size` (the share of the frame width the attacker fills, reading 3 of the seven camera readings) at every capture, while the trained policy chases. Right now is the only point in the project where the true distance and the camera reading exist at the same moment, which is why the measurement happens here rather than in Chapter 6.
+In simulation, a capture is declared when the true distance between the drones drops below `capture_radius` (0.35 m). A real camera cannot measure distance, so Chapter 6.2 and Chapter 7 must declare a capture from the picture alone. This step measures the two camera-readable quantities that could stand in for "distance below 0.35 m":
 
-You are not choosing this number freely. You set `capture_radius` in metres in 2.1, and the camera geometry from 3.1 Part E determines what that distance looks like on the frame. This step reads off the answer and stores it as a fixed number in the config, because Chapter 6 reads it from there and Chapter 7's flight script, which runs without Isaac Lab, needs it written down.
+- **Frame share at capture** (`ang_size`, reading 3 of the seven): how much of the frame width the attacker fills. It is proportional to the attacker's width, so it only works as a capture rule when you know that width.
+- **Time-to-contact at capture:** distance ÷ closing speed, i.e. how many seconds until the drones meet at the current speed. The camera can estimate it as `ang_size ÷ (d_ang_size × 20)` without knowing the attacker's width, but it depends on how fast the defender is closing.
+
+Right now is the only point in the project where the true distance and the camera readings exist at the same moment, which is why this measurement happens here rather than in Chapter 6. The results are stored as fixed numbers in the config, because Chapter 6 reads them from there and Chapter 7's flight script, which runs without Isaac Lab, needs them written down.
+
+This step assumes 3.2B is done, so every episode's attacker has a random width.
 
 Four edits to the same file, then one run.
 
@@ -3525,7 +3617,7 @@ The switch keeps this logging from running, and slowing down, future training ru
     reading_noise_px = 2.0            # ← EXISTING, from 3.3 Step 0
 
     # ▼▼▼ INSERT HERE! ▼▼▼
-    log_capture_size = True           # 3.3 Step 4: print ang_size at capture. Set False when done.
+    log_capture_size = True           # 3.3 Step 4: print readings at capture. Set False when done.
     # ▲▲▲ END OF INSERT ▲▲▲
 ```
 
@@ -3537,13 +3629,13 @@ The switch keeps this logging from running, and slowing down, future training ru
         self._drift = torch.zeros(self.num_envs, 3, device=self.device)     # ← EXISTING, from 3.3 Step 0
 
         # ▼▼▼ INSERT HERE! ▼▼▼
-        self._capture_log = []            # (ang_size, visible) at each capture, for 3.3 Step 4
+        self._capture_log = []            # (ang_size, visible, time-to-contact) at each capture, for 3.3 Step 4
         # ▲▲▲ END OF INSERT ▲▲▲
 ```
 
-**Edit 3 of 4 — record the camera reading at each capture, in `_get_dones`:**
+**Edit 3 of 4 — record the readings at each capture, in `_get_dones`:**
 
-At every capture, this block asks `_camera_readings()` (3.1 Part F) what the camera would report at that exact moment, and collects the `ang_size` value and whether the attacker was in frame. After 200 captures it prints a summary and starts a new batch. `_camera_readings()` uses `self._dist`, which `_get_dones` has just measured, so the reading matches the capture moment.
+At every capture, this block asks `_camera_readings()` (3.1 Part F) what the camera would report at that exact moment, and computes the true time-to-contact from the distance and the closing speed. `_camera_readings()` uses `self._dist`, which `_get_dones` has just measured, so both values match the capture moment. After 200 captures it prints a summary and starts a new batch.
 
 ```python
 # ── SECTION: class QuadcopterEnv, method _get_dones ─────────────────────────
@@ -3555,14 +3647,20 @@ At every capture, this block asks `_camera_readings()` (3.1 Part F) what the cam
         if self.cfg.log_capture_size and captured.any():
             # camera reading at the capture moment (no noise, no delay)
             _, _, asz, vis = self._camera_readings()
-            self._capture_log += torch.stack([asz[captured], vis[captured]], dim=1).tolist()
+            # time-to-contact = distance ÷ closing speed (what the camera's growth rate estimates)
+            dir_to = (self._attacker.data.root_pos_w - self._robot.data.root_pos_w) / self._dist.unsqueeze(1).clamp(min=1e-6)
+            closing = ((self._robot.data.root_lin_vel_w - self._atk_vel) * dir_to).sum(dim=1)
+            ttc = self._dist / closing.clamp(min=1e-3)
+            self._capture_log += torch.stack([asz[captured], vis[captured], ttc[captured]], dim=1).tolist()
             if len(self._capture_log) >= 200:
                 t = torch.tensor(self._capture_log)
-                seen = t[t[:, 1] > 0.5, 0]      # only captures where the attacker was in frame
+                seen = t[t[:, 1] > 0.5]      # only captures where the attacker was in frame
                 if len(seen) > 0:
-                    q = torch.quantile(seen, torch.tensor([0.0, 0.1, 0.5, 0.9, 1.0]))
-                    print(f"[3.3 Step 4] {len(t)} captures | in view at capture: {len(seen) / len(t):.0%} | "
-                          f"ang_size min {q[0]:.3f}  p10 {q[1]:.3f}  MEDIAN {q[2]:.3f}  p90 {q[3]:.3f}  max {q[4]:.3f}")
+                    qs = torch.tensor([0.1, 0.5, 0.9])
+                    a, c = torch.quantile(seen[:, 0], qs), torch.quantile(seen[:, 2], qs)
+                    print(f"[3.3 Step 4] {len(t)} captures | in view: {len(seen) / len(t):.0%} | "
+                          f"ang_size p10 {a[0]:.3f} median {a[1]:.3f} p90 {a[2]:.3f} | "
+                          f"time-to-contact p10 {c[0]:.2f}s median {c[1]:.2f}s p90 {c[2]:.2f}s")
                 else:
                     print(f"[3.3 Step 4] {len(t)} captures, attacker never in view at capture")
                 self._capture_log = []
@@ -3573,7 +3671,7 @@ At every capture, this block asks `_camera_readings()` (3.1 Part F) what the cam
 
 > **Environment:** `env_drone`
 
-Keep `attacker_speed` at the value of the checkpoint you load (0.6 after Step 3). Replace `<run-folder>` with the Step 3 run that passed, e.g. `2026-09-30_12-11-45_ppo_torch`.
+Keep `attacker_speed` and `attacker_span_range` at the values of the checkpoint you load. Replace `<run-folder>` with the Step 3 run that passed.
 
 *Run from:* `C:\projects\drone_pursuit\drone_pursuit`
 ```bat
@@ -3584,14 +3682,26 @@ python scripts\skrl\play.py --task Template-Drone-Pursuit-Direct-v0 --num_envs 6
 With 64 drones capturing every few seconds, a `[3.3 Step 4]` line prints within a minute or two. Wait for three or four lines, then stop with **Ctrl+C**. A line looks like this (example numbers):
 
 ```
-[3.3 Step 4] 200 captures | in view at capture: 93% | ang_size min 0.214  p10 0.218  MEDIAN 0.231  p90 0.262  max 0.305
+[3.3 Step 4] 200 captures | in view: 91% | ang_size p10 0.152 median 0.301 p90 0.528 | time-to-contact p10 0.18s median 0.27s p90 0.41s
 ```
 
-- **MEDIAN** is the value to use. If the lines differ slightly, take a value near the middle of their medians.
-- **The minimum should be about 0.21.** With the 3.1 Part E camera (focal length 12 mm, sensor width 20.955 mm) and a 0.13 m attacker, an attacker exactly 0.35 m away fills 0.213 of the frame width. Captures are detected once per decision step (20 per second), so the defender is often already slightly closer than 0.35 m, which spreads the values upward from 0.21. A minimum far from 0.21 means `cam_focal_mm`, `cam_aperture_mm` or `attacker_span_m` differ from these values; recompute the expected minimum as `(cam_focal_mm / cam_aperture_mm) × attacker_span_m / capture_radius`.
-- **"in view at capture"** is the share of captures where the attacker was inside the camera frame. Below about 80% means the defender often reaches the attacker from outside its view. Chapter 6 cannot confirm those captures from the camera, so expect its camera-declared capture count to be lower than the simulator's by about that share.
+How to read it:
 
-**Edit 4 of 4 — store your measured value, and switch the measurement off:**
+- **"in view"** is the share of captures where the attacker was inside the camera frame. Below about 80% means the defender often reaches the attacker from outside its view. Chapter 6 cannot confirm those captures from the camera, so expect its camera-declared capture count to be lower than the simulator's by about that share.
+- **`ang_size` spreads widely** because each episode's attacker has a different width. With the 3.1 Part E camera, an attacker at exactly 0.35 m fills `(cam_focal_mm ÷ cam_aperture_mm) × width ÷ 0.35` of the frame: 0.13 for an 8 cm drone, 0.57 for a 35 cm one. Values spread upward from there, because captures are detected once per decision step (20 per second), so the defender is often already slightly closer than 0.35 m.
+- **Time-to-contact** does not depend on width, but it does depend on how fast the defender closes. Judge it by its spread: if p90 is no more than about twice p10 (as in the example, 0.41 vs 0.18), the defender arrives at a consistent closing speed and a time-to-contact rule will work.
+
+**Choose the capture rule Chapter 6 will use:**
+
+| Your situation | Rule | Value to store |
+|---|---|---|
+| You know the target's width, and narrowed `attacker_span_range` around it in 3.2B | frame share | `capture_ang_size` = median `ang_size` |
+| Width unknown, and time-to-contact p90 ≤ about 2 × p10 | time-to-contact | `capture_ttc_s` = median time-to-contact |
+| Width unknown, and time-to-contact spreads wider | neither is reliable | skip capture declaration; Chapter 7 uses a safety stop (back off when the attacker fills more than about half the frame) |
+
+**Edit 4 of 4 — store your results, and switch the measurement off:**
+
+Store both values even if you only use one: 5.2 anchors its camera block on `capture_ang_size`, and the rule can be switched later without re-measuring.
 
 ```python
 # ── SECTION: class QuadcopterEnvCfg, below reading_noise_px ─────────────────
@@ -3601,20 +3711,23 @@ With 64 drones capturing every few seconds, a `[3.3 Step 4]` line prints within 
     # CHANGE: was True for the measurement above
     log_capture_size = False
 
-    # ▼▼▼ INSERT HERE! — YOUR measured MEDIAN, not this example ▼▼▼
-    capture_ang_size = 0.231          # frame share at capture — measured in 3.3 Step 4
+    # ▼▼▼ INSERT HERE! — YOUR measured medians, not these examples ▼▼▼
+    capture_rule = "ttc"              # "ang_size" (known target width) or "ttc" (unknown width)
+    capture_ang_size = 0.301          # median frame share at capture — 3.3 Step 4
+    capture_ttc_s = 0.27              # median time-to-contact at capture, seconds — 3.3 Step 4
     # ▲▲▲ END OF INSERT ▲▲▲
 ```
 
-Record it in `C:\projects\drone_pursuit\drone_pursuit\project_notes.txt` alongside the 1.4 measurements, for example:
+Record them in `C:\projects\drone_pursuit\drone_pursuit\project_notes.txt` alongside the 1.4 measurements, for example:
 
 ```
-capture_ang_size    : 0.231  (median at capture, 3.3 Step 4, attacker_speed 0.6, in view 93%)
+capture (3.3 Step 4) : rule ttc | capture_ttc_s 0.27 (p10 0.18, p90 0.41) | capture_ang_size 0.301
+                       attacker_speed 0.6, attacker_span_range (0.08, 0.35), in view 91%
 ```
 
 Values you derive by measurement are not in the lockfile and are not recoverable from it.
 
-**Why the values spread, and why that changes later.** In simulation, `_camera_readings()` computes `ang_size` from the distance alone, so the attacker's orientation has no effect and the spread comes only from how far inside 0.35 m each capture happens. A real detector's box is wider when the attacker is seen face-on than edge-on, so the spread grows once real boxes are used. Chapter 7.4 re-checks this value against the real detector.
+**What changes on real hardware.** In simulation, `_camera_readings()` computes `ang_size` from distance and width alone, so the attacker's orientation has no effect. A real detector's box is wider when the attacker is seen face-on than edge-on, which widens the `ang_size` spread. The camera's time-to-contact estimate `ang_size ÷ (d_ang_size × 20)` also jitters with the detector's box, so Chapter 6.1 averages it over 3–5 frames before comparing it to `capture_ttc_s`. Chapter 7.4 re-checks both values against the real detector.
 
 </details>
 
