@@ -3433,9 +3433,12 @@ If capture rate stays below 0.8, keep training or recheck the 3.2 reward before 
 
 Once capture rate passes about 80% at `attacker_speed = 0.3`, stop the run, set `attacker_speed = 0.6` in the cfg, and resume from the saved checkpoint rather than restarting. Restarting would discard a policy that already knows how to intercept and re-learn it against a harder target, which takes longer and often fails.
 
-*Run from:* `any folder` — *checkpoints live in:* `C:\projects\drone_pursuit\drone_pursuit\logs\skrl\<run-folder>\checkpoints\`
+Run this from `C:\projects\drone_pursuit\drone_pursuit, after setting attacker_speed = 0.6`:
+Replace the path to where your latest train checkpoint was stored: `   python scripts\skrl\train.py --task Template-Drone-Pursuit-Direct-v0 --num_envs 2048 --headless --max_iterations 1500 --checkpoint <full path from step 1>`
+
+in this case:
 ```bat
-python C:\projects\drone_pursuit\drone_pursuit\scripts\skrl\train.py --task Template-Drone-Pursuit-Direct-v0 --num_envs 2048 --headless --max_iterations 1500 --checkpoint C:\projects\drone_pursuit\drone_pursuit\logs\skrl\quadcopter_direct\checkpoints\best_agent.pt
+python scripts\skrl\train.py --task Template-Drone-Pursuit-Direct-v0 --num_envs 2048 --headless --max_iterations 1500 --checkpoint C:\projects\drone_pursuit\drone_pursuit\logs\skrl\quadcopter_direct\2026-09-26_14-33-37_ppo_torch\checkpoints\best_agent.pt
 ```
 
 Repeat toward 1.0 m/s if you want a harder chase. This staged difficulty is curriculum learning in its simplest form; the adaptive environment generator in the Tsinghua paper is the same instinct built as a research system.
