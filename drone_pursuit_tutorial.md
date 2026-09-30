@@ -3572,8 +3572,9 @@ It presented the following curve:
 
 This pattern is called policy collapse: PPO had a good policy, kept updating it, and one series of updates made it worse. The smaller dip around step 7k is the same thing on a smaller scale. It is not caused by the speed change or by your code. Long runs past the point where the task is solved give PPO more chances for this to happen
 
-Then, I reduced to `--max_iterations = 170` to stop training where results were still favorable and it worked
-<img width="2629" height="733" alt="image" src="https://github.com/user-attachments/assets/bfc9ef11-229c-4ce5-ba34-1e30575c6e41" />
+Then, I reduced to `--max_iterations = 400` to stop training where results were still favorable and it worked
+<img width="2612" height="706" alt="image" src="https://github.com/user-attachments/assets/1734c0c0-32f3-4035-afe8-a163b32c1e05" />
+
 
 If all tests pass, Checkpoint 3.3 item 1 is met. Record this path in project_notes.txt, since Chapters 6 and 7 need it:
 ```
