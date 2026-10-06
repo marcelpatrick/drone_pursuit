@@ -3582,7 +3582,7 @@ best training run at 3.3 - Step 3:
 C:\projects\drone_pursuit\drone_pursuit\logs\skrl\quadcopter_direct\[your folder for the best run]\checkpoints\best_agent.pt
 
 # in this case
-C:\projects\drone_pursuit\drone_pursuit\logs\skrl\quadcopter_direct\2026-09-30_12-11-45_ppo_torch\checkpoints\best_agent.pt
+C:\projects\drone_pursuit\drone_pursuit\logs\skrl\quadcopter_direct\2026-09-30_13-27-20_ppo_torch\checkpoints\best_agent.pt
 ```
 
 </details>
@@ -3677,6 +3677,9 @@ Keep `attacker_speed` and `attacker_span_range` at the values of the checkpoint 
 ```bat
 cd C:\projects\drone_pursuit\drone_pursuit
 python scripts\skrl\play.py --task Template-Drone-Pursuit-Direct-v0 --num_envs 64 --headless --checkpoint C:\projects\drone_pursuit\drone_pursuit\logs\skrl\quadcopter_direct\<run-folder>\checkpoints\best_agent.pt
+
+### Play with the best checkpoint. In this case:
+python scripts\skrl\play.py --task Template-Drone-Pursuit-Direct-v0 --num_envs 64 --headless --checkpoint C:\projects\drone_pursuit\drone_pursuit\logs\skrl\quadcopter_direct\2026-09-30_13-27-20_ppo_torch\checkpoints\best_agent.pt
 ```
 
 With 64 drones capturing every few seconds, a `[3.3 Step 4]` line prints within a minute or two. Wait for three or four lines, then stop with **Ctrl+C**. A line looks like this (example numbers):
