@@ -4,3 +4,12 @@ video delay         : 175 ms mean, 99–219 ms range
                       → 2–5 control steps at 20 Hz
 telemetry available : speeds (cm/s), attitude angles. NO angular rates.
 camera              : 960x720, ~83 deg horizontal field of view
+
+best training run at 3.3 - Step 3:
+C:\projects\drone_pursuit\drone_pursuit\logs\skrl\quadcopter_direct\2026-09-30_13-27-20_ppo_torch\checkpoints\best_agent.pt
+
+capture (3.3 Step 4) : rule ttc | capture_ttc_s 0.24 (p10 0.12 s, p90 0.39 s)
+                       declares capture between ~0.2 m and ~0.6 m, depending on closing speed (accepted)
+                       capture_ang_size 0.40 (p10 0.20, p90 0.60), reference only | in view 87%
+                       checkpoint 2026-09-30_13-27-20_ppo_torch, attacker_speed 0.6, attacker_span_range (0.08, 0.35)
+best checkpoint (3.3): C:\projects\drone_pursuit\drone_pursuit\logs\skrl\quadcopter_direct\2026-09-30_13-27-20_ppo_torch\checkpoints\best_agent.pt

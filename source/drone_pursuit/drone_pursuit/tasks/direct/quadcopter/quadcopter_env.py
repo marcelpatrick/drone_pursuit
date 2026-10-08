@@ -51,6 +51,9 @@ class QuadcopterEnvWindow(BaseEnvWindow):
 
 
 @configclass
+# The decorator @configclass tells Isaaclab to build the env with these custom settings instead of using the default parameters inherited from the parent DirectRLEnvCfg class. 
+# It saves you from hand-writing the setup code (__init__) and helper methods
+# It also allows us to easily swap settings with .replace() or CLI commands and to save the config params of each run on separate yaml files for future reference  
 class QuadcopterEnvCfg(DirectRLEnvCfg):
     # env
     episode_length_s = 10.0
@@ -135,7 +138,7 @@ class QuadcopterEnvCfg(DirectRLEnvCfg):
     # ▼▼▼ NEW! — from project_notes.txt, converted to control steps ▼▼▼
     # Manually ads a delay to the input reading on the simulation so it mimics the expected behavior when running on hardware
     obs_delay_min = 2
-    obs_delay_max = 5
+    obs_delay_max = 6
     # ▲▲▲ END OF INSERT ▲▲▲
 
     # ▼▼▼ NEW! — camera model. MUST match the TiledCameraCfg you add ▼▼▼
@@ -145,7 +148,24 @@ class QuadcopterEnvCfg(DirectRLEnvCfg):
     cam_focal_mm = 12.0               # <<< ASSUMED VALUES: VERIFY AND REPLACE WITH REAL HARDWARE MEASUREMENTS!!!
     cam_aperture_mm = 20.955          # PinholeCameraCfg default horizontal aperture
     attacker_span_m = 0.13            # <<< ASSUMED VALUES: VERIFY AND REPLACE WITH REAL HARDWARE MEASUREMENTS!!!
+    # ▼▼▼ NEW! varies the size of the attacker - from 3.2B ▼▼▼
+    attacker_span_range = (0.08, 0.35)   # metres, tip to tip incl. guards: smallest and largest target expected
+    # ▼▼▼ NEW! the noise size from 3.3▼▼▼
+    reading_noise_px = 2.0            # detector jitter, in pixels (typical size of the error)
+    # ▼▼▼ NEW! capture logs from and_size vs real distance from 3.3 - step 4▼▼▼
+    log_capture_size = False           # 3.3 Step 4: print readings at capture. Set False when done.
+
+    # ▼▼▼ NEW! — YOUR measured medians  ▼▼▼
+    capture_rule = "ttc"              # Choose the capture rule Chapter 6: "ang_size" (known target width) or "ttc" (unknown width) or "none" (safety stop only)
+    capture_ang_size = 0.4            # get median ang_size after running `python scripts\skrl\play.py
+                                        # --task Template-Drone-Pursuit-Direct-v0 --num_envs 64 --headless --checkpoint
+                                        # C:\projects\drone_pursuit\drone_pursuit\logs\skrl\quadcopter_direct\
+                                        #<run-folder>\checkpoints\best_agent.pt`
+    capture_ttc_s = 0.24              # median time-to-contact at capture, seconds — 3.3 Step 4
     # ▲▲▲ END OF INSERT ▲▲▲
+    # ▲▲▲ END OF INSERT ▲▲▲
+    # ▲▲▲ END OF INSERT ▲▲▲
+    # ▲▲▲ END OF INSERT ▲▲▲ 
 
     # reward scales
     lin_vel_reward_scale = -0.05
@@ -198,7 +218,14 @@ class QuadcopterEnv(DirectRLEnv):
         self._prev_by = torch.zeros(self.num_envs, device=self.device)
         self._prev_asz = torch.zeros(self.num_envs, device=self.device)
         self._prev_actions = torch.zeros(self.num_envs, 4, device=self.device)
-        self._captured = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+        self._captured = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)       
+        # ▼▼▼ NEW! create storage for each environment's values for randomization of thrust, drift and camera-reading noise▼▼▼
+        self._span = torch.full((self.num_envs,), self.cfg.attacker_span_m, device=self.device) # attacker width per env
+        self._thrust_scale = torch.ones(self.num_envs, device=self.device)
+        self._drift = torch.zeros(self.num_envs, 3, device=self.device)
+        self._capture_log = []            # (ang_size, visible, time-to-contact) at each capture, for 3.3 Step 4
+        # ▲▲▲ END OF INSERT ▲▲▲
+        # ▲▲▲ END OF INSERT ▲▲▲
         # ▲▲▲ END OF INSERT ▲▲▲
 
         # Logging
@@ -275,8 +302,16 @@ class QuadcopterEnv(DirectRLEnv):
         desired_yaw_rate = self._actions[:, 3] * self.cfg.max_yaw_rate   # rad/s
 
         # stands in for the Tello's own stabiliser
-        vel_error = desired_vel_b - self._robot.data.root_lin_vel_b
-        force_b = self.cfg.vel_gain * vel_error * self._robot_mass
+        # ▼▼▼ REPLACE these two lines from 3.1 Part A with the randomized parameters from 3.3 ▼▼▼
+        #   vel_error = desired_vel_b - self._robot.data.root_lin_vel_b
+        #   force_b = self.cfg.vel_gain * vel_error * self._robot_mass
+        # ▼▼▼ WITH ▼▼▼
+        # drift: the drone settles at the commanded speed PLUS its trim error
+        vel_error = (desired_vel_b + self._drift) - self._robot.data.root_lin_vel_b
+        # thrust: a drained battery corrects speed errors more weakly
+        # (.unsqueeze(-1) lets each env's single value scale all 3 force directions)
+        force_b = self.cfg.vel_gain * vel_error * self._robot_mass * self._thrust_scale.unsqueeze(-1)
+        # ▲▲▲ END OF REPLACE ▲▲▲
         force_b -= self._robot_weight * self._robot.data.projected_gravity_b   # hold altitude ◄── CHANGED: added * self._robot.data.projected_gravity_b. "up" stays up even when tilted
 
         self._thrust[:, 0, :] = force_b                    # ◄── CHANGED: before: self._thrust[:, 0, :] = quat_apply(self._robot.data.root_quat_w, force_b). already in the drone's own frame
@@ -397,7 +432,10 @@ class QuadcopterEnv(DirectRLEnv):
 
         bearing_x = -(rel_b[:, 1] / safe_fwd) * (f_px / half_w)
         bearing_y = -(rel_b[:, 2] / safe_fwd) * (f_px / half_h)
-        ang_size = (f_px * self.cfg.attacker_span_m / self._dist.clamp(min=0.05)) / self.cfg.cam_width
+        # BEFORE:
+        # ang_size = (f_px * self.cfg.attacker_span_m / self._dist.clamp(min=0.05)) / self.cfg.cam_width
+        # AFTER: Use each environment's width in the camera readings
+        ang_size = (f_px * self._span / self._dist.clamp(min=0.05)) / self.cfg.cam_width
 
         # the detector's blind spot: a box under ~8 px wide usually returns nothing
         visible = (fwd > 0.05) & (bearing_x.abs() < 1.0) & (bearing_y.abs() < 1.0) & (ang_size > 0.012)
@@ -425,6 +463,13 @@ class QuadcopterEnv(DirectRLEnv):
         )
 
         bx, by, asz, vis = self._camera_readings()
+
+        # ▼▼▼ NEW! - add the jitter to the readings for randomization - from 3.3▼▼▼
+        px = self.cfg.reading_noise_px
+        bx  = (bx  + torch.randn_like(bx)  * px / (self.cfg.cam_width / 2)).clamp(-1.0, 1.0)
+        by  = (by  + torch.randn_like(by)  * px / (self.cfg.cam_height / 2)).clamp(-1.0, 1.0)
+        asz = (asz + torch.randn_like(asz) * px / self.cfg.cam_width).clamp(min=1e-3)
+        # ▲▲▲ END OF INSERT ▲▲▲
 
         # hold the previous reading wherever the attacker is not currently visible
         bx  = torch.where(vis > 0.5, bx,  self._prev_bx)
@@ -543,6 +588,29 @@ class QuadcopterEnv(DirectRLEnv):
         )                                                                                
         captured = self._dist < self.cfg.capture_radius                       # success
         self._captured = captured                                             # makes captured a global variable so it can be used by _reset_idx to tell if an episode terminaded from a crash or from a capture
+
+        # ▼▼▼ NEW! At every capture, ask the camera how much the captured drone is taking of its image (to match image size with real physical distance) - from 3.3 step4 ▼▼▼
+        if self.cfg.log_capture_size and captured.any():
+            _, _, asz, vis = self._camera_readings()
+            # time-to-contact = distance ÷ closing speed (what the camera's growth rate estimates)
+            dir_to = (self._attacker.data.root_pos_w - self._robot.data.root_pos_w) / self._dist.unsqueeze(1).clamp(min=1e-6)
+            closing = ((self._robot.data.root_lin_vel_w - self._atk_vel) * dir_to).sum(dim=1)
+            ttc = self._dist / closing.clamp(min=1e-3)
+            self._capture_log += torch.stack([asz[captured], vis[captured], ttc[captured]], dim=1).tolist()
+            if len(self._capture_log) >= 200:
+                t = torch.tensor(self._capture_log)
+                seen = t[t[:, 1] > 0.5]
+                if len(seen) > 0:
+                    qs = torch.tensor([0.1, 0.5, 0.9])
+                    a, c = torch.quantile(seen[:, 0], qs), torch.quantile(seen[:, 2], qs)
+                    print(f"[3.3 Step 4] {len(t)} captures | in view: {len(seen) / len(t):.0%} | "
+                          f"ang_size p10 {a[0]:.3f} median {a[1]:.3f} p90 {a[2]:.3f} | "
+                          f"time-to-contact p10 {c[0]:.2f}s median {c[1]:.2f}s p90 {c[2]:.2f}s")
+                else:
+                    print(f"[3.3 Step 4] {len(t)} captures, attacker never in view at capture")
+                self._capture_log = []
+        # ▲▲▲ END OF INSERT ▲▲▲
+
         crashed = self._robot.data.root_pos_w[:, 2] < 0.1                     # floor
         escaped = self._dist > self.cfg.arena_radius                          # lost it: attacker got away
 
@@ -642,6 +710,15 @@ class QuadcopterEnv(DirectRLEnv):
         self._prev_by[env_ids] = 0.0
         self._prev_asz[env_ids] = 0.0
         self._prev_actions[env_ids] = 0.0
+        # ▼▼▼ NEW! Draw a new drone width at every episode start - from 3.2B: (n = len(env_ids) is already defined above, in the 2.2 block) ▼▼▼
+        self._span[env_ids] = torch.empty(n, device=self.device).uniform_(*self.cfg.attacker_span_range)
+        # ▼▼▼ NEW! draw new battery and trim values at every episode start▼▼▼
+        # battery state: 0.85 (drained) to 1.15 (strong)
+        self._thrust_scale[env_ids] = 0.85 + torch.rand(n, device=self.device) * 0.3
+        # trim error: up to 0.075 m/s along each axis
+        self._drift[env_ids] = (torch.rand(n, 3, device=self.device) - 0.5) * 0.15
+        # ▲▲▲ END OF INSERT ▲▲▲
+        # ▲▲▲ END OF INSERT ▲▲▲
         # ▲▲▲ END OF INSERT ▲▲▲
 
     def _set_debug_vis_impl(self, debug_vis: bool):
