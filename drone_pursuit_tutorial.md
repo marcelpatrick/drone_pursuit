@@ -4157,13 +4157,7 @@ Expected output: `1.26.4 4.11.0`. Then rerun the trial:
 python C:\projects\drone_pursuit\drone_pursuit\scripts\sdg\generate_drone_data.py --num_frames 20 --headless
 ```
 
-#### Related mistake in the same script
-
-`writer.attach([render_product])` must appear **once** in the file. Step 3's code box repeats it at the top only to show where to paste, so don't copy that line in. If it appears twice, the writer is attached twice and every frame is saved twice. Delete the second copy.
-
-#### Does this affect `env_isaaclab`?
-
-No. `env_drone` was cloned from `env_isaaclab` in 1.0, so each environment has its own `site-packages` folder containing its own Isaac Sim and NumPy. Pip commands run while `env_drone` is active only change `env_drone`. To confirm, run `pip show numpy` after `conda activate env_isaaclab`; its version is unchanged.
+The run `python C:\projects\drone_pursuit\drone_pursuit\scripts\sdg\generate_drone_data.py --num_frames 20 --headless` again
 
 </details>
 
