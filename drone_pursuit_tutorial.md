@@ -4039,6 +4039,134 @@ A labelling problem found here costs a few minutes. The same problem found in Ch
 
 </details>
 
+### Troubleshooting — `writer.attach` fails with `Unable to write from unknown dtype`
+
+<details><summary>Expand</summary>
+> **Environment:** `env_drone`
+> **Where this appears:** the first run of `generate_drone_data.py` (4.1 Step 3)
+
+#### What you see
+
+The script starts Isaac Sim, then stops at the line `writer.attach([render_product])` with this error:
+
+```
+File "...\generate_drone_data.py", line 57, in <module>
+    writer.attach([render_product])
+...
+TypeError: Unable to write from unknown dtype, kind=i, size=0
+```
+
+A long crash report follows, ending in `Windows fatal exception: access violation`. That crash is only Isaac Sim shutting down badly after the first error; ignore it. `data\raw` stays empty because the script stopped before any frame was captured.
+
+#### Why it happens
+
+`writer.attach` hands the image size (640 × 480) to Isaac Sim's compiled code as a NumPy number. Isaac Sim 5.1 was built against **NumPy 1.x**. **NumPy 2.x** changed how it stores the description of a number type internally, so Isaac Sim's code reads that description from the wrong place, gets a size of 0, and rejects the value.
+
+`env_drone` ends up with NumPy 2 because of subchapter 1.4. Its command `pip install djitellopy opencv-python` installs the newest OpenCV (5.x), and that version requires NumPy 2. Pip upgrades NumPy without asking, and `constraints.txt` doesn't stop it, because at that point it only protects `setuptools`.
+
+The upgrade can also leave the environment holding two NumPy versions at once: pip's records list 1.26.x, but the files Python actually loads are 2.x. When that happens, `pip show numpy` reports the correct version while Isaac Sim still fails, which makes the problem hard to spot.
+
+#### Step 1 — Check which NumPy Python really loads
+
+```
+python -c "import numpy; print(numpy.__version__, numpy.__file__)"
+```
+
+This command imports NumPy, so it reports the version that actually runs. `pip show numpy` only reads pip's records, which can be wrong here, so don't use it for this check.
+
+- Prints `1.26.x` → NumPy is not the cause. Stop here and look for a different problem.
+- Prints `2.x` → continue to Step 2.
+
+If the path printed is **not** inside `...\envs\env_drone\Lib\site-packages`, a different folder is being searched first:
+
+- Under `AppData\Roaming\Python\...`, run `conda env config vars set PYTHONNOUSERSITE=1`, then `conda deactivate` and `conda activate env_drone`, and repeat Step 1.
+- Otherwise, run `echo %PYTHONPATH%`. If it prints a folder rather than the literal text `%PYTHONPATH%`, that folder is the source.
+
+#### Step 2 — List every NumPy install record
+
+```
+dir /b C:\Users\<you>\miniconda3\envs\env_drone\Lib\site-packages | findstr /i numpy
+```
+
+Each `numpy-<version>.dist-info` folder is pip's record of one install. A healthy environment has exactly one. Seeing two, for example `numpy-1.26.4.dist-info` and `numpy-2.4.6.dist-info`, confirms the mixed state described above.
+
+#### Step 3 — Remove NumPy completely
+
+Run this command repeatedly. Each run removes one install record. Stop when pip prints `Skipping numpy as it is not installed`:
+
+```
+pip uninstall -y numpy
+```
+
+Then check that nothing is left:
+
+```
+dir /b C:\Users\<you>\miniconda3\envs\env_drone\Lib\site-packages | findstr /i numpy
+```
+
+The command should print nothing. If a `numpy` or `numpy.libs` folder remains, delete it:
+
+```
+rmdir /s /q C:\Users\<you>\miniconda3\envs\env_drone\Lib\site-packages\numpy
+rmdir /s /q C:\Users\<you>\miniconda3\envs\env_drone\Lib\site-packages\numpy.libs
+```
+
+#### Step 4 — Reinstall NumPy 1.x with an OpenCV that accepts it
+
+Both OpenCV packages are pinned below 4.12, because newer versions require NumPy 2 and would undo the fix:
+
+```
+pip install "numpy==1.26.4" "opencv-python<4.12" "opencv-python-headless<4.12"
+```
+
+Pip may then list dependency conflicts. One is expected and harmless: `isaacsim-kernel ... requires numpy==1.26.0, but you have numpy 1.26.4`. Versions 1.26.0 and 1.26.4 belong to the same release series, so their internal layout is identical; only the 1.x → 2.x change breaks Isaac Sim. Conflicts about `torchaudio`, `pin` or `scipy` existed before this fix. To confirm they belong to your tested setup, check that the same versions appear in your lock file:
+
+```
+findstr /i "numpy scipy torchaudio pin opencv" C:\projects\drone_pursuit\requirements-lock.txt
+```
+
+#### Step 5 — Stop it from happening again
+
+Run this as a separate command, on its own line:
+
+```
+(echo numpy^<2)>> C:\projects\drone_pursuit\constraints.txt
+```
+
+This adds `numpy<2` to the constraints file, which pip reads on every install. Any later package that asks for NumPy 2 now fails with a visible error instead of silently upgrading NumPy. The `^` lets Windows' command prompt accept `<` as text instead of reading it as a command symbol.
+
+Check the file:
+
+```
+type C:\projects\drone_pursuit\constraints.txt
+```
+
+It should contain exactly two lines, `setuptools<81` and `numpy<2`.
+
+#### Step 6 — Verify and rerun
+
+Run this exactly as written:
+
+```
+python -c "import numpy, cv2; print(numpy.__version__, cv2.__version__)"
+```
+
+Expected output: `1.26.4 4.11.0`. Then rerun the trial:
+
+```
+python C:\projects\drone_pursuit\drone_pursuit\scripts\sdg\generate_drone_data.py --num_frames 20 --headless
+```
+
+#### Related mistake in the same script
+
+`writer.attach([render_product])` must appear **once** in the file. Step 3's code box repeats it at the top only to show where to paste, so don't copy that line in. If it appears twice, the writer is attached twice and every frame is saved twice. Delete the second copy.
+
+#### Does this affect `env_isaaclab`?
+
+No. `env_drone` was cloned from `env_isaaclab` in 1.0, so each environment has its own `site-packages` folder containing its own Isaac Sim and NumPy. Pip commands run while `env_drone` is active only change `env_drone`. To confirm, run `pip show numpy` after `conda activate env_isaaclab`; its version is unchanged.
+
+</details>
+
 > ✅ **Checkpoint 4.1** — 20 frames exist; the box coordinates in the `.npy` match where the drone appears in the PNG; the labels JSON contains the `drone` class.
 
 </details>
