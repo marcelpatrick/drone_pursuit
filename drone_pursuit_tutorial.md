@@ -122,7 +122,7 @@ exact positions (privileged)                        │
 | **Flying a drone (in reality)** | A consumer WiFi camera drone such as a DJI Tello, commanded from your laptop over its Python SDK | Isaac Lab has no Tello model and does not need one. Chapter 3.1 replaces the simulated force model with the normalised stick commands a Tello accepts, after which the simulated airframe is a generic hovering body rather than a Crazyflie. |
 | **The moving attacker** | A second Crazyflie, **kinematically scripted** (we set its position each step along a waypoint path) | An RL-vs-RL adversarial setup is a research project. A scripted intruder gives us a *predictable, tunable* difficulty level — exactly what the Multi-UAV pursuit-evasion literature does in its early curriculum stages. |
 | **Closing the distance** | **PPO** via **skrl**, using Isaac Lab's standard `train.py`, with a **dense distance + closing-speed reward** | PPO/skrl is what the template wizard wires up for you. Dense rewards ("getting closer = points every step") train fast; sparse rewards ("points only on capture") often never take off. |
-| **Synthetic data** | Isaac Sim **Replicator** (`omni.replicator.core`) with **semantic tags** + `bounding_box_2d_tight` annotator + **domain randomization** | The standard Replicator synthetic-data workflow — writer, annotator, randomisation — applied to a drone. |
+| **Synthetic data** | Isaac Sim **Replicator** (`omni.replicator.core`) with **semantic tags** + `bounding_box_2d_tight` annotator + **domain randomization** | The standard Replicator synthetic-data ingredients — semantic tags, annotators, randomisation — applied to a drone, and driven from a plain Python capture loop (Chapter 4.1 explains why Replicator's own writer and orchestrator are not used). |
 | **Object detection** | **YOLOv8-nano** (Ultralytics), trained in a **separate conda env** | vs. TAO Toolkit (which you know): TAO needs Docker/WSL and heavier setup on Windows. Ultralytics is `pip install ultralytics` + one training command, runs natively on Windows, and YOLOv8n is small enough to run in real time. |
 | **Getting the detector INTO Isaac Lab** | Export YOLO → **ONNX**, run with **onnxruntime** inside the Isaac Lab env | See §0.7. An ONNX file contains the trained weights and network structure with no Python dependencies, so it runs under onnxruntime alone. Installing Ultralytics into the Isaac Lab env would pull its own torch and could replace the one Isaac Lab needs. |
 | **Turning a bounding box into policy input** | **Bearing + angular size** — the box's offset from the image centre and its share of the frame, plus how fast both are changing (§0.4) | Requires no knowledge of the attacker's real dimensions, so it works against any drone model. Also collapses Chapter 6's bridge from camera geometry to a handful of divisions. |
@@ -133,6 +133,7 @@ exact positions (privileged)                        │
 - **ONNX** = *Open Neural Network eXchange*. A neutral file format for trained networks — like exporting a USD file: any tool that speaks the format can open it, regardless of what tool created it.
 - **PPO** = *Proximal Policy Optimization*. "Proximal" (Latin *proximus*, "nearest") because each update is clipped to stay *near* the previous policy — small careful steps instead of wild jumps.
 - **Replicator** — it *replicates* reality: generates many synthetic variations of a scene to stand in for real-world photos.
+  
 
 ## 0.4 How the defender senses the attacker (the key design choice)
 
@@ -320,7 +321,7 @@ Some parameters throughout this project need to be replaced by the values of the
 | `attacker_span_m = 0.13` | Widest width of the real **target** drone, including propellers and guards. | **Measure** | Lay the target drone flat with propellers and guards on. Measure its widest point, tip to tip, with a ruler and convert to metres (e.g., 13 cm = 0.13). Even if the target is a Tello, measure it, since the spec dimensions may not include guards. | Block C · Ch 3 · 3.1 Part E |
 | `self._drift[env_ids] = (torch.rand(n, 3, device=self.device) - 0.5) * 0.15` | Range of random drift. | **Measure** | Take off over the floor you'll chase on and send zero commands for 10 s. Measure how far the drone moved from a floor mark, then speed = distance ÷ 10. Widen 0.15 if this exceeds what the simulation produces. | Block C · Ch 3 · 3.3 Step 0 |
 | `capture_ang_size = 0.19` | Frame share at capture. Depends on `cam_focal_mm` and `attacker_span_m`. | **Measured in simulation** (3.3 Step 4), can be checked on hardware | Hold the target 0.35 m (`capture_radius`) in front of the Tello's camera. Run the detector and converter and read `asz`. Repeat face-on and edge-on; the value should fall inside the spread you logged in 3.3. | Block C · Ch 3 · 3.3 Step 4 |
-| `camera = rep.create.camera(focal_length=12.0)` | Copy of `cam_focal_mm` for the synthetic images. | **Copy** of `cam_focal_mm` | — | Block D · Ch 4 · 4.1 Step 2 |
+| `cam.GetFocalLengthAttr().Set(12.0)` | Copy of `cam_focal_mm` for the synthetic images. | **Copy** of `cam_focal_mm` | — | Block D · Ch 4 · 4.1 Step 2 |
 | `spawn=sim_utils.PinholeCameraCfg(focal_length=12.0, ...)`<br>`width=640, height=480` | The camera that renders frames; copies the focal length and size. | **Copy** of `cam_focal_mm`, `cam_width`, `cam_height` | — | Block E · Ch 5 · 5.2 Step 1 |
 | `CONTROL_HZ = 20` | Must equal 100 ÷ `decimation`. | **Copy** of the measured control rate | — | Block G · Ch 7 · 7.2 Step 2 |
 | `drone.get_speed_x() / 100.0` (also y, z) | Converts the Tello's speed readings to m/s. | **Verify**: the tutorial assumes cm/s, and the unit is not confirmed in Ryze's SDK guide | During the `max_speed` test, log `get_speed_x()` at the moment the drone crosses between the marks. If the tape gives 1.0 m/s and the reading is about 100, keep ÷100. If it's about 10, use ÷10. | Block G · Ch 7 · 7.2 Step 2 |
@@ -445,23 +446,39 @@ isaaclab.bat -p C:\Users\[YOUR_USER]\IsaacLab\check_setup.py --headless --quick
 
 Expect this to take three to four minutes. The script prints a progress counter so you can tell it is still working.
 
-### Step 5 — Record the working state and lock setuptools
+### Step 5 — Record the working state and lock setuptools and NumPy
 
 > **Environment:** `env_drone`
 
-Freezes the current package list and sets an upper bound on setuptools. The frozen list is what the checker compares against when something breaks later, and the bound stops a future install from silently upgrading a package that tensorboard depends on.
+Freezes the current package list and sets upper bounds on two packages, setuptools and NumPy. The frozen list is what the checker compares against when something breaks later. The bounds stop a future install from silently upgrading either package, because both upgrades break this stack without any warning at install time.
 
 One command does both jobs:
 
 ```bat
-cd C:\projects\drone_pursuit && pip freeze > C:\projects\drone_pursuit\requirements-lock.txt && (echo setuptools^<81) > C:\projects\drone_pursuit\constraints.txt && pip config --site set install.constraint C:\projects\drone_pursuit\constraints.txt
+cd C:\projects\drone_pursuit && pip freeze > C:\projects\drone_pursuit\requirements-lock.txt && (echo setuptools^<81& echo numpy^<2) > C:\projects\drone_pursuit\constraints.txt && pip config --site set install.constraint C:\projects\drone_pursuit\constraints.txt
 ```
 
 Three things happen:
 
 **`requirements-lock.txt`** captures every package version at the moment everything works. Not for reinstalling from — for **comparing against**. When something breaks in Chapter 5, the checker diffs the current state against this file and tells you which packages moved.
 
-**`constraints.txt`** constrains any new package installation with pip install from updating `setuptools` to a version higher than 81, which would break things. 
+**`constraints.txt`** holds two rules that pip applies to every future install in `env_drone`:
+
+| Rule | What breaks without it |
+|---|---|
+| `setuptools<81` | setuptools 81 and later removed `pkg_resources`, which tensorboard's dependencies still import |
+| `numpy<2` | Isaac Sim 5.1's compiled code was built for NumPy 1.x and misreads NumPy 2's number types; Replicator then fails with `Unable to write from unknown dtype` (Chapter 4.1, Troubleshooting 1). Newer OpenCV releases require NumPy 2, so without this rule 1.4's OpenCV install would upgrade NumPy silently. |
+
+With the rules in place, a package that demands a newer version fails to install with a visible error, instead of quietly breaking the environment.
+
+The `^` before each `<` tells Windows' command prompt to treat `<` as text rather than as a command symbol. The `&` joins the two `echo` commands, so both lines land in the file. Check the file:
+
+*Run from:* `any folder`
+```bat
+type C:\projects\drone_pursuit\constraints.txt
+```
+
+It should contain exactly two lines, `setuptools<81` and `numpy<2`.
 
 Confirm it took, and confirm the scope:
 
@@ -482,6 +499,8 @@ conda activate env_drone
 The middle command should print nothing. That is the proof the setting lives in `env_drone` alone.
 
 If setuptools ever slips past the bound anyway, you will see `ModuleNotFoundError: No module named 'pkg_resources'`, and the repair is `pip install "setuptools<81"`. The checker tests this in Section 1.
+
+If NumPy ever reaches 2.x anyway, Replicator fails with `TypeError: Unable to write from unknown dtype, kind=i, size=0`; Chapter 4.1, *Troubleshooting 1*, has the full repair.
 
 > ✅ **Checkpoint 1.0**
 > 1. `check_setup.py --skip-training` reported 0 failures in your original environment
@@ -1056,8 +1075,13 @@ Installs `djitellopy`, the Python library that speaks the Tello's command protoc
 *Run from:* `any folder`
 ```bat
 conda activate env_drone
-pip install -c C:\projects\drone_pursuit\constraints.txt djitellopy opencv-python
+pip install -c C:\projects\drone_pursuit\constraints.txt djitellopy "opencv-python<4.12"
+python -c "import numpy, cv2; print(numpy.__version__, cv2.__version__)"
 ```
+
+The last line must print a NumPy version starting with `1.` and an OpenCV version of 4.11 or older.
+
+**Why OpenCV is pinned below 4.12.** OpenCV 4.12 and later require NumPy 2, and Isaac Sim 5.1 only works with NumPy 1.x. The `numpy<2` rule in `constraints.txt` (1.0 Step 5) already blocks the upgrade; the explicit `<4.12` makes pip choose a compatible OpenCV directly, instead of stopping with a conflict error. If the check prints a NumPy 2.x version, follow Chapter 4.1, *Troubleshooting 1*, before continuing.
 
 **If you have never used a hardware SDK:** it is an ordinary Python library. `djitellopy` wraps the drone's wire protocol so that `drone.takeoff()` sends the text `takeoff` as a UDP packet to `192.168.10.1:8889` and waits for `ok`. Without it you would write that socket code yourself. Three kinds of call are all you need:
 
@@ -3776,18 +3800,21 @@ Watch for the *lead*: a well-trained defender cuts the corner toward where the a
 <details>
 <summary>Expand Block D</summary>
 
-**What this block produces:** roughly 2500 rendered images of a Crazyflie under randomised lighting, backgrounds and viewpoints, each with a bounding box label, converted into the folder layout Ultralytics reads. No detector is trained here and no policy is touched — the output is a dataset on disk, which Block E consumes.
+**What this block produces:** roughly 2500 rendered images of several drone models under randomised lighting, backgrounds and viewpoints, each with a bounding box label, converted into the folder layout Ultralytics reads. No detector is trained here and no policy is touched — the output is a dataset on disk, which Block E consumes.
 
-**Why the images are generated rather than photographed.** Labelling real photographs means a person drawing a rectangle on every one. In Isaac Sim the renderer already knows which pixels belong to the drone prim, so the `bounding_box_2d_tight` annotator writes the label at the same moment it writes the image, with no drawing and no pixel error. Your work reduces to deciding what varies between frames.
+**Why the images are generated rather than photographed.** Labelling real photographs means a person drawing a rectangle on every one. In Isaac Sim the renderer already knows which pixels belong to the drone prim, so the `bounding_box_2d_tight` annotator reports the label for the same frame the photo comes from, with no drawing and no pixel error. Your work reduces to deciding what varies between frames.
 
 **This block is independent of Block C.** Run it in a second terminal while Chapter 3.3 trains.
 
 **The files created in this block:**
 
 ```
-C:\projects\drone_pursuit\drone_pursuit\scripts\sdg\generate_drone_data.py    ← 4.1, 4.2
-C:\projects\drone_pursuit\drone_pursuit\scripts\sdg\convert_to_yolo.py        ← 4.3
-C:\projects\drone_pursuit\drone_pursuit\data\yolo\drone.yaml                  ← 4.3
+C:\projects\drone_pursuit\drone_pursuit\scripts\sdg\generate_drone_data.py      ← 4.1, edited in 4.2 and 4.2B
+C:\projects\drone_pursuit\drone_pursuit\scripts\sdg\preview_boxes.py            ← 4.1
+C:\projects\drone_pursuit\drone_pursuit\scripts\checker_code\check_bg_assets.py ← 4.2B
+C:\projects\drone_pursuit\drone_pursuit\scripts\sdg\convert_to_yolo.py          ← 4.3
+C:\projects\drone_pursuit\drone_pursuit\scripts\sdg\check_yolo_labels.py        ← 4.3
+C:\projects\drone_pursuit\drone_pursuit\data\yolo\drone.yaml                    ← 4.3
 ```
 
 ---
@@ -5645,871 +5672,6 @@ When it finishes, `data\raw` holds about 10 000 files (4 per frame), minus any f
 
 ---
 
-## 4.2B Randomise the Background and Drone (≤1.5h)
-
-<details>
-<summary>Expand 4.2B</summary>
-
-> **What this subchapter does:** 4.2 varies the light, the camera and the drone, but every frame is still taken in the same place: a grey grid floor under an empty, evenly coloured sky. This subchapter replaces that place with one that changes every frame — a textured floor, a real sky photograph, and trees, buildings and walls standing behind the drone — and it swaps the drone itself between several models and colours. It edits the same `generate_drone_data.py` from 4.1 and 4.2, so **do it after 4.2 Step 2 and before 4.2 Step 3's production run.** If you already ran the production batch, Step 7 below tells you how to redo it.
-
-**Why the background matters to the detector.** YOLO (the detector network trained in 5.1) learns whatever visual rule best separates "inside a drone box" from "everything else" in the training images. If "everything else" is always a grey grid or a plain sky, the cheapest rule it can learn is "a small dark shape on a plain surface is a drone". At demo time in Chapter 7 that rule fires on a window corner, a ceiling lamp or a tree branch (false detections), and fails when the attacker passes in front of a bookshelf or a hedge (missed detections). Chapter 5.2 is where you would first notice this, as a detector that scores well on its own validation images and poorly on arena frames.
-
----
-
-### Step 1 — Understand the five background layers and where each one sits
-
-<details>
-<summary>Expand Step 1</summary>
-
-> **Environment:** none needed — this step is explanation only.
-
-Every frame is assembled from layers, ordered from the camera outwards. Everything new in this subchapter sits **behind** the drone, never between the camera and the drone, so it can never hide the drone and never removes a label.
-
-```
-WHAT THE CAMERA SEES, NEAR TO FAR
-
-camera ─▶ distractors ─▶ DRONE* ─▶ walls ─▶ trees & props ─▶ buildings ─▶ sky photo
-          (4.2, 0–5 m)   (0 m)    12–25 m     15–40 m         22–70 m     infinitely far
-                        └────────────── textured floor underneath, 200 m × 200 m ──────────────┘
-
-* one of several drone models, in its original paint or random colours (Step 5)
-```
-
-```
-TOP VIEW — why the new objects can never block the drone
-
- ┌─────────────────────────────────────────────────┐
- │ buildings: 22–70 m from the drone               │
- │   ┌─────────────────────────────────────────┐   │
- │   │ trees & props: 15–40 m                  │   │
- │   │   ┌─────────────────────────────────┐   │   │
- │   │   │ walls: 12–25 m                  │   │   │
- │   │   │   ┌─────────────────────────┐   │   │   │
- │   │   │   │ CAPTURE AREA            │   │   │   │
- │   │   │   │ camera stays within ±6 m│   │   │   │
- │   │   │   │         ✈ drone         │   │   │   │
- │   │   │   └─────────────────────────┘   │   │   │
- │   │   └─────────────────────────────────┘   │   │
- │   └─────────────────────────────────────────┘   │
- └─────────────────────────────────────────────────┘
-```
-
-The camera (4.2) is always within 6 m of the drone, so the straight line from camera to drone stays inside that ±6 m box. Each object type starts at **6 m + half its largest width**: a 12 m wall is at least 12 m out, a 20 m × 20 m building at least 22 m out. That arithmetic is what guarantees no background object ever crosses the camera-to-drone line.
-
-| Layer | What varies every frame | Because at demo time… |
-|---|---|---|
-| **Floor** | its picture (gravel, planks, stone, your own grass/asphalt), its rotation; hidden 1 frame in 5 | a defender above the attacker sees it against whatever the ground happens to be |
-| **Sky** | which sky photograph, which way it faces | outdoors the sky has clouds and a horizon of trees and roofs; indoors the "sky" is the room itself |
-| **Walls** | position, heading, surface picture; each hidden ~40% of frames | walls, fences and hoardings are the most common thing directly behind a low-flying drone |
-| **Trees & props** | position, heading, size (2–12 m); each hidden ~30% of frames | foliage breaks up the outline of a small dark object, which is exactly the case the detector must survive |
-| **Buildings** | position, heading, surface picture; each hidden ~40% of frames | windows, roof edges and gutters produce straight dark lines that a lazy detector confuses with propeller arms |
-| **The drone itself** | which model (Crazyflie, other quadcopters, your own), original paint or random colours per part, size 8–35 cm | a detector that has only seen one grey Crazyflie learns *that* drone's exact outline and colour, and misses a white Tello or any other airframe |
-
-Two new terms used throughout:
-
-- A **texture** is an image painted onto a 3D surface. `project_uvw=True` paints it by the surface's position in space rather than by a UV map (the per-model instructions that say which image pixel lands where), which lets you paint any box without preparing it first.
-- An **HDRI** (high-dynamic-range image) is a 360° photograph wrapped around the whole scene as a sphere. Put on the dome light, it is both the visible background and a source of light, so the sky and the lighting on the drone change together.
-
-**Mixed scenes are intentional.** Some frames will show an indoor room photograph behind an outdoor tree. The detector does not need realistic scenes, it needs the drone to be the only thing that stays the same across 2500 frames; any combination that breaks the "plain background" rule does that job.
-
-</details>
-
-### Step 2 — Create folders for your own textures, skies and 3D models
-
-<details>
-<summary>Expand Step 2</summary>
-
-> **Environment:** none needed
-
-The script uses NVIDIA-hosted images and models, and also picks up any files you drop into four folders under `data\bg\`. This matters because NVIDIA's hosted material library, as far as this tutorial could verify, has no grass, asphalt or concrete pictures — the most common ground under a real flight.
-
-*Run from:* `any folder`
-```bat
-mkdir C:\projects\drone_pursuit\drone_pursuit\data\bg\floor C:\projects\drone_pursuit\drone_pursuit\data\bg\wall C:\projects\drone_pursuit\drone_pursuit\data\bg\sky C:\projects\drone_pursuit\drone_pursuit\data\bg\props C:\projects\drone_pursuit\drone_pursuit\data\drones
-```
-
-**Linux version**
-```
-mkdir -p ~/projects/drone_pursuit/drone_pursuit/data/bg/{floor,wall,sky,props} ~/projects/drone_pursuit/drone_pursuit/data/drones
-```
-
-**Recommended (15 minutes): add your own files.** [Poly Haven](https://polyhaven.com) publishes textures and HDRIs under CC0 (free for any use, no attribution needed).
-
-| Folder | What to put in it | Where to get it |
-|---|---|---|
-| `data\bg\floor\` | 5–10 ground pictures: grass, asphalt, concrete, dirt, gym floor | Poly Haven → Textures. Download **only the colour map** at 1K or 2K JPG — its file name contains `diff` or `color`. Normal, roughness and displacement maps look wrong when painted as a picture. |
-| `data\bg\wall\` | 5–10 wall pictures: brick, plaster, concrete, siding, fence | Same as above |
-| `data\bg\sky\` | 5–10 `.hdr` files matching where you will fly: parks, fields, streets, sports halls | Poly Haven → HDRIs, 2K `.hdr` |
-| `data\bg\props\` | any ready-made 3D models (`.usd`, `.usdc`, `.usdz`) — houses, trees, cars | Optional. Leave empty if you have none. |
-| `data\drones\` | extra **drone** models (`.usd`, `.usdc`, `.usdz`) — every file here becomes an attacker model in Step 5 | See the two downloads below; add a Tello model here if you find or convert one |
-
-**Recommended (2 minutes): download two more drone models.** Isaac Sim ships only a few aerial models, so this adds two quadcopters from the open-source [Pegasus Simulator](https://github.com/PegasusSimulator/PegasusSimulator) project (BSD-3 licence): the **Iris**, a 52 cm PX4 research quad, and the **Pegasus**, a 38 cm quad. Both files were checked for this tutorial: they are Z-up, in metres, and the Pegasus file needs nothing else to render. The Iris file pulls two material pictures from NVIDIA's server; without them it renders grey, which Step 5's recolouring covers anyway.
-
-*Run from:* `any folder`
-```bat
-curl -L -o C:\projects\drone_pursuit\drone_pursuit\data\drones\iris.usd https://raw.githubusercontent.com/PegasusSimulator/PegasusSimulator/main/extensions/pegasus.simulator/pegasus/simulator/assets/Robots/Iris/iris.usd
-curl -L -o C:\projects\drone_pursuit\drone_pursuit\data\drones\pegasus_optimized.usdc https://raw.githubusercontent.com/PegasusSimulator/PegasusSimulator/main/extensions/pegasus.simulator/pegasus/simulator/assets/Robots/Pegasus/pegasus_optimized.usdc
-```
-
-**Linux version**
-```
-cd ~/projects/drone_pursuit/drone_pursuit/data/drones
-curl -L -O https://raw.githubusercontent.com/PegasusSimulator/PegasusSimulator/main/extensions/pegasus.simulator/pegasus/simulator/assets/Robots/Iris/iris.usd
-curl -L -O https://raw.githubusercontent.com/PegasusSimulator/PegasusSimulator/main/extensions/pegasus.simulator/pegasus/simulator/assets/Robots/Pegasus/pegasus_optimized.usdc
-```
-
-**About a Tello model.** DJI does not publish one. Community 3D models of the Tello exist on model-sharing sites under varying licences; if you use one, convert it to USD with Isaac Sim's Asset Converter (it accepts `.obj`, `.fbx` and `.gltf`) and save it into `data\drones\`. It is the single most useful model you can add, because it is the drone the defender actually chases in Chapter 7.
-
-If you skip all of this, the script still runs on the NVIDIA-hosted files alone.
-
-</details>
-
-### Step 3 — Replace the grey ground with a paintable floor and give the sky a photograph
-
-<details>
-<summary>Expand Step 3</summary>
-
-> **Environment:** none needed — you are editing a file.
-
-This step edits the opening section written in 4.1 Step 1. The current ground (`GroundPlaneCfg`) loads a prebuilt grid file whose internal mesh path this script does not know, so there is nothing reliable to paint; `MeshCuboidCfg` builds a flat slab whose mesh is always at `/World/Floor/geometry/mesh`, which Step 6 paints every frame. The dome light gets a starting sky photograph and `visible_in_primary_ray=True`, which makes the camera see the photograph rather than only receive its light.
-
-*File to edit:* `C:\projects\drone_pursuit\drone_pursuit\scripts\sdg\generate_drone_data.py`
-
-```python
-# ── FILE: ...\scripts\sdg\generate_drone_data.py ────────────────────────────
-# ── SECTION: the imports near the top (from 4.1 Step 1) ─────────────────────
-
-# BEFORE:
-# from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR
-# AFTER:
-from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR, NVIDIA_NUCLEUS_DIR, check_file_path
-```
-
-```python
-# ── FILE: ...\scripts\sdg\generate_drone_data.py ────────────────────────────
-# ── SECTION: the ground + lights block (from 4.1 Step 1) ────────────────────
-
-# ground + two lights (both get randomized in 4.2)
-
-# BEFORE:
-# sim_utils.GroundPlaneCfg().func("/World/ground", sim_utils.GroundPlaneCfg())
-# AFTER — a 200 m x 200 m slab, top surface at height 0, painted every frame in 4.2B Step 6:
-floor_cfg = sim_utils.MeshCuboidCfg(size=(200.0, 200.0, 0.05))
-floor_cfg.func("/World/Floor", floor_cfg, translation=(0.0, 0.0, -0.025))
-
-# ambient fill — stands in for skylight bouncing around
-# BEFORE:
-# dome_cfg = sim_utils.DomeLightCfg(intensity=2000.0)
-# AFTER:
-dome_cfg = sim_utils.DomeLightCfg(
-    intensity=1000.0,
-    texture_file=f"{NVIDIA_NUCLEUS_DIR}/Assets/Skies/Clear/qwantani_4k.hdr",  # first sky; swapped every frame
-    visible_in_primary_ray=True,          # True = the camera sees the photo, not just its light
-)
-dome_cfg.func("/World/Light", dome_cfg)   # ← EXISTING line, unchanged
-
-# the sun ... and the drone ... ← EXISTING, unchanged
-```
-
-**Why the floor has no collision.** Nothing in this script falls or collides — the drone is placed, not flown — so the slab only needs to be visible.
-
-</details>
-
-### Step 4 — List the background files and build the background objects
-
-<details>
-<summary>Expand Step 4</summary>
-
-> **Environment:** none needed — you are editing a file.
-
-This step adds one block that does three things once, before any frame is captured. It builds the lists of sky photos, floor pictures, wall pictures and 3D models, **checking that each file really exists** and printing any that do not (`check_file_path` asks your disk first, then NVIDIA's asset server). It builds 12 buildings and 8 walls as boxes with fixed random sizes, and loads up to 8 trees or props. Step 6 then moves, paints and hides all of them on every frame.
-
-**Why buildings and walls are boxes.** The Isaac Sim asset library contains warehouses, offices and a hospital, but no outdoor houses or city buildings. At 22–70 m from a 640×480 camera, a building appears as a large textured block with straight edges, which is what a box with a brick or cladding picture on it produces. Real house models you place in `data\bg\props\` are added alongside them.
-
-**Why every 3D model is measured when it loads.** Models from different sources are authored in different units — the same tree can arrive 10 m tall or 1000 m tall depending on whether its author worked in metres or centimetres. The script measures each model's largest side and stores the scale that makes it exactly 1 m, so Step 6 can size every model in real metres.
-
-#### Check that every path for the background assets is working
-
-<details><summary>Expand:</summary>
-
-We are pulling assets from online sources such as the NVIDIA databases. Before implementing the code, it is advisable to check that all paths for these assets are working
-Save and run this script that checks that. 
-Saved at `C:\projects\drone_pursuit\drone_pursuit\scripts\checker code`
-Run with `C:\projects\drone_pursuit\drone_pursuit\scripts\checker code\python check_bg_assets.py`
-
-```py
-"""
-check_bg_assets.py (v2) — tests every background AND drone asset URL used in 4.2B, and lists
-what really exists in each NVIDIA folder so broken entries can be replaced with working ones.
-
-Needs only plain Python 3 (no Isaac Sim). Run it in any env:
-    python check_bg_assets.py
-"""
-import sys
-import urllib.error
-import urllib.parse
-import urllib.request
-import xml.etree.ElementTree as ET
-
-BUCKET = "https://omniverse-content-production.s3-us-west-2.amazonaws.com"
-ROOT = f"{BUCKET}/Assets/Isaac/5.1"          # = NUCLEUS_ASSET_ROOT_DIR on Isaac Sim 5.1
-NVIDIA_NUCLEUS_DIR = f"{ROOT}/NVIDIA"
-ISAAC_NUCLEUS_DIR = f"{ROOT}/Isaac"
-NV_CONTENT = f"{BUCKET}/Assets"
-PEGASUS = ("https://raw.githubusercontent.com/PegasusSimulator/PegasusSimulator/main/"
-           "extensions/pegasus.simulator/pegasus/simulator/assets/Robots")
-
-# ── the exact paths used in 4.2B Step 4 ─────────────────────────────────────
-PATHS = {
-    "skies": [
-        f"{NVIDIA_NUCLEUS_DIR}/Assets/Skies/Clear/qwantani_4k.hdr",
-        f"{NVIDIA_NUCLEUS_DIR}/Assets/Skies/Clear/mealie_road_4k.hdr",
-        f"{NVIDIA_NUCLEUS_DIR}/Assets/Skies/Clear/noon_grass_4k.hdr",
-        f"{NVIDIA_NUCLEUS_DIR}/Assets/Skies/Cloudy/champagne_castle_1_4k.hdr",
-        f"{NVIDIA_NUCLEUS_DIR}/Assets/Skies/Cloudy/kloofendal_48d_partly_cloudy_4k.hdr",
-        f"{NVIDIA_NUCLEUS_DIR}/Assets/Skies/Cloudy/abandoned_parking_4k.hdr",
-        f"{NVIDIA_NUCLEUS_DIR}/Assets/Skies/Cloudy/lakeside_4k.hdr",
-        f"{ISAAC_NUCLEUS_DIR}/Materials/Textures/Skies/PolyHaven/kloofendal_43d_clear_puresky_4k.hdr",
-        f"{NVIDIA_NUCLEUS_DIR}/Assets/Skies/Indoor/autoshop_01_4k.hdr",
-        f"{NVIDIA_NUCLEUS_DIR}/Assets/Skies/Indoor/carpentry_shop_01_4k.hdr",
-        f"{NVIDIA_NUCLEUS_DIR}/Assets/Skies/Indoor/old_bus_depot_4k.hdr",
-        f"{NVIDIA_NUCLEUS_DIR}/Assets/Skies/Indoor/wooden_lounge_4k.hdr",
-    ],
-    "floor textures": [
-        f"{NVIDIA_NUCLEUS_DIR}/Materials/vMaterials_2/Ground/textures/aggregate_exposed_diff.jpg",
-        f"{NVIDIA_NUCLEUS_DIR}/Materials/vMaterials_2/Ground/textures/gravel_track_ballast_diff.jpg",
-        f"{ISAAC_NUCLEUS_DIR}/Materials/Textures/Patterns/nv_brick_grey.jpg",
-        f"{ISAAC_NUCLEUS_DIR}/Materials/Textures/Patterns/nv_wood_boards_brown.jpg",
-        f"{NVIDIA_NUCLEUS_DIR}/Materials/Base/Wood/Plywood/Plywood_BaseColor.png",
-        f"{NVIDIA_NUCLEUS_DIR}/Materials/Base/Stone/Marble/Marble_BaseColor.png",
-    ],
-    "wall textures": [
-        f"{ISAAC_NUCLEUS_DIR}/Materials/Textures/Patterns/nv_brick_grey.jpg",
-        f"{ISAAC_NUCLEUS_DIR}/Materials/Textures/Patterns/nv_wooden_wall.jpg",
-        f"{NVIDIA_NUCLEUS_DIR}/Materials/Base/Wood/Timber_Cladding/Timber_Cladding_BaseColor.png",
-        f"{NVIDIA_NUCLEUS_DIR}/Materials/Base/Wood/Oak/Oak_BaseColor.png",
-        f"{NVIDIA_NUCLEUS_DIR}/Materials/Base/Metals/RustedMetal/RustedMetal_BaseColor.png",
-        f"{NVIDIA_NUCLEUS_DIR}/Materials/Base/Metals/Steel_Carbon/Steel_Carbon_BaseColor.png",
-    ],
-    "trees & props": [
-        f"{NV_CONTENT}/Vegetation/Trees/Red_Maple.usd",
-        f"{NV_CONTENT}/Vegetation/Trees/Japanese_Cherry.usd",
-        f"{NV_CONTENT}/Vegetation/Shrub/Boxwood.usd",
-        f"{NV_CONTENT}/Vegetation/Shrub/Cedar_Shrub.usd",
-    ],
-    # 4.2B Step 5 — models loaded straight from the Isaac Sim asset server
-    "drone models (Isaac Sim)": [
-        f"{ISAAC_NUCLEUS_DIR}/Robots/Bitcraze/Crazyflie/cf2x.usd",
-        f"{ISAAC_NUCLEUS_DIR}/Robots/IsaacSim/Quadcopter/quadcopter.usd",
-        f"{ISAAC_NUCLEUS_DIR}/Robots/NTNU/ARL-Robot-1/arl_robot_1.usd",
-        f"{ISAAC_NUCLEUS_DIR}/Robots/NASA/Ingenuity/ingenuity.usd",
-    ],
-    # 4.2B Step 2 — the two curl downloads into data\drones\
-    "drone models (Pegasus downloads)": [
-        f"{PEGASUS}/Iris/iris.usd",
-        f"{PEGASUS}/Pegasus/pegasus_optimized.usdc",
-    ],
-    # pictures that iris.usd pulls from NVIDIA's server when it renders (without them it renders grey)
-    "iris.usd material files": [
-        f"{BUCKET}/Materials/Base/Carpet/Carpet_Gray.mdl",
-        f"{BUCKET}/Materials/Base/Carpet/Carpet_Gray/Carpet_Gray_BaseColor.png",
-        f"{BUCKET}/Materials/Base/Textiles/Linen_Blue.mdl",
-        f"{BUCKET}/Materials/Base/Textiles/Linen_Blue/Linen_Blue_BaseColor.png",
-    ],
-}
-
-# ── folders to inventory, and which files in them are useful ────────────────
-FOLDERS = [
-    ("skies",          f"{ROOT}/NVIDIA/Assets/Skies/",                           (".hdr", ".exr")),
-    ("skies",          f"{ROOT}/Isaac/Materials/Textures/Skies/",                (".hdr", ".exr")),
-    ("floor/wall tex", f"{ROOT}/Isaac/Materials/Textures/Patterns/",             (".jpg", ".png")),
-    ("floor tex",      f"{ROOT}/NVIDIA/Materials/vMaterials_2/Ground/textures/", ("_diff.jpg", "_diff.png")),
-    ("floor/wall tex", f"{ROOT}/NVIDIA/Materials/Base/",                         ("_BaseColor.png", "_BaseColor.jpg")),
-    ("trees & props",  f"{BUCKET}/Assets/Vegetation/",                           (".usd",)),
-    ("drone models",   f"{ROOT}/Isaac/Robots/Bitcraze/",                         (".usd", ".usda")),
-    ("drone models",   f"{ROOT}/Isaac/Robots/IsaacSim/Quadcopter/",              (".usd", ".usda")),
-    ("drone models",   f"{ROOT}/Isaac/Robots/NTNU/",                             (".usd", ".usda")),
-    ("drone models",   f"{ROOT}/Isaac/Robots/NASA/",                             (".usd", ".usda")),
-]
-
-# searched across the whole Isaac/Robots folder: any file whose path mentions one of these words
-DRONE_WORDS = ("drone", "quad", "copter", "uav", "aerial", "crazyflie", "iris", "tello", "dji", "arl_robot")
-
-
-def exists(url):
-    """HTTP HEAD: returns (True/False, short reason)."""
-    req = urllib.request.Request(url, method="HEAD")
-    try:
-        with urllib.request.urlopen(req, timeout=30) as r:
-            return r.status == 200, f"HTTP {r.status}"
-    except urllib.error.HTTPError as e:
-        return False, f"HTTP {e.code}"
-    except Exception as e:                     # DNS, proxy, timeout, no internet
-        return False, f"{type(e).__name__}: {e}"
-
-
-def list_keys(folder_url):
-    """All object keys under a folder, via the S3 ListObjectsV2 API (follows pagination)."""
-    prefix = folder_url[len(BUCKET) + 1:]
-    keys, token = [], None
-    while True:
-        q = {"list-type": "2", "prefix": prefix}
-        if token:
-            q["continuation-token"] = token
-        with urllib.request.urlopen(f"{BUCKET}/?{urllib.parse.urlencode(q)}", timeout=60) as r:
-            root = ET.fromstring(r.read())
-        ns = {"s3": root.tag.split("}")[0].strip("{")} if root.tag.startswith("{") else {}
-        find = (lambda el, tag: el.findall(f"s3:{tag}", ns)) if ns else (lambda el, tag: el.findall(tag))
-        keys += [c.find("s3:Key", ns).text if ns else c.find("Key").text for c in find(root, "Contents")]
-        truncated = (root.find("s3:IsTruncated", ns) if ns else root.find("IsTruncated")).text == "true"
-        if not truncated:
-            return keys
-        token = (root.find("s3:NextContinuationToken", ns) if ns else root.find("NextContinuationToken")).text
-
-
-def main():
-    print("=" * 78, "\nPART 1 — testing the paths used in 4.2B\n" + "=" * 78)
-    broken = 0
-    for label, urls in PATHS.items():
-        print(f"\n[{label}]")
-        for url in urls:
-            ok, why = exists(url)
-            broken += not ok
-            print(f"  {'OK     ' if ok else 'MISSING'}  {why:<10} {url.replace(BUCKET, '')}")
-    print(f"\n{broken} broken path(s)\n")
-
-    print("=" * 78, "\nPART 2 — this is the list of all the available assets that exist in each folder (use these as replacements in case any of the path above are broken)\n" + "=" * 78)
-    for label, folder, suffixes in FOLDERS:
-        try:
-            keys = [k for k in list_keys(folder) if k.lower().endswith(tuple(s.lower() for s in suffixes))
-                    and "/.thumbs/" not in k]
-        except Exception as e:
-            print(f"\n[{label}] {folder.replace(BUCKET, '')}\n  could not list folder: {e}")
-            continue
-        print(f"\n[{label}] {folder.replace(BUCKET, '')}  — {len(keys)} file(s)")
-        for k in keys:
-            print(f"  {BUCKET}/{k}")
-
-    print("\n" + "=" * 78, "\nPART 3 — any other drone-like robot file in Isaac/Robots (candidates for 4.2B Step 5)\n" + "=" * 78)
-    try:
-        keys = list_keys(f"{ROOT}/Isaac/Robots/")
-        hits = [k for k in keys if k.lower().endswith((".usd", ".usda")) and "/.thumbs/" not in k
-                and any(w in k.lower() for w in DRONE_WORDS)
-                and "quadruped" not in k.lower()]            # "quad" also matches legged robots
-        print(f"\n{len(hits)} candidate file(s) out of {len(keys)} files scanned")
-        for k in hits:
-            print(f"  {BUCKET}/{k}")
-    except Exception as e:
-        print(f"  could not list Isaac/Robots: {e}")
-
-
-if __name__ == "__main__":
-    sys.exit(main())
-
-```
-
-<details\>
-
-Edit file: `generate_drone_data.py`
-
-*File to edit:* `C:\projects\drone_pursuit\drone_pursuit\scripts\sdg\generate_drone_data.py`
-
-```python
-# ── FILE: ...\scripts\sdg\generate_drone_data.py ────────────────────────────
-# ── SECTION: directly BELOW the `distractors = rep.create.group([...])` block
-# ──          from 4.2 Step 2, and ABOVE `with rep.trigger.on_frame(...)`   ──
-
-distractors = rep.create.group([             # ← EXISTING, from 4.2 Step 2
-    rep.create.cube(count=4, semantics=[("class", "distractor")]),
-    rep.create.sphere(count=4, semantics=[("class", "distractor")]),
-])
-
-# ▼▼▼ INSERT HERE! ▼▼▼
-import glob, os, random
-import omni.usd
-from pxr import Usd, UsdGeom
-
-# ════ 1. helpers: find your own files, and drop any path that does not exist ════
-BG_DIR = r"C:\projects\drone_pursuit\drone_pursuit\data\bg"
-
-def local_files(subfolder, extensions):
-    """Every file in data\\bg\\<subfolder>\\ with one of the given extensions."""
-    found = []
-    for ext in extensions:
-        found += glob.glob(os.path.join(BG_DIR, subfolder, f"*{ext}"))
-    return [p.replace("\\", "/") for p in found]
-
-def keep_existing(label, paths, required=True):
-    """Keep only paths found on disk or on NVIDIA's server; print the ones that are missing."""
-    usable = [p for p in paths if check_file_path(p) != 0]     # 0 = not found anywhere
-    for p in paths:
-        if p not in usable:
-            print(f"[bg] {label}: NOT FOUND, skipped -> {p}")
-    print(f"[bg] {label}: {len(usable)} usable")
-    if required and not usable:
-        raise RuntimeError(f"[bg] {label}: none usable - read the NOT FOUND lines above")
-    return usable
-
-# ════ 2. the pools each layer draws from ════
-SKIES = keep_existing("skies", [
-    # outdoor
-    f"{NVIDIA_NUCLEUS_DIR}/Assets/Skies/Clear/qwantani_4k.hdr",
-    f"{NVIDIA_NUCLEUS_DIR}/Assets/Skies/Clear/mealie_road_4k.hdr",
-    f"{NVIDIA_NUCLEUS_DIR}/Assets/Skies/Clear/noon_grass_4k.hdr",
-    f"{NVIDIA_NUCLEUS_DIR}/Assets/Skies/Cloudy/champagne_castle_1_4k.hdr",
-    f"{NVIDIA_NUCLEUS_DIR}/Assets/Skies/Cloudy/kloofendal_48d_partly_cloudy_4k.hdr",
-    f"{NVIDIA_NUCLEUS_DIR}/Assets/Skies/Cloudy/abandoned_parking_4k.hdr",
-    f"{NVIDIA_NUCLEUS_DIR}/Assets/Skies/Cloudy/lakeside_4k.hdr",
-    f"{ISAAC_NUCLEUS_DIR}/Materials/Textures/Skies/PolyHaven/kloofendal_43d_clear_puresky_4k.hdr",
-    # indoor — for flights in a room or a gym
-    f"{NVIDIA_NUCLEUS_DIR}/Assets/Skies/Indoor/autoshop_01_4k.hdr",
-    f"{NVIDIA_NUCLEUS_DIR}/Assets/Skies/Indoor/carpentry_shop_01_4k.hdr",
-    f"{NVIDIA_NUCLEUS_DIR}/Assets/Skies/Indoor/old_bus_depot_4k.hdr",
-    f"{NVIDIA_NUCLEUS_DIR}/Assets/Skies/Indoor/wooden_lounge_4k.hdr",
-] + local_files("sky", [".hdr", ".exr"]))
-
-FLOOR_TEX = keep_existing("floor textures", [
-    f"{NVIDIA_NUCLEUS_DIR}/Materials/vMaterials_2/Ground/textures/aggregate_exposed_diff.jpg",
-    f"{NVIDIA_NUCLEUS_DIR}/Materials/vMaterials_2/Ground/textures/gravel_track_ballast_diff.jpg",
-    f"{ISAAC_NUCLEUS_DIR}/Materials/Textures/Patterns/nv_brick_grey.jpg",
-    f"{ISAAC_NUCLEUS_DIR}/Materials/Textures/Patterns/nv_wood_boards_brown.jpg",
-    f"{NVIDIA_NUCLEUS_DIR}/Materials/Base/Wood/Plywood/Plywood_BaseColor.png",
-    f"{NVIDIA_NUCLEUS_DIR}/Materials/Base/Stone/Marble/Marble_BaseColor.png",
-] + local_files("floor", [".jpg", ".jpeg", ".png"]))
-
-WALL_TEX = keep_existing("wall textures", [
-    f"{ISAAC_NUCLEUS_DIR}/Materials/Textures/Patterns/nv_brick_grey.jpg",
-    f"{ISAAC_NUCLEUS_DIR}/Materials/Textures/Patterns/nv_wooden_wall.jpg",
-    f"{NVIDIA_NUCLEUS_DIR}/Materials/Base/Wood/Timber_Cladding/Timber_Cladding_BaseColor.png",
-    f"{NVIDIA_NUCLEUS_DIR}/Materials/Base/Wood/Oak/Oak_BaseColor.png",
-    f"{NVIDIA_NUCLEUS_DIR}/Materials/Base/Metals/RustedMetal/RustedMetal_BaseColor.png",
-    f"{NVIDIA_NUCLEUS_DIR}/Materials/Base/Metals/Steel_Carbon/Steel_Carbon_BaseColor.png",
-] + local_files("wall", [".jpg", ".jpeg", ".png"]))
-
-# trees come from NVIDIA's general content library, which is separate from the Isaac Sim pack
-NV_CONTENT = "https://omniverse-content-production.s3-us-west-2.amazonaws.com/Assets"
-PROP_USDS = keep_existing("trees & props", [
-    f"{NV_CONTENT}/Vegetation/Trees/Red_Maple.usd",
-    f"{NV_CONTENT}/Vegetation/Trees/Japanese_Cherry.usd",
-    f"{NV_CONTENT}/Vegetation/Shrub/Boxwood.usd",
-    f"{NV_CONTENT}/Vegetation/Shrub/Cedar_Shrub.usd",
-] + local_files("props", [".usd", ".usda", ".usdc", ".usdz"]), required=False)
-
-PROP_SIZE_M = (2.0, 12.0)   # every tree/prop is resized so its largest side is 2–12 m
-PROP_TILT_X = 0.0           # set to 90.0 or -90.0 only if trees appear lying on their side
-
-# ════ 3. where each layer may stand: four rectangles around the capture area ════
-def strips(near, far):
-    """Returns four ((x_min, y_min), (x_max, y_max)) rectangles, all at least `near` m from the drone."""
-    return [
-        ((-far,  near), ( far,  far)),     # north
-        ((-far, -far),  ( far, -near)),    # south
-        (( near, -near), ( far,  near)),   # east
-        ((-far, -near), (-near,  near)),   # west
-    ]
-
-# near = 6 m camera limit + half the object's largest width (Step 1)
-WALL_STRIPS     = strips(near=12.0, far=25.0)   # walls up to 12 m long  → half = 6 m
-PROP_STRIPS     = strips(near=15.0, far=40.0)   # props up to 12 m wide  → half-diagonal ≈ 8.5 m
-BUILDING_STRIPS = strips(near=22.0, far=70.0)   # up to 20 m x 20 m      → half-diagonal ≈ 14 m
-
-# ════ 4. build the objects once; Step 6 moves them every frame ════
-rng = random.Random(7)             # fixed seed = the same building and wall sizes on every run
-PARK = (0.0, 0.0, -100.0)          # spawn underground; the first frame moves everything into place
-
-BUILDINGS = []                     # (prim path, height)
-for i in range(12):
-    w, d, h = rng.uniform(6, 20), rng.uniform(6, 20), rng.uniform(4, 30)
-    path = f"/World/Background/Building_{i:02d}"
-    cfg = sim_utils.MeshCuboidCfg(size=(w, d, h))
-    cfg.func(path, cfg, translation=PARK)
-    BUILDINGS.append((path, h))
-
-WALLS = []                         # (prim path, height)
-for i in range(8):
-    length, h = rng.uniform(6, 12), rng.uniform(2.5, 6)
-    path = f"/World/Background/Wall_{i:02d}"
-    cfg = sim_utils.MeshCuboidCfg(size=(length, 0.3, h))
-    cfg.func(path, cfg, translation=PARK)
-    WALLS.append((path, h))
-
-stage = omni.usd.get_context().get_stage()
-def measure(path):
-    """Largest side of a prim's visible geometry, in stage units (0 if nothing loaded)."""
-    cache = UsdGeom.BBoxCache(Usd.TimeCode.Default(), [UsdGeom.Tokens.default_, UsdGeom.Tokens.render])
-    size = cache.ComputeWorldBound(stage.GetPrimAtPath(path)).ComputeAlignedRange().GetSize()
-    return max(size[0], size[1], size[2]), size
-
-PROPS = []                         # (prim path, scale that makes the model's largest side 1 m)
-for i in range(8 if PROP_USDS else 0):
-    usd = PROP_USDS[i % len(PROP_USDS)]
-    path = f"/World/Background/Prop_{i:02d}"
-    try:
-        cfg = sim_utils.UsdFileCfg(usd_path=usd)
-        cfg.func(path, cfg, translation=PARK)
-        largest, size = measure(path)
-    except Exception as e:
-        print(f"[bg] {path}: FAILED to load {usd} -> {e}; skipped")
-        continue
-    if not largest > 0:            # file opened but no geometry arrived: nothing to scale from
-        print(f"[bg] {path}: {usd} loaded with no geometry; hidden and skipped")
-        UsdGeom.Imageable(stage.GetPrimAtPath(path)).MakeInvisible()
-        continue
-    print(f"[bg] {path}: {usd.rsplit('/', 1)[-1]} authored size {size[0]:.2f} x {size[1]:.2f} x {size[2]:.2f}")
-    PROPS.append((path, 1.0 / largest))
-# ▲▲▲ END OF INSERT ▲▲▲
-
-with rep.trigger.on_frame(max_execs=args.num_frames):     # ← EXISTING, edited in Step 6
-```
-
-**For Linux version, replace the corresponding line in the code above with:**
-```
-BG_DIR = os.path.expanduser("~/projects/drone_pursuit/drone_pursuit/data/bg")
-```
-
-**None of the new objects carry a semantic tag,** so the `bounding_box_2d_tight` annotator draws no boxes around them. If a downloaded model arrives with its own class tag (a tree tagged `"tree"`, for example), its boxes are discarded by 4.3's converter, which keeps only `"drone"`.
-
-</details>
-
-### Step 5 — Vary the drone: several models, original paint or random colours
-
-<details>
-<summary>Expand Step 5</summary>
-
-> **Environment:** none needed — you are editing a file.
-
-Until now every frame showed the same grey Crazyflie. A detector trained that way learns one airframe's outline and colours, so it can miss a white Tello or any other drone. This step loads every available drone model twice: once in its **original paint**, and once as a **recolourable copy** whose parts get random colours every frame. Each frame, exactly one of these looks is placed at the capture spot and shown; all the others are parked underground and hidden. Every look carries the same `("class", "drone")` tag, so the detector still learns **one class**, "drone", from many shapes and colours.
-
-```
-ONE FRAME = ONE LOOK, CHOSEN FROM A PRE-DRAWN SCHEDULE
-
-models found          looks built                      frame 0   frame 1   frame 2  …
-────────────          ───────────                      ───────   ───────   ───────
-Crazyflie      ──▶    Drone_00_original  (weight 1.5)     ✈
-                      Drone_00_recolor   (weight 1.5)                         ✈
-Quadcopter     ──▶    Drone_01_original  (weight 0.5)               ✈
-                      Drone_01_recolor   (weight 0.5)
-iris.usd       ──▶    Drone_04_original  (weight 1.5)
-(your folder)         Drone_04_recolor   (weight 1.5)
-…
-shown look: moved to (0, 0, 1.5), visible  │  every other look: parked at (0, 0, -100), hidden
-```
-
-**Why a schedule instead of a random pick inside Replicator.** Replicator's randomisers draw each prim's value independently, so "show each drone with some probability" would sometimes show two drones and sometimes none. The script instead draws the whole sequence of looks in Python before the first frame (one entry per frame, respecting the weights), then hands each look its own list of "here and visible" / "parked and hidden" values. `rep.distribution.sequence` (a distribution that returns the next item of a fixed list on each frame) plays those lists back in step, which guarantees exactly one drone per frame.
-
-**Why the recolourable copy has its instancing turned off.** Isaac Sim robot files are usually *instanceable* (many copies share one read-only set of parts, which saves memory). A shared read-only part cannot be given its own material, so a colour randomiser pointed at it has no effect. The copy has instancing switched off, which turns its parts into ordinary editable prims; the original copy keeps its authored paint untouched.
-
-**Why every model is resized to 8–35 cm.** The source models range from a 9 cm Crazyflie to a 52 cm Iris. Each one is measured on load (as the props were in Step 4) and rescaled every frame so its largest side falls between 8 and 35 cm — the Tello is about 10 cm, larger hobby quadcopters about 35 cm. The upper limit keeps a large model from swallowing the camera, which 4.2 can place as close as a few tens of centimetres.
-
-**Part A — remove the single Crazyflie from the opening section.** The Crazyflie is now one entry in the model list below; leaving the 4.1 spawn in place would put a second, always-visible drone in every frame.
-
-*File to edit:* `C:\projects\drone_pursuit\drone_pursuit\scripts\sdg\generate_drone_data.py`
-
-```python
-# ── FILE: ...\scripts\sdg\generate_drone_data.py ────────────────────────────
-# ── SECTION: the drone spawn at the end of section 1 (from 4.1 Step 1) ──────
-
-# the subject of every photo: a Crazyflie, tagged with its class
-# DELETE (or comment out) these lines — Part B below spawns the Crazyflie together with the other models:
-# drone_cfg = sim_utils.UsdFileCfg(
-#     usd_path=f"{ISAAC_NUCLEUS_DIR}/Robots/Bitcraze/Crazyflie/cf2x.usd",
-#     semantic_tags=[("class", "drone")],          # ← this line is what produces the labels
-# )
-# drone_cfg.func("/World/Drone", drone_cfg, translation=(0.0, 0.0, 1.5))
-```
-
-**Part B — build the drone looks and their schedule.**
-
-```python
-# ── FILE: ...\scripts\sdg\generate_drone_data.py ────────────────────────────
-# ── SECTION: directly BELOW the Step 4 insert (after `# ▲▲▲ END OF INSERT ▲▲▲`)
-# ──          and ABOVE `with rep.trigger.on_frame(...)`                     ──
-
-# ▼▼▼ INSERT HERE! ▼▼▼
-# ════ 5. the attacker drone: several models × two looks, exactly one shown per frame ════
-DRONE_DIR = r"C:\projects\drone_pursuit\drone_pursuit\data\drones"
-DRONE_SPOT = (0.0, 0.0, 1.5)       # where the shown drone sits; the camera aims here (Step 6)
-DRONE_SIZE_M = (0.08, 0.35)        # largest side after resizing, in metres
-RECOLOR_SHARE = 0.5                # share of frames that show a recoloured look
-
-drone_files = []
-for ext in (".usd", ".usda", ".usdc", ".usdz"):
-    drone_files += [p.replace("\\", "/") for p in glob.glob(os.path.join(DRONE_DIR, f"*{ext}"))]
-
-DRONE_SOURCES = [                  # (file, weight) — a higher weight is chosen more often
-    (f"{ISAAC_NUCLEUS_DIR}/Robots/Bitcraze/Crazyflie/cf2x.usd", 3.0),        # ~9 cm, closest to a Tello
-    (f"{ISAAC_NUCLEUS_DIR}/Robots/IsaacSim/Quadcopter/quadcopter.usd", 1.0),
-    (f"{ISAAC_NUCLEUS_DIR}/Robots/NTNU/ARL-Robot-1/arl_robot_1.usd", 1.0),     # newer docs list it; may be absent in 5.1
-    (f"{ISAAC_NUCLEUS_DIR}/Robots/NASA/Ingenuity/ingenuity.usd", 0.3),        # coaxial helicopter: rare on purpose
-] + [(p, 3.0) for p in drone_files]                                            # your own models (Step 2)
-
-usable = keep_existing("drone models", [p for p, _ in DRONE_SOURCES])
-DRONE_SOURCES = [(p, w) for p, w in DRONE_SOURCES if p in usable]
-
-def deinstance(root_path):
-    """Switch instancing off under root_path so every part can take its own material."""
-    while True:
-        instances = [p for p in Usd.PrimRange(stage.GetPrimAtPath(root_path)) if p.IsInstance()]
-        if not instances:
-            return
-        for p in instances:        # repeat: switching one off can reveal instances nested inside it
-            p.SetInstanceable(False)
-
-DRONE_LOOKS = []                   # dicts: path, unit scale, recolour?, weight
-for k, (usd, weight) in enumerate(DRONE_SOURCES):
-    for look in ("original", "recolor"):
-        path = f"/World/Drones/Drone_{k:02d}_{look}"
-        try:
-            cfg = sim_utils.UsdFileCfg(usd_path=usd, semantic_tags=[("class", "drone")])
-            cfg.func(path, cfg, translation=PARK)
-            if look == "recolor":
-                deinstance(path)
-            largest, size = measure(path)
-        except Exception as e:
-            print(f"[drone] {path}: FAILED to load {usd} -> {e}; skipped")
-            continue
-        if not largest > 0:
-            print(f"[drone] {path}: {usd} loaded with no geometry; hidden and skipped")
-            UsdGeom.Imageable(stage.GetPrimAtPath(path)).MakeInvisible()
-            continue
-        share = RECOLOR_SHARE if look == "recolor" else 1.0 - RECOLOR_SHARE
-        n_meshes = sum(1 for p in Usd.PrimRange(stage.GetPrimAtPath(path)) if p.IsA(UsdGeom.Mesh))
-        print(f"[drone] {path}: {usd.rsplit('/', 1)[-1]} size {size[0]:.3f} x {size[1]:.3f} x {size[2]:.3f}, "
-              f"{n_meshes} editable meshes")
-        DRONE_LOOKS.append({"path": path, "unit": 1.0 / largest,
-                            "recolor": look == "recolor", "weight": weight * share})
-
-if not DRONE_LOOKS:
-    raise RuntimeError("[drone] no drone model loaded - read the [drone] and [bg] lines above")
-
-# one entry per frame: which look is shown in that frame
-schedule_rng = random.Random(11)   # fixed seed = the same model order on every run
-DRONE_SCHEDULE = schedule_rng.choices(range(len(DRONE_LOOKS)),
-                                      weights=[d["weight"] for d in DRONE_LOOKS], k=args.num_frames)
-for j, d in enumerate(DRONE_LOOKS):
-    d["positions"] = [DRONE_SPOT if shown == j else PARK for shown in DRONE_SCHEDULE]
-    d["visible"] = [shown == j for shown in DRONE_SCHEDULE]
-    print(f"[drone] {d['path']}: shown in {sum(d['visible'])} of {args.num_frames} frames")
-# ▲▲▲ END OF INSERT ▲▲▲
-```
-
-**For Linux version, replace the corresponding line in the code above with:**
-```
-DRONE_DIR = os.path.expanduser("~/projects/drone_pursuit/drone_pursuit/data/drones")
-```
-
-**Reading the `editable meshes` number.** For a `_recolor` look it should be above 0. If it prints 0, the model keeps its geometry somewhere the colour randomiser cannot reach, and that look will keep its original paint — harmless, but it means that model gets no colour variety.
-
-**The schedule is tied to `--num_frames`.** It is drawn for exactly the number of frames you request, so the 20-frame trial and the 2500-frame production run each get a schedule of the right length. Nothing needs changing between runs.
-
-</details>
-
-### Step 6 — Randomise every layer and the drone on every frame
-
-<details>
-<summary>Expand Step 6</summary>
-
-> **Environment:** none needed — you are editing a file.
-
-This step replaces the whole `with rep.trigger.on_frame(...)` block from 4.1 Step 3 and 4.2 Step 2. It keeps everything that block already does and makes four changes:
-
-1. **`rt_subframes=8`** — the number of times the renderer draws the same frame before saving it. A newly swapped sky or texture needs a few draws to finish loading; with the default, some saved images show a white sky or unpainted grey buildings. NVIDIA's own SDG workflows use 8 when they swap materials and move the camera between captures. The cost is that each saved frame takes several renders, so the 2500-frame run takes noticeably longer than it did in 4.2.
-2. **`rep.get.prims(path_pattern=...)` becomes `rep.get.prim_at_path(...)`** for the light and sun. `get.prims` matches paths as a regular expression (a text pattern), so a pattern like `/World/Light` can also select prims nested under it; `get.prim_at_path` selects exactly the one prim named.
-3. **The single-drone lines go.** `/World/Drone` no longer exists after Step 5 Part A, so the camera aims at the fixed point `DRONE_SPOT` instead, and the old drone-rotation block is replaced by a loop over every drone look.
-4. **New randomisers** for the sky photo, the floor, every building, wall and prop, and every drone look.
-
-*File to edit:* `C:\projects\drone_pursuit\drone_pursuit\scripts\sdg\generate_drone_data.py`
-
-```python
-# ── FILE: ...\scripts\sdg\generate_drone_data.py ────────────────────────────
-# ── SECTION: REPLACE the entire `with rep.trigger.on_frame(...)` block,     ─
-# ──          down to (not including) rep.orchestrator.run_until_complete()  ─
-
-with rep.trigger.on_frame(max_execs=args.num_frames, rt_subframes=8):   # ← EDITED: rt_subframes added
-    with camera:                                                        # ← EXISTING (4.1 + 4.2)
-        rep.modify.pose(
-            position=rep.distribution.uniform((-6, -6, 0.2), (6, 6, 4.0)),
-            look_at=DRONE_SPOT,                                         # ← EDITED: was "/World/Drone"
-        )
-
-    with rep.get.prim_at_path("/World/Light"):                          # ← EDITED: prim_at_path
-        rep.modify.attribute("inputs:intensity", rep.distribution.uniform(500, 6000))
-        rep.modify.attribute("inputs:color", rep.distribution.uniform((0.7, 0.7, 0.6), (1.0, 1.0, 1.0)))
-        # ▼ NEW: a different sky photo, turned to face a different way
-        rep.modify.attribute("inputs:texture:file", rep.distribution.choice(SKIES))
-        rep.modify.pose(rotation=rep.distribution.uniform((0, 0, 0), (0, 0, 360)))
-
-    with rep.get.prim_at_path("/World/Sun"):                            # ← EDITED: prim_at_path
-        rep.modify.pose(rotation=rep.distribution.uniform((-80, 0, 0), (-10, 0, 360)))
-        rep.modify.attribute("inputs:intensity", rep.distribution.uniform(1000, 12000))
-        rep.modify.attribute("inputs:color", rep.distribution.uniform((1.0, 0.85, 0.7), (1.0, 1.0, 1.0)))
-
-    # ← REMOVED: the 4.2 `/World/Drone` rotation block — the drone loop at the end replaces it
-
-    with distractors:                                                   # ← EXISTING (4.2)
-        rep.modify.pose(
-            position=rep.distribution.uniform((-5, -5, 0), (5, 5, 3.5)),
-            scale=rep.distribution.uniform(0.05, 0.4),
-        )
-        rep.randomizer.color(colors=rep.distribution.uniform((0, 0, 0), (1, 1, 1)))
-
-    # ▼▼▼ NEW — everything below is still INSIDE the `with rep.trigger...` block ▼▼▼
-
-    # floor: new picture at a new angle; hidden 1 frame in 5, so the sky photo's own ground shows
-    with rep.get.prim_at_path("/World/Floor/geometry/mesh"):
-        rep.randomizer.texture(textures=FLOOR_TEX, project_uvw=True,
-                               texture_rotate=rep.distribution.uniform(0, 360))
-        rep.modify.visibility(rep.distribution.choice([True, False], weights=[0.8, 0.2]))
-
-    # buildings: stand on the floor (centre at half height) in their strip, facing any direction
-    for i, (path, h) in enumerate(BUILDINGS):
-        (x0, y0), (x1, y1) = BUILDING_STRIPS[i % 4]
-        with rep.get.prim_at_path(path):
-            rep.modify.pose(position=rep.distribution.uniform((x0, y0, h / 2), (x1, y1, h / 2)),
-                            rotation=rep.distribution.uniform((0, 0, 0), (0, 0, 360)))
-            rep.modify.visibility(rep.distribution.choice([True, False], weights=[0.6, 0.4]))
-        with rep.get.prim_at_path(path + "/geometry/mesh"):
-            rep.randomizer.texture(textures=WALL_TEX, project_uvw=True,
-                                   texture_rotate=rep.distribution.choice([0.0, 90.0]))
-
-    # walls: same pattern, closer in
-    for i, (path, h) in enumerate(WALLS):
-        (x0, y0), (x1, y1) = WALL_STRIPS[i % 4]
-        with rep.get.prim_at_path(path):
-            rep.modify.pose(position=rep.distribution.uniform((x0, y0, h / 2), (x1, y1, h / 2)),
-                            rotation=rep.distribution.uniform((0, 0, 0), (0, 0, 360)))
-            rep.modify.visibility(rep.distribution.choice([True, False], weights=[0.6, 0.4]))
-        with rep.get.prim_at_path(path + "/geometry/mesh"):
-            rep.randomizer.texture(textures=WALL_TEX, project_uvw=True,
-                                   texture_rotate=rep.distribution.choice([0.0, 90.0]))
-
-    # trees & props: base on the floor, any heading, resized to 2–12 m using the scale measured in Step 4
-    for i, (path, unit) in enumerate(PROPS):
-        (x0, y0), (x1, y1) = PROP_STRIPS[i % 4]
-        with rep.get.prim_at_path(path):
-            rep.modify.pose(
-                position=rep.distribution.uniform((x0, y0, 0.0), (x1, y1, 0.0)),
-                rotation=rep.distribution.uniform((PROP_TILT_X, 0, 0), (PROP_TILT_X, 0, 360)),
-                scale=rep.distribution.uniform(unit * PROP_SIZE_M[0], unit * PROP_SIZE_M[1]),
-            )
-            rep.modify.visibility(rep.distribution.choice([True, False], weights=[0.7, 0.3]))
-
-    # drones: each look plays back its own schedule from Step 5 — exactly one is at DRONE_SPOT
-    # and visible per frame; every look also gets a new tilt, heading and size each frame
-    for d in DRONE_LOOKS:
-        with rep.get.prim_at_path(d["path"]):
-            rep.modify.pose(
-                position=rep.distribution.sequence(d["positions"]),
-                rotation=rep.distribution.uniform((-20, -20, 0), (20, 20, 360)),   # same tilt range as 4.2
-                scale=rep.distribution.uniform(d["unit"] * DRONE_SIZE_M[0], d["unit"] * DRONE_SIZE_M[1]),
-            )
-            rep.modify.visibility(rep.distribution.sequence(d["visible"]))
-        if d["recolor"]:
-            # every part (body, arms, propellers, guards) gets its own random colour
-            with rep.get.prims(path_pattern=d["path"] + "/.*", prim_types=["Mesh"]):
-                rep.randomizer.color(colors=rep.distribution.uniform((0, 0, 0), (1, 1, 1)))
-    # ▲▲▲ END OF NEW ▲▲▲
-
-rep.orchestrator.run_until_complete()      # ← EXISTING, unchanged
-simulation_app.close()                     # ← EXISTING, unchanged
-```
-
-**Why objects are hidden at random rather than always shown.** If every frame contained 12 buildings, 8 walls and 8 trees, the detector would never see a drone against open sky or a bare field, and those are common at demo time. Independent hiding gives a spread from nearly empty scenes to cluttered ones across the dataset.
-
-**Why buildings and walls face random directions.** A box that always faces the camera squarely shows one flat face; random headings show corners and two faces at once, which produces the diagonal edges and shading changes a real street or courtyard has.
-
-**Why each part gets its own colour rather than one colour for the whole drone.** Real drones mix colours — a white body with black arms, orange propeller guards, a grey battery — so independent colours per part cover those combinations. The original-paint looks, shown in the other half of the frames, keep the realistic single-scheme case in the dataset.
-
-**The Python `for` loops run once, when the script starts,** not once per frame. They write one randomiser per object into Replicator's graph (the list of instructions Replicator replays on every captured frame), which is why each object can have its own strip, height and scale.
-
-</details>
-
-### Step 7 — Generate 20 trial frames, inspect them, then regenerate the production batch
-
-<details>
-<summary>Expand Step 7</summary>
-
-> **Environment:** `env_drone`
-
-Twenty frames reveal a missing texture, a white sky or a giant tree in a couple of minutes. The first run also downloads the 4K sky photographs and the tree models, so expect it to spend extra minutes before the first frame; later runs read them from the local cache.
-
-*Run from:* `any folder`
-```bat
-rmdir /s /q C:\projects\drone_pursuit\drone_pursuit\data\raw
-mkdir C:\projects\drone_pursuit\drone_pursuit\data\raw
-python C:\projects\drone_pursuit\drone_pursuit\scripts\sdg\generate_drone_data.py --num_frames 20 --headless
-```
-
-**Linux version**
-```
-conda activate env_drone
-export OMNI_KIT_ACCEPT_EULA=YES
-rm -rf ~/projects/drone_pursuit/drone_pursuit/data/raw && mkdir -p ~/projects/drone_pursuit/drone_pursuit/data/raw
-python ~/projects/drone_pursuit/drone_pursuit/scripts/sdg/generate_drone_data.py --num_frames 20 --headless
-```
-
-**Emptying `data\raw` first** prevents old 4.2 frames from mixing into the new dataset: `BasicWriter` numbers files from `0000` again on every run, so a shorter run leaves older, higher-numbered frames in place.
-
-**Read the console before opening the images.** Search the output for `[bg]`. Each pool prints how many files were usable, and each missing file prints a `NOT FOUND` line with its path. Each prop also prints its authored size, which tells you whether a model arrived in metres (a tree around `10 x 10 x 12`) or centimetres (around `1000 x 1000 x 1200`); the script rescales both correctly.
-
-Once the trial frames pass the checkpoint below, run **4.2 Step 3** (the 2500-frame command, after emptying `data\raw` again), then **4.3** to convert the new frames.
-
-</details>
-
-> ✅ **Checkpoint 4.2B** — in the console, every `[bg] ... usable` line shows at least 1 (skies, floor textures and wall textures stop the script if they reach 0). Flipping through the 20 trial frames you see: **several different floors**, including at least one frame where the floor is absent and the sky photo's ground shows; **several different skies**, some outdoor and some indoor; **boxes with brick, wood or metal surfaces** behind the drone in some frames and open views in others; trees standing upright at plausible sizes (if `trees & props: 0 usable` printed, frames simply have no trees); **different drone models from frame to frame** — some in their original paint, some with brightly mixed part colours — and **exactly one drone per frame**, fully visible in front of everything, never hidden by a background object. In the console, every usable drone look prints a `shown in N of 20 frames` line, and the counts add up to 20. After the production run, 4.3's drop rate should stay under about 20%, as before.
-
-### Troubleshooting
-
-| What you see | Cause | Fix |
-|---|---|---|
-| `NOT FOUND` for every NVIDIA path | No connection to NVIDIA's asset server, or you use the offline Isaac Sim asset pack, which does not include `NVIDIA/Assets/Skies` or the vegetation library | Fill `data\bg\floor`, `wall` and `sky` from Step 2; the script uses local files on their own |
-| Buildings, walls or floor pink, flat white or untextured grey in some frames | The texture had not finished loading when the frame was saved | Raise `rt_subframes=8` to `16` in the trigger line |
-| Sky pure white or black in some frames | Same loading delay, for the sky photograph | Same fix: raise `rt_subframes` |
-| More than about 1 frame in 10 washed out to white | A bright sky photo multiplied by 4.2's dome intensity of up to 6000 | In the `/World/Light` block, lower `uniform(500, 6000)` to `uniform(500, 3000)` |
-| Trees appear as bare trunks without leaves | The leaf materials failed to load, a known NVIDIA vegetation asset issue | Bare trunks are still valid clutter; to remove trees, delete the four `Vegetation` lines |
-| Trees lie on their side | The model was authored with a different "up" direction | Set `PROP_TILT_X = 90.0` (or `-90.0` if they now lie the other way) |
-| Trees float above or sink into the floor | The model's origin is not at its base | Harmless for detection; remove that model from the list if it bothers you |
-| Script stops with `none usable` | A required pool (skies, floor or wall textures) ended up empty | Read the `NOT FOUND` lines above the error; add local files to that folder |
-| Two drones in one frame | The 4.1 Crazyflie spawn was not removed | Delete the `drone_cfg` lines (Step 5 Part A) |
-| Script stops with a `/World/Drone` error | The camera still aims at the deleted prim, or the old 4.2 drone block is still in the trigger | Use `look_at=DRONE_SPOT` and remove the old block (Step 6) |
-| A `_recolor` drone always shows its original paint | Its parts are still instanced (`0 editable meshes` printed), so the colour cannot bind | Harmless; that model simply gets no colour variety |
-| A drone appears tilted 90°, or far off-centre | The model was authored with a different "up" axis, or its origin is not at its centre | Remove that file from `data\drones\`, or leave it — the tight box still follows the drone wherever it is in the image |
-| `drone models: 0 usable` and the script stops | No Isaac Sim robot files reachable and `data\drones\` empty | Check the connection, or download the two Pegasus models from Step 2 |
-| Local files listed as usable but render pink | The file is not a colour map (a normal or roughness map), or it is corrupt | Open it in an image viewer; replace it with the `diff` / `color` version |
-
-</details>
-
-</details>
-
-
----
-
-
-### Step 3 — Run the production batch of 2500 frames
-
-<details>
-<summary>Expand Step 3</summary>
-
-> **Environment:** `env_drone`
-
-*Run from:* `any folder` — *the script lives in:* `C:\projects\drone_pursuit\drone_pursuit\scripts\sdg\` — *output goes to:* `C:\projects\drone_pursuit\drone_pursuit\data\raw\`
-```bat
-python C:\projects\drone_pursuit\drone_pursuit\scripts\sdg\generate_drone_data.py --num_frames 2500 --headless
-```
-
-
-2000–3000 frames is a solid single-class dataset. Variety across the dials above matters more than raw count. This takes a while — start it, then work through 4.3's conversion script while it runs.
-
-</details>
-
-> ✅ **Checkpoint 4.2** — flipping through 30 random production frames you see: near and far drones; sky and ground backgrounds; bright and dark scenes; distractors present; **some frames with the drone strongly backlit and nearly a silhouette**; and, from 4.2B, different floors, skies, scenery and drone models and colours. In every frame the drone is findable by you (if a human cannot find it, the network will not).
->
-> If no frame looks harshly lit, the sun is not being randomised — check that `/World/Sun` exists and that the `rep.get.prim_at_path("/World/Sun")` line in 4.2B Step 6 names it exactly.
-
-</details>
-
----
-
 
 ## 4.3 Convert Replicator Output to YOLO Format and Verify the Labels (≤1.5h)
 
@@ -8016,6 +7178,8 @@ Then retrain (3.3 Step 1) and fly again (7.3).
 | Python (both envs) | 3.11 | dictated by Isaac Sim 5.x |
 | torch (env_drone) | 2.7.0+cu128, installed by Isaac Lab — **never upgrade manually** | CUDA build; a re-resolve silently drops GPU support |
 | setuptools (env_drone) | 80.10.2 — **must stay below 81** | 82 removed `pkg_resources`, which tensorboard's dependencies still import |
+| numpy (env_drone) | 1.26.x — **must stay below 2** | Isaac Sim 5.1's compiled code was built for NumPy 1; pinned with `numpy<2` in `constraints.txt` (1.0 Step 5) |
+| opencv-python (env_drone) | below 4.12 | 4.12 and later require NumPy 2 (1.4 Step 1) |
 | skrl | as installed by Isaac Lab RL extras | the wizard's yaml targets it |
 | ultralytics (drone_vision only) | latest | isolated env → free to float |
 | onnxruntime (env_drone) | latest | runs the detector without pulling in torch |
@@ -8026,6 +7190,8 @@ Then retrain (3.3 Step 1) and fly again (7.3).
 |---|---|
 | `cuda: False` after any install | something replaced torch — `pip list | findstr torch`, reinstall per Isaac Lab docs |
 | Crazyflie USD not found | asset path renamed in 5.x: `Robots/Bitcraze/Crazyflie/cf2x.usd` |
+| `TypeError: Unable to write from unknown dtype, kind=i, size=0` in a Replicator call | NumPy 2 in `env_drone`, usually pulled in by an OpenCV upgrade — 4.1, Troubleshooting 1 |
+| SDG script never finishes, prints nothing, or floods `data\raw` with thousands of files | Replicator's `BasicWriter` / `rep.orchestrator` pattern hangs under Isaac Lab on Isaac Sim 5.1 — 4.1, Troubleshooting 2 |
 | Camera task OOM | fewer envs, smaller resolution; cameras dominate VRAM |
 | Ghost imports after refactor | delete `__pycache__` in the task package |
 | `isaaclab.__version__` looks too low (0.x) | that is the extension version, not the release; check `pip list | findstr isaacsim` instead |
