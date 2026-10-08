@@ -3876,7 +3876,7 @@ SECTION 2  the camera    a Tello-shaped camera + two annotators (photo, boxes)
 SECTION 3  the loop      for each frame: move camera → render → read → save 4 files
 ```
 
-The script saves files itself, in a plain Python loop. It does **not** use Replicator's `BasicWriter` or `rep.orchestrator`, the pattern in many NVIDIA examples. Under Isaac Lab on Isaac Sim 5.1 that pattern either never stops writing or waits forever (see *Troubleshooting — the script never finishes* below). Using a loop that the script controls also guarantees exactly `--num_frames` photos, each with its labels.
+The script saves files itself, in a plain Python loop. It does **not** use Replicator's `BasicWriter` or `rep.orchestrator`, the pattern in many NVIDIA examples. Under Isaac Lab on Isaac Sim 5.1 that pattern either never stops writing or waits forever (see *Troubleshooting 2* below). Using a loop that the script controls also guarantees exactly `--num_frames` photos, each with its labels.
 
 ### Step 1 — Create the folders and the script's opening section
 
@@ -4209,65 +4209,7 @@ A labelling problem found here costs a few minutes. The same problem found in Ch
 
 </details>
 
-### Troubleshooting — the script never finishes, or fills `data\raw` with thousands of files
-
-<details>
-<summary>Expand</summary>
-
-> **Environment:** `env_drone`
-> **Where this appears:** Step 3, if you use Replicator's `BasicWriter` and `rep.orchestrator` (as in many NVIDIA examples) instead of this subchapter's loop
-
-#### What you see
-
-One of two symptoms:
-
-- **Runaway:** the run doesn't stop. `data\raw` fills with thousands of `.npy`, `.png` and `.json` files, and after a while the log shows `Throttling generation due to I/O bottleneck`, meaning the disk can't keep up.
-- **Silent hang:** after the startup warnings nothing more is printed, not even a first progress line, and no files appear, even after many minutes.
-
-#### Why it happens
-
-Both symptoms have the same cause. The usual Replicator recipe stops after N frames using a counter (`rep.trigger.on_frame(max_execs=N)`) and a wait (`rep.orchestrator.run_until_complete()`, or `rep.orchestrator.step()` inside a loop). The wait listens for the orchestrator's "frame done" signal. When Isaac Sim is started through Isaac Lab's `AppLauncher` on 5.1, that signal never arrives, so the wait never ends.
-
-The two symptoms differ only in what happens while the script waits:
-
-- **With a `BasicWriter` attached**, the app keeps rendering and the writer saves every rendered frame, giving the runaway.
-- **Without a writer**, nothing is saved, giving the silent hang.
-
-#### Fix
-
-1. Stop the run with `Ctrl+C`. Isaac Sim often ignores it, so check whether the process is still alive, because a leftover run keeps writing into `data\raw`:
-
-    ```bat
-    tasklist /fi "imagename eq python.exe"
-    ```
-
-    If it lists anything and you have no other Python work open, stop it:
-
-    ```bat
-    taskkill /f /im python.exe
-    ```
-
-2. Empty the output folder:
-
-    ```bat
-    del /q C:\projects\drone_pursuit\drone_pursuit\data\raw\*
-    ```
-
-3. Use this subchapter's script as given. It never calls the orchestrator. It renders with `simulation_app.update()`, a plain "render one frame" call with nothing to wait for, and reads the annotators directly, the same way Isaac Lab's own camera sensors work. When you adapt a Replicator example from NVIDIA's documentation, swap its writer and orchestrator calls for this pattern.
-
-#### Other symptoms in the capture loop
-
-| What you see | Cause | Fix |
-|---|---|---|
-| Stops at `warming up renderer...` and never prints `capturing` | Rendering itself is stuck, not Replicator | Read the last 30 lines of the log file named in the `Logging to file:` line |
-| Many frames print `skipped (image not ready)` | The annotator had no image yet | Raise `WARMUP_UPDATES` to `60` |
-| Many frames print `boxes=0` | The drone was out of view, or the `semantic_tags` line is missing | Check the tag line in Step 1; a rare `boxes=0` is fine |
-| In `preview_*.png` the rectangle sits beside the drone, as if from the previous angle | The box was read before the image settled after the camera move | Raise `FRAME_UPDATES` from `8` to `16` |
-| Terminal sits after `frame 20/20` | Isaac Sim is slow to shut down | Wait a minute or press `Ctrl+C`; the files are already saved |
-
-</details>
-
-### Troubleshooting — `Unable to write from unknown dtype, kind=i, size=0`
+### Troubleshooting 1 — Python package compatibility: NumPy 2 breaks Isaac Sim (`Unable to write from unknown dtype`)
 
 <details>
 <summary>Expand</summary>
@@ -4384,6 +4326,83 @@ Expected output: `1.26.4 4.11.0`. Then empty `data\raw` and rerun the trial:
 del /q C:\projects\drone_pursuit\drone_pursuit\data\raw\*
 python C:\projects\drone_pursuit\drone_pursuit\scripts\sdg\generate_drone_data.py --num_frames 20 --headless
 ```
+
+#### Does this fix affect `env_isaaclab`?
+
+No. `env_drone` was cloned from `env_isaaclab` in 1.0, so each environment has its own `site-packages` folder containing its own Isaac Sim and its own NumPy:
+
+```
+miniconda3\envs\env_isaaclab\Lib\site-packages\   ← isaacsim + numpy (copy 1)
+miniconda3\envs\env_drone\Lib\site-packages\      ← isaacsim + numpy (copy 2)
+```
+
+Pip commands run while `env_drone` is active only change `env_drone`. To confirm, check `env_isaaclab`'s NumPy version before and after the fix; it should not change:
+
+```bat
+conda activate env_isaaclab
+pip show numpy
+conda activate env_drone
+```
+
+Moving the generator to a separate environment would not avoid the fix either. Replicator is part of Isaac Sim, so the script can only run in an environment that has Isaac Sim installed, and that environment needs NumPy 1.x.
+
+</details>
+
+### Troubleshooting 2 — the script never finishes, or fills `data\raw` with thousands of files
+
+<details>
+<summary>Expand</summary>
+
+> **Environment:** `env_drone`
+> **Where this appears:** Step 3, if you use Replicator's `BasicWriter` and `rep.orchestrator` (as in many NVIDIA examples) instead of this subchapter's loop
+
+#### What you see
+
+One of two symptoms:
+
+- **Runaway:** the run doesn't stop. `data\raw` fills with thousands of `.npy`, `.png` and `.json` files, and after a while the log shows `Throttling generation due to I/O bottleneck`, meaning the disk can't keep up.
+- **Silent hang:** after the startup warnings nothing more is printed, not even a first progress line, and no files appear, even after many minutes.
+
+#### Why it happens
+
+Both symptoms have the same cause. The usual Replicator recipe stops after N frames using a counter (`rep.trigger.on_frame(max_execs=N)`) and a wait (`rep.orchestrator.run_until_complete()`, or `rep.orchestrator.step()` inside a loop). The wait listens for the orchestrator's "frame done" signal. When Isaac Sim is started through Isaac Lab's `AppLauncher` on 5.1, that signal never arrives, so the wait never ends.
+
+The two symptoms differ only in what happens while the script waits:
+
+- **With a `BasicWriter` attached**, the app keeps rendering and the writer saves every rendered frame, giving the runaway.
+- **Without a writer**, nothing is saved, giving the silent hang.
+
+#### Fix
+
+1. Stop the run with `Ctrl+C`. Isaac Sim often ignores it, so check whether the process is still alive, because a leftover run keeps writing into `data\raw`:
+
+    ```bat
+    tasklist /fi "imagename eq python.exe"
+    ```
+
+    If it lists anything and you have no other Python work open, stop it:
+
+    ```bat
+    taskkill /f /im python.exe
+    ```
+
+2. Empty the output folder:
+
+    ```bat
+    del /q C:\projects\drone_pursuit\drone_pursuit\data\raw\*
+    ```
+
+3. Use this subchapter's script as given. It never calls the orchestrator. It renders with `simulation_app.update()`, a plain "render one frame" call with nothing to wait for, and reads the annotators directly, the same way Isaac Lab's own camera sensors work. When you adapt a Replicator example from NVIDIA's documentation, swap its writer and orchestrator calls for this pattern.
+
+#### Other symptoms in the capture loop
+
+| What you see | Cause | Fix |
+|---|---|---|
+| Stops at `warming up renderer...` and never prints `capturing` | Rendering itself is stuck, not Replicator | Read the last 30 lines of the log file named in the `Logging to file:` line |
+| Many frames print `skipped (image not ready)` | The annotator had no image yet | Raise `WARMUP_UPDATES` to `60` |
+| Many frames print `boxes=0` | The drone was out of view, or the `semantic_tags` line is missing | Check the tag line in Step 1; a rare `boxes=0` is fine |
+| In `preview_*.png` the rectangle sits beside the drone, as if from the previous angle | The box was read before the image settled after the camera move | Raise `FRAME_UPDATES` from `8` to `16` |
+| Terminal sits after `frame 20/20` | Isaac Sim is slow to shut down | Wait a minute or press `Ctrl+C`; the files are already saved |
 
 </details>
 
