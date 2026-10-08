@@ -3928,39 +3928,7 @@ drone_cfg = sim_utils.UsdFileCfg(
 )
 drone_cfg.func("/World/Drone", drone_cfg, translation=(0.0, 0.0, 1.5))
 
-# ── SECTION 2 — camera and writer ───────────────────────────────────────────
-# a Replicator camera and a render product (the surface it exposes onto)
-camera = rep.create.camera(focal_length=12.0)   # ~83 deg FOV, matching a Tello
-render_product = rep.create.render_product(camera, (640, 480))   # 4:3, like the real drone
 
-# BasicWriter: saves RGB + tight 2D boxes for every captured frame
-writer = rep.WriterRegistry.get("BasicWriter")
-writer.initialize(
-    output_dir=args.out_dir,
-    rgb=True,
-    bounding_box_2d_tight=True,      # "tight" = shrink-wrapped to visible pixels
-)
-writer.attach([render_product])      # ← must appear ONCE in the file
-
-# ── SECTION 3 — the capture loop ────────────────────────────────────────────
-# take photos only when we ask, not on every rendered frame
-rep.orchestrator.set_capture_on_play(False)
-
-# camera move: runs once per photo (4.2 adds more randomisers INSIDE this block)
-with rep.trigger.on_frame():
-    with camera:
-        rep.modify.pose(
-            position=rep.distribution.uniform((-3, -3, 0.5), (3, 3, 3.0)),
-            look_at="/World/Drone",
-        )
-
-# the counted loop: exactly num_frames photos, then stop
-for i in range(args.num_frames):
-    rep.orchestrator.step(rt_subframes=4)        # move camera, render, save one photo
-    print(f"frame {i + 1}/{args.num_frames}", flush=True)
-
-rep.orchestrator.wait_until_complete()           # let the last files finish writing
-simulation_app.close()
 ```
 
 **For Linux version, replace the respective parts of the code above with:**
@@ -3987,12 +3955,7 @@ This step creates the camera that takes the photograph and the `BasicWriter` tha
 *File to edit:* `C:\projects\drone_pursuit\drone_pursuit\scripts\sdg\generate_drone_data.py`
 
 ```python
-# ── FILE: ...\scripts\sdg\generate_drone_data.py ────────────────────────────
-# ── SECTION: append directly BELOW the drone_cfg.func(...) line from Step 1 ─
-
-drone_cfg.func("/World/Drone", drone_cfg, translation=(0.0, 0.0, 1.5))   # ← from Step 1
-
-# ▼▼▼ INSERT HERE! ▼▼▼
+# ── SECTION 2 — camera and writer ───────────────────────────────────────────
 # a Replicator camera and a render product (the surface it exposes onto)
 camera = rep.create.camera(focal_length=12.0)   # ~83 deg FOV, matching a Tello
 render_product = rep.create.render_product(camera, (640, 480))   # 4:3, like the real drone
@@ -4004,8 +3967,9 @@ writer.initialize(
     rgb=True,
     bounding_box_2d_tight=True,      # "tight" = shrink-wrapped to visible pixels
 )
-writer.attach([render_product])
-# ▲▲▲ END OF INSERT ▲▲▲
+writer.attach([render_product])      # ← must appear ONCE in the file
+
+
 ```
 
 **Tight versus loose boxes:** a *loose* box encloses the object's full extent even where another object hides part of it; a *tight* box encloses only the pixels actually visible. The detector is trained on what is visible, so tight is the matching choice.
@@ -4024,21 +3988,25 @@ Twenty frames take under a minute and are enough to reveal a broken camera pose,
 *File to edit:* `C:\projects\drone_pursuit\drone_pursuit\scripts\sdg\generate_drone_data.py`
 
 ```python
-# ── FILE: ...\scripts\sdg\generate_drone_data.py ────────────────────────────
-# ── SECTION: append at the very END of the file, below writer.attach(...) ───
+# ── SECTION 3 — the capture loop ────────────────────────────────────────────
+# take photos only when we ask, not on every rendered frame
+rep.orchestrator.set_capture_on_play(False)
 
-writer.attach([render_product])          # ← last line from Step 2
-
-# ▼▼▼ INSERT HERE! — 4.2 adds more randomisers INSIDE this same `with` block ▼▼▼
-with rep.trigger.on_frame(max_execs=args.num_frames):
+# camera move: runs once per photo (4.2 adds more randomisers INSIDE this block)
+with rep.trigger.on_frame():
     with camera:
         rep.modify.pose(
             position=rep.distribution.uniform((-3, -3, 0.5), (3, 3, 3.0)),
             look_at="/World/Drone",
         )
-rep.orchestrator.run_until_complete()
+
+# the counted loop: exactly num_frames photos, then stop
+for i in range(args.num_frames):
+    rep.orchestrator.step(rt_subframes=4)        # move camera, render, save one photo
+    print(f"frame {i + 1}/{args.num_frames}", flush=True)
+
+rep.orchestrator.wait_until_complete()           # let the last files finish writing
 simulation_app.close()
-# ▲▲▲ END OF INSERT — this is the end of the file ▲▲▲
 ```
 
 *Run from:* `any folder` — *the script lives in:* `C:\projects\drone_pursuit\drone_pursuit\scripts\sdg\`
