@@ -3885,8 +3885,8 @@ mkdir C:\projects\drone_pursuit\drone_pursuit\scripts\sdg C:\projects\drone_purs
 
 ```python
 # ── FILE: C:\projects\drone_pursuit\drone_pursuit\scripts\sdg\generate_drone_data.py
-# ── This is a NEW file. Everything below is section 1 of 3; sections 2 and 3
-# ──          are appended in Step 2 and Step 3, in this order, at the END.
+# ── Complete 4.1 version: section 1 (scene), section 2 (camera + writer),
+# ──          section 3 (counted capture loop).
 
 """Standalone SDG: labeled images of a Crazyflie for detector training."""
 import argparse
@@ -3909,6 +3909,7 @@ from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR
 
 sim = SimulationContext(sim_utils.SimulationCfg(dt=0.01))
 
+# ── SECTION 1 — the scene ───────────────────────────────────────────────────
 # ground + two lights (both get randomized in 4.2)
 sim_utils.GroundPlaneCfg().func("/World/ground", sim_utils.GroundPlaneCfg())
 
@@ -3927,8 +3928,39 @@ drone_cfg = sim_utils.UsdFileCfg(
 )
 drone_cfg.func("/World/Drone", drone_cfg, translation=(0.0, 0.0, 1.5))
 
-# ── SECTION 2 (Step 2) GOES HERE — camera and writer ────────────────────────
-# ── SECTION 3 (Step 3) GOES BELOW THAT — the capture trigger ────────────────
+# ── SECTION 2 — camera and writer ───────────────────────────────────────────
+# a Replicator camera and a render product (the surface it exposes onto)
+camera = rep.create.camera(focal_length=12.0)   # ~83 deg FOV, matching a Tello
+render_product = rep.create.render_product(camera, (640, 480))   # 4:3, like the real drone
+
+# BasicWriter: saves RGB + tight 2D boxes for every captured frame
+writer = rep.WriterRegistry.get("BasicWriter")
+writer.initialize(
+    output_dir=args.out_dir,
+    rgb=True,
+    bounding_box_2d_tight=True,      # "tight" = shrink-wrapped to visible pixels
+)
+writer.attach([render_product])      # ← must appear ONCE in the file
+
+# ── SECTION 3 — the capture loop ────────────────────────────────────────────
+# take photos only when we ask, not on every rendered frame
+rep.orchestrator.set_capture_on_play(False)
+
+# camera move: runs once per photo (4.2 adds more randomisers INSIDE this block)
+with rep.trigger.on_frame():
+    with camera:
+        rep.modify.pose(
+            position=rep.distribution.uniform((-3, -3, 0.5), (3, 3, 3.0)),
+            look_at="/World/Drone",
+        )
+
+# the counted loop: exactly num_frames photos, then stop
+for i in range(args.num_frames):
+    rep.orchestrator.step(rt_subframes=4)        # move camera, render, save one photo
+    print(f"frame {i + 1}/{args.num_frames}", flush=True)
+
+rep.orchestrator.wait_until_complete()           # let the last files finish writing
+simulation_app.close()
 ```
 
 **For Linux version, replace the respective parts of the code above with:**
