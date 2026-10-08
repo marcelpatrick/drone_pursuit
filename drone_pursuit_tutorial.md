@@ -3860,11 +3860,23 @@ Linux translation:
 <details>
 <summary>Expand 4.1</summary>
 
-> **What this subchapter does:** creates a standalone Replicator script — separate from the RL environment — that spawns a Crazyflie tagged with the semantic class "drone", points a camera at it from randomly chosen positions, and writes each frame together with its bounding box. It runs outside the pursuit env because data generation wants high-quality rendering and the RL env wants step speed, and mixing the two makes both harder to tune. The 20 trial frames it produces are checked by hand before 4.2 scales it to 2500.
+> **What this subchapter does:** creates a standalone script, separate from the RL environment, that spawns a Crazyflie tagged with the semantic class "drone". It points a camera at the drone from randomly chosen positions and saves each frame together with its bounding box. It runs outside the pursuit env because data generation wants high-quality rendering while the RL env wants step speed, and mixing the two makes both harder to tune. The 20 trial frames it produces are checked by eye before 4.2 scales the run to 2500.
 
 ### Why synthetic images arrive pre-labelled
 
-The renderer knows every pixel's source prim. Tagging the Crazyflie prim with `semantic_tags=[("class", "drone")]` tells Replicator which prim matters, and the `bounding_box_2d_tight` annotator then emits the pixel rectangle enclosing its visible pixels, per frame, automatically. Your remaining job is only: tag the right prims, point the camera from varied poses, and randomise everything else so the network keys on drone shape rather than on the scenery it happened to be rendered against.
+The renderer knows which object produced every pixel. Tagging the Crazyflie with `semantic_tags=[("class", "drone")]` marks it as the object that matters. A Replicator *annotator*, a reader attached to the camera's image, then reports the rectangle around that object's visible pixels for every frame, with no manual labelling. That leaves you three jobs: tag the right object, photograph it from varied positions, and (in 4.2) randomise everything else, so the network learns the drone's shape rather than the scenery behind it.
+
+### How the script is built
+
+The script has three sections, written in Steps 1–3:
+
+```
+SECTION 1  the scene     ground, two lights, the tagged Crazyflie
+SECTION 2  the camera    a Tello-shaped camera + two annotators (photo, boxes)
+SECTION 3  the loop      for each frame: move camera → render → read → save 4 files
+```
+
+The script saves files itself, in a plain Python loop. It does **not** use Replicator's `BasicWriter` or `rep.orchestrator`, the pattern in many NVIDIA examples. Under Isaac Lab on Isaac Sim 5.1 that pattern either never stops writing or waits forever (see *Troubleshooting — the script never finishes* below). Using a loop that the script controls also guarantees exactly `--num_frames` photos, each with its labels.
 
 ### Step 1 — Create the folders and the script's opening section
 
@@ -3873,7 +3885,7 @@ The renderer knows every pixel's source prim. Tagging the Crazyflie prim with `s
 
 > **Environment:** `env_drone` (the `mkdir` needs no environment; the script does)
 
-This step writes the top half of the generator: the `AppLauncher` boilerplate that starts Isaac Sim with rendering enabled, a ground plane, two lights, and the Crazyflie carrying its semantic tag. The tag is the one line that makes labels possible; without it the annotator returns empty boxes and every frame is dropped in 4.3.
+This step writes the top of the generator. That covers the `AppLauncher` boilerplate that starts Isaac Sim with rendering enabled, then a ground plane, two lights, and the Crazyflie carrying its semantic tag. The tag is the one line that makes labels possible: without it the box annotator returns nothing, and every frame is dropped in 4.3.
 
 *Run from:* `C:\projects\drone_pursuit\drone_pursuit`
 ```bat
@@ -3885,8 +3897,8 @@ mkdir C:\projects\drone_pursuit\drone_pursuit\scripts\sdg C:\projects\drone_purs
 
 ```python
 # ── FILE: C:\projects\drone_pursuit\drone_pursuit\scripts\sdg\generate_drone_data.py
-# ── Complete 4.1 version: section 1 (scene), section 2 (camera + writer),
-# ──          section 3 (counted capture loop).
+# ── This is a NEW file. Everything below is section 1 of 3; sections 2 and 3
+# ──          are appended in Step 2 and Step 3, in this order, at the END.
 
 """Standalone SDG: labeled images of a Crazyflie for detector training."""
 import argparse
@@ -3895,6 +3907,7 @@ from isaaclab.app import AppLauncher
 parser = argparse.ArgumentParser()
 parser.add_argument("--num_frames", type=int, default=200)
 parser.add_argument("--out_dir", type=str, default=r"C:\projects\drone_pursuit\drone_pursuit\data\raw")
+parser.add_argument("--seed", type=int, default=0)
 AppLauncher.add_app_launcher_args(parser)
 args = parser.parse_args()
 args.enable_cameras = True                       # cameras need the render pipeline
@@ -3902,12 +3915,26 @@ app_launcher = AppLauncher(args)
 simulation_app = app_launcher.app
 
 # ---- everything below runs inside the sim app ----
+import json
+import os
+import random
+
+import numpy as np
+from PIL import Image
+
 import omni.replicator.core as rep
+import omni.usd
+from pxr import Gf, UsdGeom
+
 import isaaclab.sim as sim_utils
 from isaaclab.sim import SimulationContext
 from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR
 
 sim = SimulationContext(sim_utils.SimulationCfg(dt=0.01))
+stage = omni.usd.get_context().get_stage()
+
+WARMUP_UPDATES = 30   # frames rendered once at start, so assets finish loading
+FRAME_UPDATES = 8     # frames rendered per photo, so the image settles after a camera move
 
 # ── SECTION 1 — the scene ───────────────────────────────────────────────────
 # ground + two lights (both get randomized in 4.2)
@@ -3922,137 +3949,337 @@ sun_cfg = sim_utils.DistantLightCfg(intensity=3000.0, angle=0.53)
 sun_cfg.func("/World/Sun", sun_cfg)
 
 # the subject of every photo: a Crazyflie, tagged with its class
+DRONE_POS = (0.0, 0.0, 1.5)
 drone_cfg = sim_utils.UsdFileCfg(
     usd_path=f"{ISAAC_NUCLEUS_DIR}/Robots/Bitcraze/Crazyflie/cf2x.usd",
     semantic_tags=[("class", "drone")],          # ← this line is what produces the labels
 )
-drone_cfg.func("/World/Drone", drone_cfg, translation=(0.0, 0.0, 1.5))
+drone_cfg.func("/World/Drone", drone_cfg, translation=DRONE_POS)
 
-
+# ── SECTION 2 (Step 2) GOES HERE — camera and annotators ────────────────────
+# ── SECTION 3 (Step 3) GOES BELOW THAT — the capture loop ───────────────────
 ```
 
-**For Linux version, replace the respective parts of the code above with:**
-```
+**Linux version:** replace the `--out_dir` line above with:
+```python
 # BEFORE: parser.add_argument("--out_dir", type=str, default=r"C:\projects\...\data\raw")
 import os
 parser.add_argument("--out_dir", type=str,
                     default=os.path.expanduser("~/projects/drone_pursuit/drone_pursuit/data/raw"))
 ```
 
-Note the asset path: Isaac Sim 5.x moved it to `Robots/Bitcraze/Crazyflie/cf2x.usd`. Older tutorials say `Robots/Crazyflie/`, and the rename is listed in the Isaac Lab release notes — a concrete example of why 1.0 pinned a commit.
+Note the asset path. Isaac Sim 5.x moved the Crazyflie to `Robots/Bitcraze/Crazyflie/cf2x.usd`, while older tutorials say `Robots/Crazyflie/`. The rename is listed in the Isaac Lab release notes, and it is a concrete example of why 1.0 pinned a commit.
 
 </details>
 
-### Step 2 — Add the Replicator camera and the writer that saves the labels
+### Step 2 — Add the camera and the two annotators that read each image
 
 <details>
 <summary>Expand Step 2</summary>
 
 > **Environment:** none needed — you are editing a file.
 
-This step creates the camera that takes the photograph and the `BasicWriter` that saves each frame's RGB image plus its tight bounding box into `data\raw`. The camera settings are not free choices: focal length 12 mm and a 640×480 render match the Tello's 83° 4:3 lens, for the same reason as Chapter 3.1 Part E — a detector trained on a different field of view sees a differently-shaped drone at the same distance.
+This step creates three things:
+
+- **The camera** that takes each photograph.
+- **The render product**, the 640×480 image the camera exposes onto.
+- **Two annotators**, readers attached to that image. `rgb` returns the photo, and `bounding_box_2d_tight` returns the drone's box.
+
+The camera settings are not free choices. A 12 mm focal length on a 20.955 mm-wide sensor gives a field of view of about 82°, and 640×480 gives a 4:3 image; together they match the Tello's lens. The reason is the same as in Chapter 3.1 Part E: a detector trained with a different field of view sees a differently sized drone at the same distance.
 
 *File to edit:* `C:\projects\drone_pursuit\drone_pursuit\scripts\sdg\generate_drone_data.py`
 
 ```python
-# ── SECTION 2 — camera and writer ───────────────────────────────────────────
-# a Replicator camera and a render product (the surface it exposes onto)
-camera = rep.create.camera(focal_length=12.0)   # ~83 deg FOV, matching a Tello
-render_product = rep.create.render_product(camera, (640, 480))   # 4:3, like the real drone
+# ── FILE: ...\scripts\sdg\generate_drone_data.py ────────────────────────────
+# ── SECTION: append directly BELOW the drone_cfg.func(...) line from Step 1 ─
 
-# BasicWriter: saves RGB + tight 2D boxes for every captured frame
-writer = rep.WriterRegistry.get("BasicWriter")
-writer.initialize(
-    output_dir=args.out_dir,
-    rgb=True,
-    bounding_box_2d_tight=True,      # "tight" = shrink-wrapped to visible pixels
-)
-writer.attach([render_product])      # ← must appear ONCE in the file
+# ▼▼▼ INSERT HERE! ▼▼▼
+# ── SECTION 2 — camera and the two "sensors" that read each image ───────────
+# a plain USD camera: 12 mm lens on a 20.955 mm sensor ≈ 82° wide, like a Tello
+CAM_PATH = "/World/Camera"
+cam = UsdGeom.Camera.Define(stage, CAM_PATH)
+cam.GetFocalLengthAttr().Set(12.0)
+cam.GetHorizontalApertureAttr().Set(20.955)
+cam.GetVerticalApertureAttr().Set(20.955 * 480 / 640)     # 4:3, like the real drone
+cam.GetClippingRangeAttr().Set(Gf.Vec2f(0.01, 1000.0))
+cam_pose_op = UsdGeom.Xformable(cam.GetPrim()).AddTransformOp()
 
+# render product = the 640x480 image the camera exposes onto
+render_product = rep.create.render_product(CAM_PATH, (640, 480))
 
+# annotators = readers attached to that image: one for colour, one for boxes
+rgb_annot = rep.AnnotatorRegistry.get_annotator("rgb")
+bbox_annot = rep.AnnotatorRegistry.get_annotator("bounding_box_2d_tight")
+rgb_annot.attach(render_product)
+bbox_annot.attach(render_product)
+# ▲▲▲ END OF INSERT ▲▲▲
 ```
 
-**Tight versus loose boxes:** a *loose* box encloses the object's full extent even where another object hides part of it; a *tight* box encloses only the pixels actually visible. The detector is trained on what is visible, so tight is the matching choice.
+**Tight versus loose boxes:** a *loose* box encloses the object's full extent, even where another object hides part of it. A *tight* box encloses only the pixels actually visible. The detector is trained on what it can see, so tight is the matching choice.
 
 </details>
 
-### Step 3 — Add the capture trigger and generate 20 trial frames
+### Step 3 — Add the capture loop and generate 20 trial frames
 
 <details>
 <summary>Expand Step 3</summary>
 
 > **Environment:** `env_drone`
 
-Twenty frames take under a minute and are enough to reveal a broken camera pose, a missing tag or an empty writer directory. The production run in 4.2 takes far longer, so anything wrong is worth finding here.
+This step adds the loop that takes the photos. For each frame it does four things, in order:
+
+1. Place the camera at a random spot between 0.5 m and 3 m high, within 3 m of the drone, turned to face it.
+2. Render 8 frames, so the image settles after the move.
+3. Read the photo and the box from the annotators.
+4. Save four files.
+
+The file names are the ones Replicator's `BasicWriter` would use, so 4.2 and 4.3 read them unchanged. Twenty frames take a few seconds and are enough to reveal a broken camera pose, a missing tag or an empty output folder. The production run in 4.2 takes far longer, so anything wrong is worth finding here.
 
 *File to edit:* `C:\projects\drone_pursuit\drone_pursuit\scripts\sdg\generate_drone_data.py`
 
 ```python
+# ── FILE: ...\scripts\sdg\generate_drone_data.py ────────────────────────────
+# ── SECTION: append at the very END of the file, below bbox_annot.attach(...)
+
+# ▼▼▼ INSERT HERE! ▼▼▼
 # ── SECTION 3 — the capture loop ────────────────────────────────────────────
-# take photos only when we ask, not on every rendered frame
-rep.orchestrator.set_capture_on_play(False)
+os.makedirs(args.out_dir, exist_ok=True)
+rng = random.Random(args.seed)
+target = Gf.Vec3d(*DRONE_POS)
 
-# camera move: runs once per photo (4.2 adds more randomisers INSIDE this block)
-with rep.trigger.on_frame():
-    with camera:
-        rep.modify.pose(
-            position=rep.distribution.uniform((-3, -3, 0.5), (3, 3, 3.0)),
-            look_at="/World/Drone",
-        )
 
-# the counted loop: exactly num_frames photos, then stop
+def place_camera():
+    """Put the camera at a random spot and turn it to face the drone."""
+    eye = Gf.Vec3d(rng.uniform(-3, 3), rng.uniform(-3, 3), rng.uniform(0.5, 3.0))
+    view = Gf.Matrix4d().SetLookAt(eye, target, Gf.Vec3d(0, 0, 1))   # z is "up"
+    cam_pose_op.Set(view.GetInverse())
+
+
+def render(n):
+    """Render n frames. Plain app updates: nothing here can wait forever."""
+    for _ in range(n):
+        simulation_app.update()
+
+
+print("warming up renderer...", flush=True)
+place_camera()
+render(WARMUP_UPDATES)
+print("capturing", flush=True)
+
 for i in range(args.num_frames):
-    rep.orchestrator.step(rt_subframes=4)        # move camera, render, save one photo
-    print(f"frame {i + 1}/{args.num_frames}", flush=True)
+    place_camera()
+    render(FRAME_UPDATES)
 
-rep.orchestrator.wait_until_complete()           # let the last files finish writing
+    rgb = rgb_annot.get_data()
+    bbox = bbox_annot.get_data()
+    if rgb is None or rgb.size == 0:
+        print(f"frame {i + 1}/{args.num_frames}  skipped (image not ready)", flush=True)
+        continue
+
+    # same file names BasicWriter uses, so 4.2 and 4.3 read them unchanged
+    Image.fromarray(rgb[:, :, :3]).save(os.path.join(args.out_dir, f"rgb_{i:04d}.png"))
+    np.save(os.path.join(args.out_dir, f"bounding_box_2d_tight_{i:04d}.npy"), bbox["data"])
+    labels = {str(k): v for k, v in bbox["info"]["idToLabels"].items()}
+    with open(os.path.join(args.out_dir, f"bounding_box_2d_tight_labels_{i:04d}.json"), "w") as f:
+        json.dump(labels, f)
+    with open(os.path.join(args.out_dir, f"bounding_box_2d_tight_prim_paths_{i:04d}.json"), "w") as f:
+        json.dump(list(bbox["info"]["primPaths"]), f)
+
+    print(f"frame {i + 1}/{args.num_frames}  boxes={len(bbox['data'])}", flush=True)
+
 simulation_app.close()
+# ▲▲▲ END OF INSERT — this is the end of the file ▲▲▲
 ```
+
+Before every run, empty the output folder, so files from an earlier run can't mix with the new ones:
 
 *Run from:* `any folder` — *the script lives in:* `C:\projects\drone_pursuit\drone_pursuit\scripts\sdg\`
 ```bat
+del /q C:\projects\drone_pursuit\drone_pursuit\data\raw\*
 python C:\projects\drone_pursuit\drone_pursuit\scripts\sdg\generate_drone_data.py --num_frames 20 --headless
 ```
 
-**Linux version**
+**What you should see**, after the usual block of startup warnings:
+
 ```
+warming up renderer...
+capturing
+frame 1/20  boxes=1
+frame 2/20  boxes=1
+...
+frame 20/20  boxes=1
+```
+
+`boxes=1` means the drone was found and labelled in that frame. The whole capture takes a few seconds. After `frame 20/20`, Isaac Sim can take up to a minute to shut down; if it doesn't, press `Ctrl+C`, because every file has already been saved.
+
+These warnings appear on every run and are harmless:
+
+- `DLSS increasing input dimensions` comes from an internal upscaling step working on a small image.
+- `rendervar copy ... is counter-performant` means copying images is slightly slower than it could be.
+
+**Linux version:**
+```bash
 conda activate env_drone
 export OMNI_KIT_ACCEPT_EULA=YES
-python ~/projects/drone_pursuit/drone_pursuit/scripts/sdg/generate_drone_data.py  --num_frames 20 --headless
+rm -f ~/projects/drone_pursuit/drone_pursuit/data/raw/*
+python ~/projects/drone_pursuit/drone_pursuit/scripts/sdg/generate_drone_data.py --num_frames 20 --headless
 ```
-Linux: On a machine with no display attached, always pass --headless; without it Kit tries to open a window and fails. And if the first run stalls at vkCreateInstance failed, install the Vulkan loader and ICD for your driver — this is the single most common Linux-only failure, and it is a driver problem, not an Isaac Lab one.
+On a Linux machine with no display attached, always pass `--headless`; without it Kit tries to open a window and fails. If the first run stalls at `vkCreateInstance failed`, install the Vulkan loader and ICD for your driver. This is the most common Linux-only failure, and it is a driver problem, not an Isaac Lab one.
 
 </details>
 
-### Step 4 — Inspect the frames and the label
+### Step 4 — Inspect the frames and check the boxes by eye
 
 <details>
 <summary>Expand Step 4</summary>
 
-> **Environment:** none needed — you are looking at files in Explorer.
+> **Environment:** `env_drone`
 
 *Folder to open:* `C:\projects\drone_pursuit\drone_pursuit\data\raw\`
 
-You should find `rgb_0000.png`…, plus `bounding_box_2d_tight_0000.npy` and a matching `..._labels.json` per frame. Open a few PNGs and confirm the drone is visible from varied angles and distances. Load one `.npy`: it is a structured array with `x_min, y_min, x_max, y_max` and a `semanticId` that maps through the labels JSON to `"drone"`.
+Each frame has four files, so 20 frames give 80 files:
 
-A labelling problem found here costs a few minutes. The same problem found in Chapter 5 looks like a detector whose mAP will not rise no matter how long it trains, and takes a training run to notice.
+| File | What it holds |
+|---|---|
+| `rgb_0000.png` | The photo, clean with nothing drawn on it |
+| `bounding_box_2d_tight_0000.npy` | The box, as four pixel numbers: `x_min, y_min, x_max, y_max`, plus a `semanticId` |
+| `bounding_box_2d_tight_labels_0000.json` | Translates the `semanticId` into a class name, e.g. `{"0": {"class": "drone"}}` |
+| `bounding_box_2d_tight_prim_paths_0000.json` | Which scene object each box belongs to (`/World/Drone`) |
+
+Count them:
+```bat
+dir /b C:\projects\drone_pursuit\drone_pursuit\data\raw | find /c /v ""
+```
+It should print `80`.
+
+Open a few PNGs and confirm the drone is visible from varied angles and distances.
+
+**Why the boxes are not on the photos.** The detector learns from these photos, and in real flight the Tello's camera never sees rectangles. Photos with boxes drawn on them would teach it to look for red rectangles instead of drones. So the photo and the box are stored separately: the photo is the question, and the box is the answer sheet that goes with it.
+
+To check that the answers match the questions, draw each box onto a **copy** of its photo.
+
+*File to CREATE:* `C:\projects\drone_pursuit\drone_pursuit\scripts\sdg\preview_boxes.py`
+
+```python
+# ── FILE: C:\projects\drone_pursuit\drone_pursuit\scripts\sdg\preview_boxes.py
+# ── Draws each frame's saved box onto a COPY of its photo, for checking by eye.
+# ──   The originals in data\raw are never changed.
+
+import glob
+import os
+
+import numpy as np
+from PIL import Image, ImageDraw
+
+RAW = r"C:\projects\drone_pursuit\drone_pursuit\data\raw"
+OUT = r"C:\projects\drone_pursuit\drone_pursuit\data\preview"
+os.makedirs(OUT, exist_ok=True)
+
+for png in sorted(glob.glob(os.path.join(RAW, "rgb_*.png"))):
+    idx = os.path.basename(png)[4:8]                                  # "0000" from rgb_0000.png
+    boxes = np.load(os.path.join(RAW, f"bounding_box_2d_tight_{idx}.npy"))
+
+    img = Image.open(png).convert("RGB")
+    draw = ImageDraw.Draw(img)
+    for b in boxes:
+        draw.rectangle([b["x_min"], b["y_min"], b["x_max"], b["y_max"]], outline=(255, 0, 0), width=2)
+
+    img.save(os.path.join(OUT, f"preview_{idx}.png"))
+    print(f"{idx}: {len(boxes)} box(es)  {[(int(b['x_min']), int(b['y_min']), int(b['x_max']), int(b['y_max'])) for b in boxes]}")
+
+print(f"done — open {OUT}")
+```
+
+**Linux version:** replace the two folder lines with:
+```python
+RAW = os.path.expanduser("~/projects/drone_pursuit/drone_pursuit/data/raw")
+OUT = os.path.expanduser("~/projects/drone_pursuit/drone_pursuit/data/preview")
+```
+
+*Run from:* `any folder`
+```bat
+python C:\projects\drone_pursuit\drone_pursuit\scripts\sdg\preview_boxes.py
+```
+
+Open `C:\projects\drone_pursuit\drone_pursuit\data\preview\`. In every `preview_*.png`, the red rectangle should hug the drone closely on all four sides. Then open one `..._labels_*.json` in Notepad and confirm it contains `"drone"`.
+
+The `data\preview` folder is for your eyes only. Nothing later reads it, and you can delete it once you're satisfied.
+
+A labelling problem found here costs a few minutes. The same problem found in Chapter 5 looks like a detector whose mAP won't rise however long it trains, and it takes a full training run to notice.
 
 </details>
 
-### Troubleshooting — `writer.attach` fails with `Unable to write from unknown dtype`
+### Troubleshooting — the script never finishes, or fills `data\raw` with thousands of files
 
-<details><summary>Expand</summary>
+<details>
+<summary>Expand</summary>
+
 > **Environment:** `env_drone`
-> **Where this appears:** the first run of `generate_drone_data.py` (4.1 Step 3)
+> **Where this appears:** Step 3, if you use Replicator's `BasicWriter` and `rep.orchestrator` (as in many NVIDIA examples) instead of this subchapter's loop
 
 #### What you see
 
-The script starts Isaac Sim, then stops at the line `writer.attach([render_product])` with this error:
+One of two symptoms:
+
+- **Runaway:** the run doesn't stop. `data\raw` fills with thousands of `.npy`, `.png` and `.json` files, and after a while the log shows `Throttling generation due to I/O bottleneck`, meaning the disk can't keep up.
+- **Silent hang:** after the startup warnings nothing more is printed, not even a first progress line, and no files appear, even after many minutes.
+
+#### Why it happens
+
+Both symptoms have the same cause. The usual Replicator recipe stops after N frames using a counter (`rep.trigger.on_frame(max_execs=N)`) and a wait (`rep.orchestrator.run_until_complete()`, or `rep.orchestrator.step()` inside a loop). The wait listens for the orchestrator's "frame done" signal. When Isaac Sim is started through Isaac Lab's `AppLauncher` on 5.1, that signal never arrives, so the wait never ends.
+
+The two symptoms differ only in what happens while the script waits:
+
+- **With a `BasicWriter` attached**, the app keeps rendering and the writer saves every rendered frame, giving the runaway.
+- **Without a writer**, nothing is saved, giving the silent hang.
+
+#### Fix
+
+1. Stop the run with `Ctrl+C`. Isaac Sim often ignores it, so check whether the process is still alive, because a leftover run keeps writing into `data\raw`:
+
+    ```bat
+    tasklist /fi "imagename eq python.exe"
+    ```
+
+    If it lists anything and you have no other Python work open, stop it:
+
+    ```bat
+    taskkill /f /im python.exe
+    ```
+
+2. Empty the output folder:
+
+    ```bat
+    del /q C:\projects\drone_pursuit\drone_pursuit\data\raw\*
+    ```
+
+3. Use this subchapter's script as given. It never calls the orchestrator. It renders with `simulation_app.update()`, a plain "render one frame" call with nothing to wait for, and reads the annotators directly, the same way Isaac Lab's own camera sensors work. When you adapt a Replicator example from NVIDIA's documentation, swap its writer and orchestrator calls for this pattern.
+
+#### Other symptoms in the capture loop
+
+| What you see | Cause | Fix |
+|---|---|---|
+| Stops at `warming up renderer...` and never prints `capturing` | Rendering itself is stuck, not Replicator | Read the last 30 lines of the log file named in the `Logging to file:` line |
+| Many frames print `skipped (image not ready)` | The annotator had no image yet | Raise `WARMUP_UPDATES` to `60` |
+| Many frames print `boxes=0` | The drone was out of view, or the `semantic_tags` line is missing | Check the tag line in Step 1; a rare `boxes=0` is fine |
+| In `preview_*.png` the rectangle sits beside the drone, as if from the previous angle | The box was read before the image settled after the camera move | Raise `FRAME_UPDATES` from `8` to `16` |
+| Terminal sits after `frame 20/20` | Isaac Sim is slow to shut down | Wait a minute or press `Ctrl+C`; the files are already saved |
+
+</details>
+
+### Troubleshooting — `Unable to write from unknown dtype, kind=i, size=0`
+
+<details>
+<summary>Expand</summary>
+
+> **Environment:** `env_drone`
+> **Where this appears:** the first run of `generate_drone_data.py` (Step 3)
+
+#### What you see
+
+The script starts Isaac Sim, then stops at one of the Replicator lines (for example `rep.create.render_product(...)`, an annotator's `.attach(...)`, or `writer.attach(...)` in writer-based scripts) with:
 
 ```
-File "...\generate_drone_data.py", line 57, in <module>
-    writer.attach([render_product])
-...
 TypeError: Unable to write from unknown dtype, kind=i, size=0
 ```
 
@@ -4060,76 +4287,76 @@ A long crash report follows, ending in `Windows fatal exception: access violatio
 
 #### Why it happens
 
-`writer.attach` hands the image size (640 × 480) to Isaac Sim's compiled code as a NumPy number. Isaac Sim 5.1 was built against **NumPy 1.x**. **NumPy 2.x** changed how it stores the description of a number type internally, so Isaac Sim's code reads that description from the wrong place, gets a size of 0, and rejects the value.
+Replicator hands values such as the image size (640 × 480) to Isaac Sim's compiled code as NumPy numbers. Isaac Sim 5.1 was built against **NumPy 1.x**. **NumPy 2.x** changed how it stores the description of a number type internally, so Isaac Sim's code reads that description from the wrong place, gets a size of 0, and rejects the value.
 
 `env_drone` ends up with NumPy 2 because of subchapter 1.4. Its command `pip install djitellopy opencv-python` installs the newest OpenCV (5.x), and that version requires NumPy 2. Pip upgrades NumPy without asking, and `constraints.txt` doesn't stop it, because at that point it only protects `setuptools`.
 
 The upgrade can also leave the environment holding two NumPy versions at once: pip's records list 1.26.x, but the files Python actually loads are 2.x. When that happens, `pip show numpy` reports the correct version while Isaac Sim still fails, which makes the problem hard to spot.
 
-#### Step 1 — Check which NumPy Python really loads
+#### 1 — Check which NumPy Python really loads
 
-```
+```bat
 python -c "import numpy; print(numpy.__version__, numpy.__file__)"
 ```
 
 This command imports NumPy, so it reports the version that actually runs. `pip show numpy` only reads pip's records, which can be wrong here, so don't use it for this check.
 
 - Prints `1.26.x` → NumPy is not the cause. Stop here and look for a different problem.
-- Prints `2.x` → continue to Step 2.
+- Prints `2.x` → continue to 2.
 
 If the path printed is **not** inside `...\envs\env_drone\Lib\site-packages`, a different folder is being searched first:
 
-- Under `AppData\Roaming\Python\...`, run `conda env config vars set PYTHONNOUSERSITE=1`, then `conda deactivate` and `conda activate env_drone`, and repeat Step 1.
+- Under `AppData\Roaming\Python\...`, run `conda env config vars set PYTHONNOUSERSITE=1`, then `conda deactivate` and `conda activate env_drone`, and repeat 1.
 - Otherwise, run `echo %PYTHONPATH%`. If it prints a folder rather than the literal text `%PYTHONPATH%`, that folder is the source.
 
-#### Step 2 — List every NumPy install record
+#### 2 — List every NumPy install record
 
-```
+```bat
 dir /b C:\Users\<you>\miniconda3\envs\env_drone\Lib\site-packages | findstr /i numpy
 ```
 
 Each `numpy-<version>.dist-info` folder is pip's record of one install. A healthy environment has exactly one. Seeing two, for example `numpy-1.26.4.dist-info` and `numpy-2.4.6.dist-info`, confirms the mixed state described above.
 
-#### Step 3 — Remove NumPy completely
+#### 3 — Remove NumPy completely
 
 Run this command repeatedly. Each run removes one install record. Stop when pip prints `Skipping numpy as it is not installed`:
 
-```
+```bat
 pip uninstall -y numpy
 ```
 
 Then check that nothing is left:
 
-```
+```bat
 dir /b C:\Users\<you>\miniconda3\envs\env_drone\Lib\site-packages | findstr /i numpy
 ```
 
 The command should print nothing. If a `numpy` or `numpy.libs` folder remains, delete it:
 
-```
+```bat
 rmdir /s /q C:\Users\<you>\miniconda3\envs\env_drone\Lib\site-packages\numpy
 rmdir /s /q C:\Users\<you>\miniconda3\envs\env_drone\Lib\site-packages\numpy.libs
 ```
 
-#### Step 4 — Reinstall NumPy 1.x with an OpenCV that accepts it
+#### 4 — Reinstall NumPy 1.x with an OpenCV that accepts it
 
 Both OpenCV packages are pinned below 4.12, because newer versions require NumPy 2 and would undo the fix:
 
-```
+```bat
 pip install "numpy==1.26.4" "opencv-python<4.12" "opencv-python-headless<4.12"
 ```
 
 Pip may then list dependency conflicts. One is expected and harmless: `isaacsim-kernel ... requires numpy==1.26.0, but you have numpy 1.26.4`. Versions 1.26.0 and 1.26.4 belong to the same release series, so their internal layout is identical; only the 1.x → 2.x change breaks Isaac Sim. Conflicts about `torchaudio`, `pin` or `scipy` existed before this fix. To confirm they belong to your tested setup, check that the same versions appear in your lock file:
 
-```
+```bat
 findstr /i "numpy scipy torchaudio pin opencv" C:\projects\drone_pursuit\requirements-lock.txt
 ```
 
-#### Step 5 — Stop it from happening again
+#### 5 — Stop it from happening again
 
 Run this as a separate command, on its own line:
 
-```
+```bat
 (echo numpy^<2)>> C:\projects\drone_pursuit\constraints.txt
 ```
 
@@ -4137,31 +4364,32 @@ This adds `numpy<2` to the constraints file, which pip reads on every install. A
 
 Check the file:
 
-```
+```bat
 type C:\projects\drone_pursuit\constraints.txt
 ```
 
 It should contain exactly two lines, `setuptools<81` and `numpy<2`.
 
-#### Step 6 — Verify and rerun
+#### 6 — Verify and rerun
 
 Run this exactly as written:
 
-```
+```bat
 python -c "import numpy, cv2; print(numpy.__version__, cv2.__version__)"
 ```
 
-Expected output: `1.26.4 4.11.0`. Then rerun the trial:
+Expected output: `1.26.4 4.11.0`. Then empty `data\raw` and rerun the trial:
 
-```
+```bat
+del /q C:\projects\drone_pursuit\drone_pursuit\data\raw\*
 python C:\projects\drone_pursuit\drone_pursuit\scripts\sdg\generate_drone_data.py --num_frames 20 --headless
 ```
 
-The run `python C:\projects\drone_pursuit\drone_pursuit\scripts\sdg\generate_drone_data.py --num_frames 20 --headless` again
-
 </details>
 
-> ✅ **Checkpoint 4.1** — 20 frames exist; the box coordinates in the `.npy` match where the drone appears in the PNG; the labels JSON contains the `drone` class.
+> ✅ **Checkpoint 4.1** — The run prints `frame 20/20` and stops on its own. `data\raw` holds 80 files (4 per frame). In every `data\preview\preview_*.png` the red rectangle hugs the drone. The labels JSON contains the `drone` class.
+
+> **Note for 4.2:** the randomisers in 4.2 must follow this subchapter's pattern: plain Python changes made inside the `for` loop, just before `render(FRAME_UPDATES)`, in the same way `place_camera()` works. Placing them in a `rep.trigger` block would bring back the orchestrator problem described above.
 
 </details>
 
