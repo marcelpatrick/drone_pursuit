@@ -4508,17 +4508,21 @@ Do not fix this by editing Isaac Lab's `.kit` files. They configure every Isaac 
 
 </details>
 
-## 4.2 Randomise Lighting, Background and Pose, Then Generate 2500 Frames (≤1.5h)
+## 4.2 Randomise Lighting, Camera, Drone Pose and Distractors (≤1.5h)
 
 <details>
 <summary>Expand 4.2</summary>
 
-> **What this subchapter does:** twenty photographs of one drone in one grey world would train a detector that only works in that grey world. This subchapter varies camera distance and elevation, both light sources, the drone's orientation, and a set of distractor shapes. 4.2B then extends it to the floor, sky, surrounding scenery, and the drone's model and colour, so the only thing all frames share is that each contains a drone. Complete 4.2B before running the production batch in *4.2 Step 3*, which 4.3 converts and 5.1 trains on.
+> **What this subchapter does:** twenty photographs of one drone in one grey world would train a detector that only works in that grey world. This subchapter varies camera distance and elevation, both light sources, the drone's orientation, and a set of distractor shapes. 4.2B then extends it to the floor, sky, surrounding scenery, and the drone's model and colour, so the only thing all frames share is that each contains a drone. The production batch of 2500 frames runs at the end of 4.2B (*4.2 Step 3*), and 4.3 converts it for 5.1's training.
 
-> **How the randomisation works in this tutorial.** NVIDIA's Replicator examples usually describe randomisation as a `with rep.trigger.on_frame():` block that Replicator's orchestrator replays on every frame. That orchestrator never finishes under Isaac Lab on Isaac Sim 5.1 (4.1, *Troubleshooting 2*), so this tutorial does not use it. Every change here is an ordinary Python function that edits the scene directly. The capture loop from 4.1 calls `randomise_scene()` once per photo, just before it moves the camera:
+> **How the randomisation works in this tutorial.** NVIDIA documents two official ways to change a scene between photos in Isaac Sim 5.1. One is Replicator's *graph randomisers*: a `with rep.trigger...:` block whose changes Replicator replays each time the trigger fires. The other is NVIDIA's *Randomization Snippets* (Isaac Sim docs → *Synthetic Data Generation → Randomization Snippets*): plain Python functions that change the scene's USD attributes directly, before each `rep.orchestrator.step()`. NVIDIA presents the second for cases the graph randomisers don't cover well.
+>
+> This tutorial uses the second way, and copies two helper functions from those snippets (`set_transform_attributes` and an OmniPBR material helper). Two reasons. First, several changes follow custom rules, such as keeping the camera between 0.5 m and 6 m from the drone, which a graph randomiser cannot express. Second, on Isaac Sim 5.1 Replicator's shortcut for dome-light brightness fails with `Type mismatch for .../DomeLight.intensity: expected 'int'`, while setting the light's USD attribute `inputs:intensity` directly works.
+>
+> The capture loop from 4.1 calls `randomise_scene()` once per photo, just before it moves the camera:
 >
 > ```
-> for each photo:   randomise_scene()  →  place_camera()  →  render  →  read  →  save
+> for each photo:   randomise_scene()  →  place_camera()  →  rep.orchestrator.step()  (render + BasicWriter saves)
 >                   └ lights, distractors, drone (4.2) + sky, floor, scenery, drone model (4.2B)
 > ```
 
@@ -4536,7 +4540,7 @@ Each row below is one dial: something that changes between frames, how far it ch
 
 | Randomise | Range | Because at demo time… |
 |---|---|---|
-| Camera distance | 0.5–6 m from drone | the attacker's apparent size changes continuously as the chase closes |
+| Camera distance | 0.5–6 m from drone, every distance about equally often | the attacker's apparent size changes continuously as the chase closes |
 | Camera elevation | below AND above the drone | a defender below the attacker sees it against **sky**; above it, against **ground**. The two backgrounds differ completely in brightness and texture. |
 | Dome light intensity/colour | 500–6000, warm↔cool | arena and room lighting are not fixed across sessions |
 | **Sun direction and intensity** | full azimuth, 10–80° elevation, wide intensity range | outdoors, one strong directional source produces harsh shadows, silhouettes and blown highlights that a dome light never creates |
@@ -4579,21 +4583,24 @@ A **dome light** illuminates evenly from every direction at once — the look of
 
 </details>
 
+
 ### Step 2 — Add the randomisers and call them once per photo
 
 <details>
 <summary>Expand Step 2</summary>
 
-> **Environment:** none needed — you are editing a file.
+> **Environment:** none needed for Parts A–E — you are editing files. Part F runs the script in `env_drone`.
 
-This step makes four edits to the 4.1 script:
+This step makes five edits to the 4.1 files, then runs a 20-frame test:
 
 | Part | What it adds | Where |
 |---|---|---|
-| A | three more imports | top of the file |
-| B | **Section 2B**: small tools for moving, hiding and recolouring things; 8 distractor shapes; one function per dial | between Section 2 and Section 3 |
-| C | a wider camera range: 0.5–6 m from the drone, below and above it | `place_camera()` in Section 3 |
-| D | one call to `randomise_scene()` per photo | the `for` loop in Section 3 |
+| A | three more imports | top of `generate_drone_data.py` |
+| B | **Section 2B**: two helper functions from NVIDIA's Randomization Snippets, 8 distractor shapes, and one function per dial | between Section 2 and Section 3 |
+| C | a wider camera range, 0.5–6 m from the drone, with every distance about equally likely | `place_camera()` in Section 2 |
+| D | one call to `randomise_scene()` per photo, and a console line that tells the drone apart from the distractors | Section 3, replaced whole |
+| E | a preview that draws drones and distractors in different colours, and zooms on the drone | `preview_boxes.py`, replaced whole |
+| F | a 20-frame test run and its checks | — |
 
 **Part A — imports.**
 
@@ -4604,19 +4611,30 @@ This step makes four edits to the 4.1 script:
 # ── SECTION: the imports below "everything below runs inside the sim app" ──
 
 # BEFORE:
+# import os
+# import random
+#
+# import carb.settings
 # import omni.replicator.core as rep
 # import omni.usd
-# from pxr import Gf, UsdGeom
+# ...
+# from pxr import Gf, Sdf, Usd, UsdGeom
 # AFTER:
+import math                                  # ← NEW: used to aim the camera in a random direction
+import os
+import random
+
+import carb.settings
 import omni.kit.commands                     # ← NEW: used to create materials
 import omni.replicator.core as rep
 import omni.usd
-from pxr import Gf, Sdf, Usd, UsdGeom, UsdShade   # ← EDITED: Sdf, Usd, UsdShade added
+# ... (the three isaacsim imports stay as they are)
+from pxr import Gf, Sdf, Usd, UsdGeom, UsdShade   # ← EDITED: UsdShade added
 ```
 
 **Part B — Section 2B.** Paste it directly below `bbox_annot.attach(render_product)`, the last line of Section 2, and above the `# ── SECTION 3` line.
 
-The tools in this section do four jobs. `set_pose` places an object. `show` hides or shows it. `set_input` changes a light's brightness or colour. `make_material` gives an object its own paint, which `set_color` (and, in 4.2B, `set_texture`) then changes per photo.
+The section has three layers. Two **helpers** come from NVIDIA's Randomization Snippets: `set_transform_attributes` places, turns or resizes any object, and `create_omnipbr_material` creates a paint whose colour can be changed. Then the **scene additions**: a colour setting on each light and 8 distractor shapes. Last, one **randomiser function per dial** from the Step 1 table, and `randomise_scene()`, which calls them all.
 
 ```python
 # ── FILE: ...\scripts\sdg\generate_drone_data.py ────────────────────────────
@@ -4624,101 +4642,99 @@ The tools in this section do four jobs. `set_pose` places an object. `show` hide
 # ──          and ABOVE "# ── SECTION 3"                                     ─
 
 # ▼▼▼ INSERT HERE! ▼▼▼
-# ── SECTION 2B — tools for changing the scene between photos (4.2 Step 2) ───
+# ── SECTION 2B — randomisers: change the scene before every photo (4.2) ──────
+# Written in the style of NVIDIA's Isaac Sim 5.1 "Randomization Snippets":
+# plain USD attribute edits, made just before each rep.orchestrator.step().
 rand = random.Random(args.seed + 1)   # the dice for every scene change
-PARK = (0.0, 0.0, -100.0)             # underground: where unused objects wait
-_pose_ops = {}
 
 
-def set_pose(path, position, rotation_deg=(0.0, 0.0, 0.0), scale=1.0):
-    """Place a prim: scale it, tilt it about x then y, turn it about z (degrees), then move it."""
-    if path not in _pose_ops:
-        xf = UsdGeom.Xformable(stage.GetPrimAtPath(path))
-        xf.ClearXformOpOrder()                      # drop the spawn-time pose; one transform from now on
-        _pose_ops[path] = xf.AddTransformOp()
-    rx, ry, rz = rotation_deg
-    rot = (Gf.Rotation(Gf.Vec3d(1, 0, 0), rx) * Gf.Rotation(Gf.Vec3d(0, 1, 0), ry)
-           * Gf.Rotation(Gf.Vec3d(0, 0, 1), rz))
-    m = Gf.Matrix4d().SetScale(Gf.Vec3d(scale, scale, scale))
-    m = m * Gf.Matrix4d().SetRotate(rot) * Gf.Matrix4d().SetTranslate(Gf.Vec3d(*position))
-    _pose_ops[path].Set(m)
+def set_transform_attributes(prim, location=None, rotation=None, scale=None):
+    """NVIDIA's helper (Randomization Snippets): add a transform op if missing, then set it.
+    location in metres, rotation in degrees about x, then y, then z."""
+    if location is not None:
+        if not prim.HasAttribute("xformOp:translate"):
+            UsdGeom.Xformable(prim).AddTranslateOp()
+        prim.GetAttribute("xformOp:translate").Set(location)
+    if rotation is not None:
+        if not prim.HasAttribute("xformOp:rotateXYZ"):
+            UsdGeom.Xformable(prim).AddRotateXYZOp()
+        prim.GetAttribute("xformOp:rotateXYZ").Set(rotation)
+    if scale is not None:
+        if not prim.HasAttribute("xformOp:scale"):
+            UsdGeom.Xformable(prim).AddScaleOp()
+        prim.GetAttribute("xformOp:scale").Set(scale)
 
 
-def show(path, visible):
-    """Show or hide a prim and everything under it."""
-    img = UsdGeom.Imageable(stage.GetPrimAtPath(path))
-    img.MakeVisible() if visible else img.MakeInvisible()
-
-
-def set_input(path, name, sdf_type, value):
-    """Set one attribute on a prim, e.g. a light's inputs:intensity."""
-    stage.GetPrimAtPath(path).CreateAttribute(name, sdf_type).Set(value)
-
-
-def make_material(mat_path, bind_to):
-    """Create an OmniPBR material, bind it to `bind_to`, and return its shader prim."""
-    omni.kit.commands.execute("CreateMdlMaterialPrimCommand",
-                              mtl_url="OmniPBR.mdl", mtl_name="OmniPBR", mtl_path=mat_path)
-    UsdShade.MaterialBindingAPI.Apply(stage.GetPrimAtPath(bind_to)).Bind(
-        UsdShade.Material(stage.GetPrimAtPath(mat_path)), UsdShade.Tokens.strongerThanDescendants)
-    shader = stage.GetPrimAtPath(f"{mat_path}/Shader")
-    shader.CreateAttribute("inputs:project_uvw", Sdf.ValueTypeNames.Bool).Set(True)   # paint by position, no UV map needed
-    return shader
-
-
-def set_color(shader, rgb):
-    shader.CreateAttribute("inputs:diffuse_color_constant", Sdf.ValueTypeNames.Color3f).Set(Gf.Vec3f(*rgb))
-
-
-def set_texture(shader, file, rotate_deg=0.0):
-    shader.CreateAttribute("inputs:diffuse_texture", Sdf.ValueTypeNames.Asset).Set(Sdf.AssetPath(file))
-    shader.CreateAttribute("inputs:texture_rotate", Sdf.ValueTypeNames.Float).Set(rotate_deg)
+def create_omnipbr_material(mtl_path):
+    """NVIDIA's helper (Randomization Snippets), shortened to the one input used here:
+    an OmniPBR material whose base colour can be changed."""
+    omni.kit.commands.execute("CreateMdlMaterialPrim", mtl_url="OmniPBR.mdl", mtl_name="OmniPBR", mtl_path=mtl_path)
+    material_prim = stage.GetPrimAtPath(mtl_path)
+    shader = UsdShade.Shader(omni.usd.get_shader_from_material(material_prim, get_prim=True))
+    shader.CreateInput("diffuse_color_constant", Sdf.ValueTypeNames.Color3f)
+    return UsdShade.Material(material_prim), shader
 
 
 def random_color():
-    return (rand.random(), rand.random(), rand.random())
+    return Gf.Vec3f(rand.random(), rand.random(), rand.random())
 
 
-# distractors: 4 cubes + 4 spheres, 1 m across before scaling, tagged so 4.3 can filter their boxes
-DISTRACTORS = []                   # (prim path, shader)
+# a colour setting on both lights (their intensity settings already exist from Section 1)
+dome.CreateAttribute("inputs:color", Sdf.ValueTypeNames.Color3f).Set(Gf.Vec3f(1.0, 1.0, 1.0))
+sun.CreateAttribute("inputs:color", Sdf.ValueTypeNames.Color3f).Set(Gf.Vec3f(1.0, 1.0, 1.0))
+
+# distractors: 4 cubes + 4 spheres, 1 m across before scaling, each with its own paint,
+# tagged "distractor" so 4.3 can drop their boxes
+DISTRACTORS = []                       # (prim, shader)
 for i in range(8):
-    path = f"/World/Distractors/D_{i:02d}"
-    tag = [("class", "distractor")]
-    shape = sim_utils.CuboidCfg(size=(1.0, 1.0, 1.0), semantic_tags=tag) if i % 2 == 0 \
-        else sim_utils.SphereCfg(radius=0.5, semantic_tags=tag)
-    shape.func(path, shape, translation=PARK)
-    DISTRACTORS.append((path, make_material(f"/World/Looks/Distractor_{i:02d}", path)))
+    if i % 2 == 0:
+        shape = UsdGeom.Cube.Define(stage, f"/World/Distractors/Cube_{i:02d}")
+        shape.CreateSizeAttr(1.0)                                   # USD's default cube is 2 m
+    else:
+        shape = UsdGeom.Sphere.Define(stage, f"/World/Distractors/Sphere_{i:02d}")
+        shape.CreateRadiusAttr(0.5)                                 # USD's default sphere is 2 m across
+    shape.CreateExtentAttr([(-0.5, -0.5, -0.5), (0.5, 0.5, 0.5)])   # the size the renderer assumes
+    prim = shape.GetPrim()
+    add_labels(prim, labels=["distractor"], instance_name="class")
+    material, shader = create_omnipbr_material(f"/World/Looks/Distractor_{i:02d}")
+    UsdShade.MaterialBindingAPI.Apply(prim).Bind(material, UsdShade.Tokens.strongerThanDescendants)
+    UsdGeom.Imageable(prim).MakeInvisible()                         # hidden until a randomiser shows it
+    DISTRACTORS.append((prim, shader))
 
 
 def randomise_lights():
     # ambient fill: brightness and a warm-to-cool tint
-    set_input("/World/Light", "inputs:intensity", Sdf.ValueTypeNames.Float, rand.uniform(500, 6000))
-    set_input("/World/Light", "inputs:color", Sdf.ValueTypeNames.Color3f,
-              Gf.Vec3f(rand.uniform(0.7, 1.0), rand.uniform(0.7, 1.0), rand.uniform(0.6, 1.0)))
-    # the sun: any compass direction, 10–80° elevation, golden to neutral, dim to blinding
-    set_pose("/World/Sun", (0.0, 0.0, 0.0), (rand.uniform(-80, -10), 0.0, rand.uniform(0, 360)))
-    set_input("/World/Sun", "inputs:intensity", Sdf.ValueTypeNames.Float, rand.uniform(1000, 12000))
-    set_input("/World/Sun", "inputs:color", Sdf.ValueTypeNames.Color3f,
-              Gf.Vec3f(1.0, rand.uniform(0.85, 1.0), rand.uniform(0.7, 1.0)))
+    dome.GetAttribute("inputs:intensity").Set(rand.uniform(500, 6000))
+    dome.GetAttribute("inputs:color").Set(
+        Gf.Vec3f(rand.uniform(0.7, 1.0), rand.uniform(0.7, 1.0), rand.uniform(0.6, 1.0)))
+    # the sun: 10–80° elevation, any compass direction, golden to neutral, dim to blinding
+    set_transform_attributes(sun, rotation=Gf.Vec3f(rand.uniform(-80, -10), 0.0, rand.uniform(0, 360)))
+    sun.GetAttribute("inputs:intensity").Set(rand.uniform(1000, 12000))
+    sun.GetAttribute("inputs:color").Set(Gf.Vec3f(1.0, rand.uniform(0.85, 1.0), rand.uniform(0.7, 1.0)))
 
 
 def randomise_distractors():
+    # show 3–8 of the 8 shapes; each shown one gets a new place, angle, size and colour
     shown = set(rand.sample(range(len(DISTRACTORS)), rand.randint(3, len(DISTRACTORS))))
-    for i, (path, shader) in enumerate(DISTRACTORS):
+    for i, (prim, shader) in enumerate(DISTRACTORS):
         if i not in shown:
-            set_pose(path, PARK)
-            show(path, False)
+            UsdGeom.Imageable(prim).MakeInvisible()
             continue
-        set_pose(path, (rand.uniform(-5, 5), rand.uniform(-5, 5), rand.uniform(0.0, 3.5)),
-                 (rand.uniform(0, 360), rand.uniform(0, 360), rand.uniform(0, 360)),
-                 rand.uniform(0.05, 0.4))
-        set_color(shader, random_color())
-        show(path, True)
+        s = rand.uniform(0.05, 0.4)                                 # 5–40 cm across
+        set_transform_attributes(
+            prim,
+            location=Gf.Vec3d(rand.uniform(-5, 5), rand.uniform(-5, 5), rand.uniform(0.0, 3.5)),
+            rotation=Gf.Vec3f(rand.uniform(0, 360), rand.uniform(0, 360), rand.uniform(0, 360)),
+            scale=Gf.Vec3f(s, s, s),
+        )
+        shader.GetInput("diffuse_color_constant").Set(random_color())
+        UsdGeom.Imageable(prim).MakeVisible()
 
 
 def randomise_drone():
     # a banking drone looks different from a level one: ±20° tilt, any heading (4.2B replaces this)
-    set_pose("/World/Drone", DRONE_POS, (rand.uniform(-20, 20), rand.uniform(-20, 20), rand.uniform(0, 360)))
+    set_transform_attributes(
+        drone, rotation=Gf.Vec3f(rand.uniform(-20, 20), rand.uniform(-20, 20), rand.uniform(0, 360)))
 
 
 def randomise_scene():
@@ -4729,52 +4745,216 @@ def randomise_scene():
 # ▲▲▲ END OF INSERT ▲▲▲
 ```
 
-**Part C — widen the camera range.** Replace the whole `place_camera()` function in Section 3:
+**Part C — widen the camera range, with every distance about equally likely.** Replace the whole `place_camera()` function in Section 2.
+
+*Why the camera picks its distance first.* The simplest way to place a camera within 6 m is to pick random spots in a 12 m × 12 m box and keep those 0.5–6 m from the drone. But there is far more space far from the drone than near it: the shell between 4 m and 6 m holds about twice the volume of everything inside 4 m. Picked that way, most photos are taken from far away, where a 10 cm drone covers only a few pixels. A drone narrower than about 8 pixels teaches the detector little, and mostly teaches it that any small dark blob is a drone, which causes false detections in flight. Drawing the distance first, then a direction, spreads photos evenly across distances instead:
+
+| Share of photos | Spots in a box (simple way) | Distance first (this function) |
+|---|---|---|
+| 0.5–2 m from the drone | 7% | 41% |
+| 2–4 m | 35% | 37% |
+| 4–6 m | 58% | 22% |
+| Crazyflie (10 cm) narrower than 8 px | 43% | 14% |
+| Same, with 4.2B's 8–35 cm drone models | 7% | 2% |
+
+Near distances come out slightly more often than far ones, because far spots more often land outside the allowed height (below 0.2 m or above 4 m) and are drawn again. Far views stay well represented, and the detector still meets every distance from 0.5 m to 6 m.
 
 ```python
 # ── FILE: ...\scripts\sdg\generate_drone_data.py ────────────────────────────
-# ── SECTION: REPLACE place_camera() in Section 3 ────────────────────────────
+# ── SECTION: REPLACE place_camera() in Section 2 ────────────────────────────
 
+# BEFORE (4.1):
+# def place_camera():
+#     eye = Gf.Vec3d(rng.uniform(-3, 3), rng.uniform(-3, 3), rng.uniform(0.5, 3.0))
+#     ...
+# AFTER:
 def place_camera():
-    """Put the camera 0.5–6 m from the drone, below or above it, turned to face it."""
+    """Put the camera 0.5–6 m from the drone, below or above it, turned to face it.
+    The distance is drawn first, so near and far views appear about equally often."""
     while True:
-        # BEFORE: eye = Gf.Vec3d(rng.uniform(-3, 3), rng.uniform(-3, 3), rng.uniform(0.5, 3.0))
-        eye = Gf.Vec3d(rng.uniform(-6, 6), rng.uniform(-6, 6), rng.uniform(0.2, 4.0))
-        if 0.5 <= (eye - target).GetLength() <= 6.0:     # keep only spots 0.5–6 m away
+        dist = rng.uniform(0.5, 6.0)                        # 1. how far: any distance, equally likely
+        up = rng.uniform(-1.0, 1.0)                         # 2. which direction: up = vertical share,
+        turn = rng.uniform(0.0, 2.0 * math.pi)              #    turn = compass angle
+        flat = math.sqrt(1.0 - up * up)
+        eye = target + Gf.Vec3d(dist * flat * math.cos(turn), dist * flat * math.sin(turn), dist * up)
+        if 0.2 <= eye[2] <= 4.0:                            # 3. keep the camera 0.2–4 m above the floor
             break
     view = Gf.Matrix4d().SetLookAt(eye, target, Gf.Vec3d(0, 0, 1))   # z is "up"
     cam_pose_op.Set(view.GetInverse())
 ```
 
-**Part D — call the randomisers once per photo.** Add one line at the top of the `for` loop:
+How the direction is drawn: `up` is how far the direction points up (+1) or down (−1), and `turn` is its compass angle. Drawing `up` evenly between −1 and +1 makes every direction around the drone equally likely, so the camera ends up below the drone as often as above it, before the height limits apply.
+
+**Part D — call the randomisers once per photo.** Replace everything from `# ── SECTION 3` to the end of the file with:
 
 ```python
 # ── FILE: ...\scripts\sdg\generate_drone_data.py ────────────────────────────
-# ── SECTION: the for loop in Section 3 ──────────────────────────────────────
+# ── SECTION: REPLACE Section 3, from "# ── SECTION 3" to the end of the file
 
-for i in range(args.num_frames):        # ← EXISTING
-    randomise_scene()                   # ← NEW: lights, distractors, drone pose
-    place_camera()                      # ← EXISTING
-    render(FRAME_UPDATES)               # ← EXISTING
-    # ... the rest of the loop is unchanged
+# ── SECTION 3 — the capture loop ────────────────────────────────────────────
+def drone_and_distractor_boxes():
+    """Split the boxes in the photo just captured into drone boxes and the rest."""
+    out = bbox_annot.get_data()
+    drone_ids = {int(k) for k, v in out["info"]["idToLabels"].items() if "drone" in str(v)}
+    drone_boxes = [b for b in out["data"] if int(b["semanticId"]) in drone_ids]
+    return drone_boxes, len(out["data"]) - len(drone_boxes)
+
+
+print("warming up renderer...", flush=True)
+for _ in range(WARMUP_STEPS):          # writer not attached yet: these photos are not saved
+    randomise_scene()                  # ← NEW: also lets the distractor paints finish loading
+    place_camera()
+    rep.orchestrator.step(rt_subframes=RT_SUBFRAMES)
+
+# check: the drone loaded at its real size (about 0.1 m across)
+size = (UsdGeom.BBoxCache(Usd.TimeCode.Default(), [UsdGeom.Tokens.default_])
+        .ComputeWorldBound(drone).ComputeAlignedRange().GetSize())
+print(f"drone size: {size[0]:.2f} x {size[1]:.2f} x {size[2]:.2f} m", flush=True)
+
+writer.attach(render_product)
+print("capturing", flush=True)
+
+for i in range(args.num_frames):
+    randomise_scene()                                       # 1. NEW: lights, distractors, drone pose
+    place_camera()                                          # 2. new camera spot
+    rep.orchestrator.step(rt_subframes=RT_SUBFRAMES)        # 3. render; the writer saves 4 files
+    drone_boxes, n_other = drone_and_distractor_boxes()     # 4. print a check
+    sizes = " ".join(f"{int(b['x_max'] - b['x_min'])}x{int(b['y_max'] - b['y_min'])}px" for b in drone_boxes)
+    print(f"frame {i + 1}/{args.num_frames}  drone={len(drone_boxes)} {sizes}  distractors={n_other}", flush=True)
+
+# release resources, then wait until every file is on disk
+writer.detach()
+bbox_annot.detach()
+render_product.destroy()
+rep.orchestrator.wait_until_complete()
+print("done", flush=True)
+simulation_app.close()
+```
+
+**Part E — tell drones and distractors apart in the preview.** 4.1's `preview_boxes.py` draws every box in red and zooms on the first box in the file. With distractors in the photo, the first box is often a distractor. Replace the whole file with this version, which reads each frame's labels file, draws drone boxes in **red** and distractor boxes in **yellow**, and zooms on the drone:
+
+*File to edit (replace all of it):* `C:\projects\drone_pursuit\drone_pursuit\scripts\sdg\preview_boxes.py`
+
+```python
+# ── FILE: C:\projects\drone_pursuit\drone_pursuit\scripts\sdg\preview_boxes.py
+# ── Draws each frame's saved boxes onto a COPY of its photo (drone red,
+# ──   distractors yellow), plus an enlarged copy of the area around the drone.
+# ──   The originals in data\raw are never changed.
+
+import glob
+import json
+import os
+
+import numpy as np
+from PIL import Image, ImageDraw
+
+RAW = r"C:\projects\drone_pursuit\drone_pursuit\data\raw"
+OUT = r"C:\projects\drone_pursuit\drone_pursuit\data\preview"
+os.makedirs(OUT, exist_ok=True)
+
+for png in sorted(glob.glob(os.path.join(RAW, "rgb_*.png"))):
+    idx = os.path.basename(png)[4:8]                                  # "0000" from rgb_0000.png
+    boxes = np.load(os.path.join(RAW, f"bounding_box_2d_tight_{idx}.npy"))
+    with open(os.path.join(RAW, f"bounding_box_2d_tight_labels_{idx}.json")) as f:
+        labels = json.load(f)
+    drone_ids = {int(k) for k, v in labels.items() if "drone" in str(v)}
+    drone_boxes = [b for b in boxes if int(b["semanticId"]) in drone_ids]
+
+    img = Image.open(png).convert("RGB")
+    draw = ImageDraw.Draw(img)
+    for b in boxes:
+        colour = (255, 0, 0) if int(b["semanticId"]) in drone_ids else (255, 220, 0)
+        draw.rectangle([b["x_min"], b["y_min"], b["x_max"], b["y_max"]], outline=colour, width=2)
+    img.save(os.path.join(OUT, f"preview_{idx}.png"))
+
+    # enlarged copy of the drone, so a 10-pixel drone can be checked by eye
+    if drone_boxes:
+        b = drone_boxes[0]
+        Z = 8                                                     # enlargement factor
+        cx, cy = (b["x_min"] + b["x_max"]) / 2, (b["y_min"] + b["y_max"]) / 2
+        half = max(b["x_max"] - b["x_min"], b["y_max"] - b["y_min"], 16)   # window at least 32x32 px
+        x0, y0 = int(cx - half), int(cy - half)
+        clean = Image.open(png).convert("RGB")                    # the photo WITHOUT boxes drawn on it
+        crop = clean.crop((x0, y0, x0 + 2 * int(half), y0 + 2 * int(half)))
+        crop = crop.resize((crop.width * Z, crop.height * Z), Image.NEAREST)
+        zd = ImageDraw.Draw(crop)
+        zd.rectangle([(b["x_min"] - x0) * Z - 3, (b["y_min"] - y0) * Z - 3,       # 3 px outside the drone,
+                      (b["x_max"] - x0 + 1) * Z + 2, (b["y_max"] - y0 + 1) * Z + 2],  # so it never covers it
+                     outline=(255, 0, 0), width=1)
+        crop.save(os.path.join(OUT, f"zoom_{idx}.png"))
+
+    print(f"{idx}: drone={len(drone_boxes)}  distractors={len(boxes) - len(drone_boxes)}")
+
+print(f"done — open {OUT}")
+```
+
+**Linux version:** replace the two folder lines with:
+```python
+RAW = os.path.expanduser("~/projects/drone_pursuit/drone_pursuit/data/raw")
+OUT = os.path.expanduser("~/projects/drone_pursuit/drone_pursuit/data/preview")
 ```
 
 **What each piece does, in plain terms:**
 
-- **`set_pose` replaces the object's position every call.** The first call removes the pose the object was spawned with and gives it a single slot for "where and how it sits". Every later call overwrites that slot, so nothing accumulates between photos.
-- **The camera stays between 0.5 m and 6 m from the drone.** It picks random spots inside a 12 m × 12 m × 3.8 m box and keeps only those in that distance range. The 6 m limit matters in 4.2B, where all scenery is placed beyond it.
-- **The distractors carry their own class, `"distractor"`.** The box annotator therefore reports them too, so the console now prints `boxes=` values above 1. 4.3's converter keeps only `"drone"` boxes. The distractors exist only as visual noise in the image, never as a class the detector is taught.
+- **`set_transform_attributes` adds a setting the first time, then only changes it.** The first call on an object adds a rotation (or position, or size) setting to it; every later call overwrites that same setting. Nothing accumulates between photos. The drone keeps the position it got in 4.1 and gains only a rotation setting.
+- **The camera's distance is drawn first** (Part C), so near and far views appear in similar numbers. The 6 m limit matters in 4.2B, where all scenery is placed beyond it.
+- **The distractors carry their own class, `"distractor"`.** The box annotator therefore reports them too, which is why the console prints a separate `distractors=` count. 4.3's converter keeps only `"drone"` boxes. The distractors exist only as visual noise in the image, never as a class the detector is taught.
+- **Hidden distractors produce no boxes.** A shape hidden with `MakeInvisible()` is not rendered, so it has no visible pixels and no box.
 - **The sun's angles.** The rotation range sweeps it through every compass direction, from low sun (long shadows, frequent backlighting) to nearly overhead. The colour range spans golden low sun through neutral midday. **The intensity ceiling of 12000 is deliberately high**, so that a meaningful share of frames are genuinely difficult: overexposed, with the drone reduced to a dark shape. Those are the frames that teach the detector to survive the conditions Chapter 7 flies in.
 - **Each distractor has its own material.** A material is the paint on a surface. Giving each shape its own lets each one take a different random colour on every photo.
+- **Two dice, two seeds.** `rng` (seed `--seed`) moves the camera; `rand` (seed `--seed` + 1) changes the scene. Running the script twice with the same `--seed` produces the same photos.
+
+**Part F — run a 20-frame test.**
+
+> **Environment:** `env_drone`
+
+*Run from:* `any folder`
+```bat
+del /q C:\projects\drone_pursuit\drone_pursuit\data\raw\*
+del /q C:\projects\drone_pursuit\drone_pursuit\data\preview\*
+python C:\projects\drone_pursuit\drone_pursuit\scripts\sdg\generate_drone_data.py --num_frames 20 --headless
+python C:\projects\drone_pursuit\drone_pursuit\scripts\sdg\preview_boxes.py
+```
+
+**What you should see** from the generator, after the start-up lines:
+
+```
+warming up renderer...
+drone size: 0.14 x 0.14 x 0.05 m
+capturing
+frame 1/20  drone=1 24x11px  distractors=4
+frame 2/20  drone=1 61x27px  distractors=0
+...
+frame 20/20  drone=1 9x5px  distractors=6
+done
+```
+
+Your exact numbers will differ. The checks:
+
+1. **No red `[Error]` lines** between `capturing` and `done`, and the run exits on its own.
+2. **`drone=1` on almost every line.** A distractor occasionally hides the drone completely, which gives `drone=0`; one or two in 20 is fine.
+3. **The drone sizes vary widely**, from under 10 pixels to well over 50, with no single size dominating.
+4. **`distractors=` varies** between 0 and 8. It is often lower than the number of shapes shown, because some are outside the camera's view.
+5. **80 files** in `data\raw`:
+    ```bat
+    dir /b C:\projects\drone_pursuit\drone_pursuit\data\raw | find /c /v ""
+    ```
+6. **In `data\preview`:** every `zoom_*.png` shows the drone inside a thin red line. In the `preview_*.png` images, distractor boxes are yellow, the shapes have different colours from photo to photo, and the overall brightness and shadow direction change between photos.
 
 </details>
+
+> **Next:** complete 4.2B, which adds the floor, sky, scenery and drone-model randomisers to the same script. The production batch (*4.2 Step 3*) and Checkpoint 4.2 are at the end of 4.2B.
+
+</details>
+
+---
 
 ## 4.2B Randomise the Background and Drone (≤1.5h)
 
 <details>
 <summary>Expand 4.2B</summary>
 
-> **What this subchapter does:** 4.2 varies the light, the camera and the drone, but every frame is still taken in the same place: a grey grid floor under an empty, evenly coloured sky. This subchapter replaces that place with one that changes every frame — a textured floor, a real sky photograph, and trees, buildings and walls standing behind the drone — and it swaps the drone itself between several models and colours. It edits the same `generate_drone_data.py` from 4.1 and 4.2, so **do it after 4.2 Step 2 and before 4.2 Step 3's production run.** If you already ran the production batch, Step 7 below tells you how to redo it.
+> **What this subchapter does:** 4.2 varies the light, the camera and the drone, but every frame is still taken in the same place: a grey grid floor under an empty, evenly coloured sky. This subchapter replaces that place with one that changes every frame — a textured floor, a real sky photograph, and trees, buildings and walls standing behind the drone — and it swaps the drone itself between several models and colours. It edits the same `generate_drone_data.py` from 4.1 and 4.2, so **do it after 4.2 Step 2 and before 4.2 Step 3's production run**, which closes this subchapter.
 
 **Why the background matters to the detector.** YOLO (the detector network trained in 5.1) learns whatever visual rule best separates "inside a drone box" from "everything else" in the training images. If "everything else" is always a grey grid or a plain sky, the cheapest rule it can learn is "a small dark shape on a plain surface is a drone". At demo time in Chapter 7 that rule fires on a window corner, a ceiling lamp or a tree branch (false detections), and fails when the attacker passes in front of a bookshelf or a hedge (missed detections). Chapter 5.2 is where you would first notice this, as a detector that scores well on its own validation images and poorly on arena frames.
 
@@ -4888,20 +5068,27 @@ If you skip all of this, the script still runs on the NVIDIA-hosted files alone.
 
 </details>
 
-### Step 3 — Replace the grey ground with a paintable floor and give the sky a photograph
+
+### Step 3 — Replace the grid floor with a paintable one, give the sky a photograph, and remove the single Crazyflie
 
 <details>
 <summary>Expand Step 3</summary>
 
-> **Environment:** none needed — you are editing a file.
+> **Environment:** none needed — you are editing a file. **Don't run the script again until Step 7**: Steps 3–6 change parts that depend on each other, and the script only works once all four are done.
 
-This step edits the top of the script: two imports and Section 1.
+This step replaces two parts of the script: the import block and Section 1.
 
-**The floor.** The current ground (`GroundPlaneCfg`) loads a prebuilt grid file whose internal layout this script does not know, so there is nothing reliable to paint. `MeshCuboidCfg` instead builds a flat 200 m × 200 m slab at a known path, `/World/Floor`. Step 4 gives it a material, and Step 6 repaints it every frame.
+**The floor.** 4.1's grid floor is a prebuilt file whose internal layout this script does not know, so there is nothing reliable to paint. `make_box()` instead builds a flat 200 m × 200 m slab at a known path, `/World/Floor`. Step 4 gives it a material, and Step 6 repaints it every frame.
 
-**The sky.** The dome light gets a starting sky photograph and `visible_in_primary_ray=True`. That setting makes the camera see the photograph itself rather than only receive its light.
+**Why the boxes are built as meshes in metres.** A picture is painted onto a surface by the surface's own coordinates (`project_uvw`, explained in Step 1). `make_box()` writes the box's corners in metres, so one repeat of a floor or brick picture covers about one metre whatever the box's size. A 1 m box stretched 200 times by a scale setting would instead stretch one copy of the picture across the whole floor. The same function builds the buildings and walls in Step 4.
+
+**The sky.** The dome light gets a starting sky photograph, a `latlong` format (the usual layout of a 360° photo) and `visibleInPrimaryRay = True`. That last setting makes the camera see the photograph itself rather than only receive its light.
+
+**The single Crazyflie is removed.** Step 5 loads the Crazyflie together with several other drone models. Keeping 4.1's `/World/Drone` would put a second, always-visible drone in every frame. `DRONE_POS` stays: the camera still aims at it, and the drone chosen for each photo is placed there.
 
 *File to edit:* `C:\projects\drone_pursuit\drone_pursuit\scripts\sdg\generate_drone_data.py`
+
+**Part A — imports.**
 
 ```python
 # ── FILE: ...\scripts\sdg\generate_drone_data.py ────────────────────────────
@@ -4909,46 +5096,69 @@ This step edits the top of the script: two imports and Section 1.
 # ──          "# ---- everything below runs inside the sim app ----"        ─
 
 import glob                                  # ← NEW: finds your own files in data\bg\ and data\drones\
-import json
+import math
 import os
 import random
 from collections import Counter              # ← NEW: counts how often each drone look appears
 
-import numpy as np
-from PIL import Image
-
+import carb.settings
+import omni.client                           # ← NEW: asks NVIDIA's server whether a file exists
 import omni.kit.commands
 import omni.replicator.core as rep
 import omni.usd
-from pxr import Gf, Sdf, Usd, UsdGeom, UsdShade
-
-import isaaclab.sim as sim_utils
-from isaaclab.sim import SimulationContext
-from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR, NVIDIA_NUCLEUS_DIR, check_file_path   # ← EDITED
+from isaacsim.core.utils.semantics import add_labels
+from isaacsim.core.utils.stage import add_reference_to_stage
+from isaacsim.storage.native import get_assets_root_path
+from pxr import Gf, Sdf, Usd, UsdGeom, UsdLux, UsdShade   # ← EDITED: UsdLux added
 ```
+
+**Part B — Section 1.** Replace everything from `# ── SECTION 1 — the scene` down to and including the `add_labels(drone, ...)` line with:
 
 ```python
 # ── FILE: ...\scripts\sdg\generate_drone_data.py ────────────────────────────
-# ── SECTION: Section 1 — the ground + lights block ──────────────────────────
+# ── SECTION: REPLACE Section 1, from "# ── SECTION 1" to add_labels(drone, ...) ─
 
-# BEFORE:
-# sim_utils.GroundPlaneCfg().func("/World/ground", sim_utils.GroundPlaneCfg())
-# AFTER — a 200 m x 200 m slab, top surface at height 0, painted every frame (Step 6):
-floor_cfg = sim_utils.MeshCuboidCfg(size=(200.0, 200.0, 0.05))
-floor_cfg.func("/World/Floor", floor_cfg, translation=(0.0, 0.0, -0.025))
+# REMOVED from 4.1: the grid floor and its SphereLight lines, and the /World/Drone holder
+# with its add_labels(...) line. DRONE_POS stays.
 
-# ambient fill — stands in for skylight bouncing around
-# BEFORE:
-# dome_cfg = sim_utils.DomeLightCfg(intensity=2000.0)
-# AFTER:
-dome_cfg = sim_utils.DomeLightCfg(
-    intensity=1000.0,
-    texture_file=f"{NVIDIA_NUCLEUS_DIR}/Assets/Skies/Clear/qwantani_4k.hdr",  # first sky; swapped every frame
-    visible_in_primary_ray=True,          # True = the camera sees the photo, not just its light
-)
-dome_cfg.func("/World/Light", dome_cfg)   # ← EXISTING line, unchanged
+# ── SECTION 1 — the scene ───────────────────────────────────────────────────
+ISAAC_NUCLEUS_DIR = f"{ASSETS}/Isaac"        # Isaac Sim's robots, props and pattern textures
+NVIDIA_NUCLEUS_DIR = f"{ASSETS}/NVIDIA"      # NVIDIA's skies and material pictures
 
-# the sun ... and the drone ... ← EXISTING, unchanged (the drone changes in Step 5)
+
+def make_box(path, size_x, size_y, size_z):
+    """A box mesh whose corners sit at ±size/2 in metres, so a picture painted on it keeps its real scale."""
+    mesh = UsdGeom.Mesh.Define(stage, path)
+    x, y, z = size_x / 2, size_y / 2, size_z / 2
+    mesh.CreatePointsAttr([(-x, -y, -z), (x, -y, -z), (x, y, -z), (-x, y, -z),
+                           (-x, -y, z), (x, -y, z), (x, y, z), (-x, y, z)])
+    mesh.CreateFaceVertexCountsAttr([4] * 6)
+    mesh.CreateFaceVertexIndicesAttr([0, 3, 2, 1,  4, 5, 6, 7,  0, 1, 5, 4,
+                                      1, 2, 6, 5,  2, 3, 7, 6,  3, 0, 4, 7])
+    mesh.CreateExtentAttr([(-x, -y, -z), (x, y, z)])
+    mesh.CreateSubdivisionSchemeAttr(UsdGeom.Tokens.none)     # sharp edges, not a rounded blob
+    return mesh.GetPrim()
+
+
+# the floor: a 200 m x 200 m slab, top surface at height 0, repainted every photo (Step 6)
+floor = make_box("/World/Floor", 200.0, 200.0, 0.05)
+UsdGeom.Xformable(floor).AddTranslateOp().Set(Gf.Vec3d(0.0, 0.0, -0.025))
+
+# ambient fill — now also the sky: a 360° photograph, swapped every photo (Step 6)
+dome = stage.DefinePrim("/World/Light", "DomeLight")
+dome.CreateAttribute("inputs:intensity", Sdf.ValueTypeNames.Float).Set(1000.0)
+UsdLux.DomeLight(dome).CreateTextureFileAttr(
+    Sdf.AssetPath(f"{NVIDIA_NUCLEUS_DIR}/Assets/Skies/Clear/qwantani_4k.hdr"))    # first sky
+UsdLux.DomeLight(dome).CreateTextureFormatAttr(UsdLux.Tokens.latlong)             # a 360° photo
+dome.CreateAttribute("visibleInPrimaryRay", Sdf.ValueTypeNames.Bool).Set(True)    # the camera sees the photo
+
+# the sun — a single strong source coming from one direction
+sun = stage.DefinePrim("/World/Sun", "DistantLight")
+sun.CreateAttribute("inputs:intensity", Sdf.ValueTypeNames.Float).Set(3000.0)
+sun.CreateAttribute("inputs:angle", Sdf.ValueTypeNames.Float).Set(0.53)
+
+# the camera aims here, and the drone look chosen for each photo is placed here (Step 5)
+DRONE_POS = (0.0, 0.0, 1.5)
 ```
 
 **Why the floor has no collision.** Nothing in this script falls or collides; the drone is placed, not flown. The slab only needs to be visible.
@@ -4964,13 +5174,15 @@ dome_cfg.func("/World/Light", dome_cfg)   # ← EXISTING line, unchanged
 
 This step adds **Section 2C**, which runs once, before any photo is taken, and does three things:
 
-1. **Builds the lists** of sky photos, floor pictures, wall pictures and 3D models. It checks that each file really exists and prints any that don't (`check_file_path` asks your disk first, then NVIDIA's asset server).
+1. **Builds the lists** of sky photos, floor pictures, wall pictures and 3D models. It checks that each file really exists and prints any that don't. `exists()` looks on your disk first, then asks NVIDIA's asset server through `omni.client`, Omniverse's file-access library.
 2. **Builds 12 buildings and 8 walls** as boxes with fixed random sizes, and **loads up to 8 trees or props**.
 3. **Gives each building, wall and the floor its own material**, so each can wear a different picture in the same photo.
 
 Step 6 then moves, repaints and hides all of these on every photo.
 
 **Why buildings and walls are boxes.** The Isaac Sim asset library contains warehouses, offices and a hospital, but no outdoor houses or city buildings. At 22–70 m from a 640×480 camera, a building appears as a large textured block with straight edges, which a box with a brick or cladding picture on it reproduces. Real house models you place in `data\bg\props\` are added alongside them.
+
+**Why every 3D model sits inside a holder of its own.** `load_model()` creates an empty holder, for example `/World/Background/Prop_00`, and loads the model one level below it, at `.../Prop_00/model`. The script then moves, turns and resizes only the holder. A model's own top level often carries its own position, rotation and size settings; overwriting those would distort the model, and adding a second set beside them can fail. 4.1 placed the Crazyflie the same way.
 
 **Why every 3D model is measured when it loads.** Models from different sources are authored in different units: the same tree can arrive 10 m tall or 1000 m tall, depending on whether its author worked in metres or centimetres. The script measures each model's largest side and stores the scale that makes it exactly 1 m. Step 6 can then size every model in real metres.
 
@@ -5166,7 +5378,7 @@ if __name__ == "__main__":
 
 ```python
 # ── FILE: ...\scripts\sdg\generate_drone_data.py ────────────────────────────
-# ── SECTION: directly BELOW Section 2B (after its "END OF INSERT" line)     ─
+# ── SECTION: directly BELOW Section 2B (below randomise_scene())            ─
 # ──          and ABOVE "# ── SECTION 3"                                     ─
 
 # ▼▼▼ INSERT HERE! ▼▼▼
@@ -5182,9 +5394,17 @@ def local_files(subfolder, extensions):
     return [p.replace("\\", "/") for p in found]
 
 
+def exists(path):
+    """True if the file is on this computer, or answers on NVIDIA's asset server."""
+    if os.path.isfile(path):
+        return True
+    result, _ = omni.client.stat(path)
+    return result == omni.client.Result.OK
+
+
 def keep_existing(label, paths, required=True):
-    """Keep only paths found on disk or on NVIDIA's server; print the ones that are missing."""
-    usable = [p for p in paths if check_file_path(p) != 0]     # 0 = not found anywhere
+    """Keep only paths that exist; print the ones that are missing."""
+    usable = [p for p in paths if exists(p)]
     for p in paths:
         if p not in usable:
             print(f"[bg] {label}: NOT FOUND, skipped -> {p}")
@@ -5257,51 +5477,79 @@ WALL_STRIPS     = strips(near=12.0, far=25.0)   # walls up to 12 m long  → hal
 PROP_STRIPS     = strips(near=15.0, far=40.0)   # props up to 12 m wide  → half-diagonal ≈ 8.5 m
 BUILDING_STRIPS = strips(near=22.0, far=70.0)   # up to 20 m x 20 m      → half-diagonal ≈ 14 m
 
-build_rng = random.Random(7)       # fixed seed = the same building and wall sizes on every run
 
-FLOOR_SHADER = make_material("/World/Looks/Floor", "/World/Floor")
-
-BUILDINGS = []                     # (prim path, height, shader)
-for i in range(12):
-    w, d, h = build_rng.uniform(6, 20), build_rng.uniform(6, 20), build_rng.uniform(4, 30)
-    path = f"/World/Background/Building_{i:02d}"
-    cfg = sim_utils.MeshCuboidCfg(size=(w, d, h))
-    cfg.func(path, cfg, translation=PARK)
-    BUILDINGS.append((path, h, make_material(f"/World/Looks/Building_{i:02d}", path)))
-
-WALLS = []                         # (prim path, height, shader)
-for i in range(8):
-    length, h = build_rng.uniform(6, 12), build_rng.uniform(2.5, 6)
-    path = f"/World/Background/Wall_{i:02d}"
-    cfg = sim_utils.MeshCuboidCfg(size=(length, 0.3, h))
-    cfg.func(path, cfg, translation=PARK)
-    WALLS.append((path, h, make_material(f"/World/Looks/Wall_{i:02d}", path)))
+def show(prim, visible):
+    """Show or hide a prim and everything under it."""
+    img = UsdGeom.Imageable(prim)
+    img.MakeVisible() if visible else img.MakeInvisible()
 
 
-def measure(path):
-    """Largest side of a prim's visible geometry, in stage units (0 if nothing loaded)."""
+def create_textured_material(mtl_path, prim):
+    """An OmniPBR material that wears a picture, bound to `prim`. The texture inputs follow
+    NVIDIA's full create_omnipbr_material helper (Randomization Snippets)."""
+    material, shader = create_omnipbr_material(mtl_path)
+    shader.CreateInput("diffuse_texture", Sdf.ValueTypeNames.Asset)
+    shader.CreateInput("project_uvw", Sdf.ValueTypeNames.Bool).Set(True)   # paint by position, no UV map needed
+    shader.CreateInput("texture_rotate", Sdf.ValueTypeNames.Float)
+    UsdShade.MaterialBindingAPI.Apply(prim).Bind(material, UsdShade.Tokens.strongerThanDescendants)
+    return shader
+
+
+def set_texture(shader, file, rotate_deg=0.0):
+    shader.GetInput("diffuse_texture").Set(Sdf.AssetPath(file))
+    shader.GetInput("texture_rotate").Set(float(rotate_deg))
+
+
+def measure(prim):
+    """Largest side of a prim's visible geometry, in metres (0 if nothing loaded)."""
     cache = UsdGeom.BBoxCache(Usd.TimeCode.Default(), [UsdGeom.Tokens.default_, UsdGeom.Tokens.render])
-    size = cache.ComputeWorldBound(stage.GetPrimAtPath(path)).ComputeAlignedRange().GetSize()
+    size = cache.ComputeWorldBound(prim).ComputeAlignedRange().GetSize()
     return max(size[0], size[1], size[2]), size
 
 
-PROPS = []                         # (prim path, scale that makes the model's largest side 1 m)
+def load_model(holder_path, usd):
+    """Load a 3D model one level below a holder of our own, and return the holder.
+    The script moves, turns and resizes the holder, never the model's own top level."""
+    holder = stage.DefinePrim(holder_path, "Xform")
+    add_reference_to_stage(usd, f"{holder_path}/model")
+    return holder
+
+
+build_rng = random.Random(7)       # fixed seed = the same building and wall sizes on every run
+
+FLOOR_SHADER = create_textured_material("/World/Looks/Floor", floor)
+
+BUILDINGS = []                     # (prim, height, shader)
+for i in range(12):
+    w, d, h = build_rng.uniform(6, 20), build_rng.uniform(6, 20), build_rng.uniform(4, 30)
+    box = make_box(f"/World/Background/Building_{i:02d}", w, d, h)
+    BUILDINGS.append((box, h, create_textured_material(f"/World/Looks/Building_{i:02d}", box)))
+    show(box, False)
+
+WALLS = []                         # (prim, height, shader)
+for i in range(8):
+    length, h = build_rng.uniform(6, 12), build_rng.uniform(2.5, 6)
+    box = make_box(f"/World/Background/Wall_{i:02d}", length, 0.3, h)
+    WALLS.append((box, h, create_textured_material(f"/World/Looks/Wall_{i:02d}", box)))
+    show(box, False)
+
+PROPS = []                         # (holder prim, scale that makes the model's largest side 1 m)
 for i in range(8 if PROP_USDS else 0):
     usd = PROP_USDS[i % len(PROP_USDS)]
     path = f"/World/Background/Prop_{i:02d}"
     try:
-        cfg = sim_utils.UsdFileCfg(usd_path=usd)
-        cfg.func(path, cfg, translation=PARK)
-        largest, size = measure(path)
+        holder = load_model(path, usd)
+        largest, size = measure(holder)
     except Exception as e:
         print(f"[bg] {path}: FAILED to load {usd} -> {e}; skipped")
         continue
     if not largest > 0:            # file opened but no geometry arrived: nothing to scale from
         print(f"[bg] {path}: {usd} loaded with no geometry; hidden and skipped")
-        show(path, False)
+        show(holder, False)
         continue
     print(f"[bg] {path}: {usd.rsplit('/', 1)[-1]} authored size {size[0]:.2f} x {size[1]:.2f} x {size[2]:.2f}")
-    PROPS.append((path, 1.0 / largest))
+    show(holder, False)            # shown per photo by randomise_background()
+    PROPS.append((holder, 1.0 / largest))
 # ▲▲▲ END OF INSERT ▲▲▲
 ```
 
@@ -5310,7 +5558,7 @@ for i in range(8 if PROP_USDS else 0):
 BG_DIR = os.path.expanduser("~/projects/drone_pursuit/drone_pursuit/data/bg")
 ```
 
-**None of the background objects carry a semantic tag,** so the box annotator reports no boxes for them. If a downloaded model arrives with its own class tag (a tree tagged `"tree"`, for example), 4.3's converter discards its boxes, because it keeps only `"drone"`.
+**None of the background objects carry a class label,** so the box annotator reports no boxes for them. If a downloaded model arrives with its own class label (a tree labelled `"tree"`, for example), its boxes appear in the console's `other=` count, and 4.3's converter discards them, because it keeps only `"drone"`.
 
 </details>
 
@@ -5326,7 +5574,7 @@ Until now every frame showed the same grey Crazyflie. A detector trained that wa
 - once in its **original paint**, and
 - once as a **recolourable copy**, whose parts get random colours on every photo.
 
-For each photo, exactly one of these looks is chosen, moved to the drone spot and shown. Every other look is parked underground and hidden. Every look carries the same `("class", "drone")` tag, so the detector still learns **one class**, "drone", from many shapes and colours.
+For each photo, exactly one of these looks is chosen, moved to the drone spot and shown. Every other look stays hidden. Every look carries the same label, class `drone`, so the detector still learns **one class**, "drone", from many shapes and colours.
 
 ```
 ONE PHOTO = ONE LOOK, CHOSEN BY WEIGHT
@@ -5340,35 +5588,21 @@ Quadcopter     ──▶    Drone_01_original  (weight 0.5)               ✈
 iris.usd       ──▶    Drone_04_original  (weight 1.5)
 (your folder)         Drone_04_recolor   (weight 1.5)
 …
-shown look: moved to DRONE_POS, visible  │  the previous look: parked at (0, 0, -100), hidden
+shown look: moved to DRONE_POS, visible  │  every other look: hidden
 ```
 
-**How exactly one drone per photo is guaranteed.** Before each photo, `randomise_drone_look()` (Step 6) parks and hides the look shown in the previous photo, then picks one new look with `random.choices`. A higher weight makes a look more likely to be picked. Because one Python call does both the hiding and the showing, two drones or zero drones in a frame can't happen.
+**How exactly one drone per photo is guaranteed.** Before each photo, `randomise_drone_look()` (Step 6) hides the look shown in the previous photo, then picks one new look with `random.choices`. A higher weight makes a look more likely to be picked. Because one Python call does both the hiding and the showing, two drones or zero drones in a frame can't happen.
 
-**Why the recolourable copy has its instancing turned off.** Isaac Sim robot files are usually *instanceable*: many copies share one read-only set of parts, which saves memory. A shared read-only part cannot be given its own material, so recolouring it would have no effect. The copy has instancing switched off, which turns its parts into ordinary editable prims, each of which then gets its own material. The original copy keeps its authored paint untouched.
+**Why the recolourable copy has its instancing turned off.** Isaac Sim robot files are usually *instanceable*: many copies share one read-only set of parts, which saves memory. A shared read-only part cannot be given its own material, so recolouring it would have no effect. The copy has instancing switched off (`deinstance()`), which turns its parts into ordinary editable prims, each of which then gets its own material. The original copy keeps its authored paint untouched.
 
 **Why every model is resized to 8–35 cm.** The source models range from a 9 cm Crazyflie to a 52 cm Iris. Each one is measured on load (as the props were in Step 4) and rescaled on every photo so its largest side falls between 8 and 35 cm. The Tello is about 10 cm, and larger hobby quadcopters are about 35 cm. The upper limit keeps a large model from filling the whole view when the camera is 0.5 m away.
 
-**Part A — remove the single Crazyflie from Section 1.** The Crazyflie is now one entry in the model list below. Leaving the 4.1 spawn in place would put a second, always-visible drone in every frame. **Keep the `DRONE_POS` line**: the camera still aims at it, and the chosen look is placed there.
+
+Each look is loaded with `load_model()` from Step 4, so it sits inside a holder of its own, and the class label `drone` is attached to the holder. The label applies to every part of the model below it.
+
+**Part A — build the drone looks.** (The 4.1 Crazyflie was already removed in Step 3.)
 
 *File to edit:* `C:\projects\drone_pursuit\drone_pursuit\scripts\sdg\generate_drone_data.py`
-
-```python
-# ── FILE: ...\scripts\sdg\generate_drone_data.py ────────────────────────────
-# ── SECTION: the drone spawn at the end of Section 1 (from 4.1 Step 1) ──────
-
-# KEEP this line — the camera aims here and the chosen drone look is placed here:
-DRONE_POS = (0.0, 0.0, 1.5)
-
-# DELETE these lines — Part B spawns the Crazyflie together with the other models:
-# drone_cfg = sim_utils.UsdFileCfg(
-#     usd_path=f"{ISAAC_NUCLEUS_DIR}/Robots/Bitcraze/Crazyflie/cf2x.usd",
-#     semantic_tags=[("class", "drone")],          # ← this line is what produces the labels
-# )
-# drone_cfg.func("/World/Drone", drone_cfg, translation=DRONE_POS)
-```
-
-**Part B — build the drone looks.**
 
 ```python
 # ── FILE: ...\scripts\sdg\generate_drone_data.py ────────────────────────────
@@ -5396,48 +5630,51 @@ usable = keep_existing("drone models", [p for p, _ in DRONE_SOURCES])
 DRONE_SOURCES = [(p, w) for p, w in DRONE_SOURCES if p in usable]
 
 
-def deinstance(root_path):
-    """Switch instancing off under root_path so every part can take its own material."""
+def deinstance(root):
+    """Switch instancing off under `root` so every part can take its own material."""
     while True:
-        instances = [p for p in Usd.PrimRange(stage.GetPrimAtPath(root_path)) if p.IsInstance()]
+        instances = [p for p in Usd.PrimRange(root) if p.IsInstance()]
         if not instances:
             return
         for p in instances:        # repeat: switching one off can reveal instances nested inside it
             p.SetInstanceable(False)
 
 
-DRONE_LOOKS = []                   # dicts: path, unit scale, weight, part shaders (empty = original paint)
+DRONE_LOOKS = []                   # dicts: holder prim, path, unit scale, weight, part shaders (empty = original paint)
 for k, (usd, weight) in enumerate(DRONE_SOURCES):
     for look in ("original", "recolor"):
         path = f"/World/Drones/Drone_{k:02d}_{look}"
         try:
-            cfg = sim_utils.UsdFileCfg(usd_path=usd, semantic_tags=[("class", "drone")])
-            cfg.func(path, cfg, translation=PARK)
+            holder = load_model(path, usd)
+            add_labels(holder, labels=["drone"], instance_name="class")   # every look is class "drone"
             if look == "recolor":
-                deinstance(path)
-            largest, size = measure(path)
+                deinstance(holder)
+            largest, size = measure(holder)
         except Exception as e:
             print(f"[drone] {path}: FAILED to load {usd} -> {e}; skipped")
             continue
         if not largest > 0:
             print(f"[drone] {path}: {usd} loaded with no geometry; hidden and skipped")
-            show(path, False)
+            show(holder, False)
             continue
         shaders = []
         if look == "recolor":      # one material per part, so each part can get its own colour
-            meshes = [p.GetPath().pathString for p in Usd.PrimRange(stage.GetPrimAtPath(path))
-                      if p.IsA(UsdGeom.Mesh)]
-            shaders = [make_material(f"/World/Looks/Drone_{k:02d}_part_{j:03d}", m) for j, m in enumerate(meshes)]
-        show(path, False)          # every look starts hidden; one is shown per photo
+            meshes = [p for p in Usd.PrimRange(holder) if p.IsA(UsdGeom.Mesh)]
+            for j, mesh in enumerate(meshes):
+                material, shader = create_omnipbr_material(f"/World/Looks/Drone_{k:02d}_part_{j:03d}")
+                UsdShade.MaterialBindingAPI.Apply(mesh).Bind(material, UsdShade.Tokens.strongerThanDescendants)
+                shaders.append(shader)
+        show(holder, False)        # every look starts hidden; one is shown per photo
         share = RECOLOR_SHARE if look == "recolor" else 1.0 - RECOLOR_SHARE
         print(f"[drone] {path}: {usd.rsplit('/', 1)[-1]} size {size[0]:.3f} x {size[1]:.3f} x {size[2]:.3f}"
               + (f", {len(shaders)} editable meshes" if look == "recolor" else ""))
-        DRONE_LOOKS.append({"path": path, "unit": 1.0 / largest, "weight": weight * share, "shaders": shaders})
+        DRONE_LOOKS.append({"prim": holder, "path": path, "unit": 1.0 / largest,
+                            "weight": weight * share, "shaders": shaders})
 
 if not DRONE_LOOKS:
     raise RuntimeError("[drone] no drone model loaded - read the [drone] and [bg] lines above")
 
-SHOWN = Counter()                  # how many photos each look appeared in, printed at the end
+SHOWN = Counter()                  # how many saved photos each look appeared in, printed at the end
 # ▲▲▲ END OF INSERT ▲▲▲
 ```
 
@@ -5457,15 +5694,14 @@ DRONE_DIR = os.path.expanduser("~/projects/drone_pursuit/drone_pursuit/data/dron
 
 > **Environment:** none needed — you are editing a file.
 
-This step connects everything built in Steps 3–5 to the capture loop, in five edits:
+This step connects everything built in Steps 3–5 to the capture loop, in four edits:
 
 | Part | Change | Why |
 |---|---|---|
-| A | add `randomise_background()`, `randomise_drone_look()` and `preload_assets()` at the end of Section 2D | the per-photo changes for sky, floor, scenery and drone model |
-| B | in Section 2B, delete `randomise_drone()` and update `randomise_scene()` | `/World/Drone` no longer exists after Step 5 Part A |
-| C | raise `FRAME_UPDATES` from `8` to `16` | a freshly swapped sky or texture needs more rendered frames to finish loading; with 8, some photos show a white sky or unpainted grey buildings |
-| D | call `preload_assets()` once, during warm-up | fetches every sky and texture before the first photo, so photo 1 isn't the one that waits for downloads |
-| E | print how often each drone look appeared, after the loop | lets you check the mix at a glance |
+| A | add `randomise_background()`, `randomise_drone_look()` and `preload_assets()` at the end of Section 2D | the per-photo changes for sky, floor, scenery and drone model, and a one-time download of every sky and texture |
+| B | in Section 2B, delete `randomise_drone()` and update `randomise_scene()` | `/World/Drone` no longer exists after Step 3 |
+| C | raise `RT_SUBFRAMES` from `8` to `16` | a freshly swapped sky or texture needs more renders to finish loading; with 8, some photos show a white sky or unpainted grey buildings |
+| D | replace Section 3 | preload the downloads, count only saved photos, show which drone look each photo used, and print the mix at the end |
 
 **Part A — the new per-photo functions.**
 
@@ -5479,34 +5715,38 @@ This step connects everything built in Steps 3–5 to the capture loop, in five 
 # ▼▼▼ INSERT HERE! ▼▼▼
 def randomise_background():
     # sky: a different photo, turned to face a different way
-    set_input("/World/Light", "inputs:texture:file", Sdf.ValueTypeNames.Asset, Sdf.AssetPath(rand.choice(SKIES)))
-    set_pose("/World/Light", (0.0, 0.0, 0.0), (0.0, 0.0, rand.uniform(0, 360)))
+    UsdLux.DomeLight(dome).GetTextureFileAttr().Set(Sdf.AssetPath(rand.choice(SKIES)))
+    set_transform_attributes(dome, rotation=Gf.Vec3f(0.0, 0.0, rand.uniform(0, 360)))
 
     # floor: new picture at a new angle; hidden 1 photo in 5, so the sky photo's own ground shows
     set_texture(FLOOR_SHADER, rand.choice(FLOOR_TEX), rand.uniform(0, 360))
-    show("/World/Floor", rand.random() < 0.8)
+    show(floor, rand.random() < 0.8)
 
     # buildings and walls: stand on the floor (centre at half height) in their strip, any heading
-    for group, strip_set, keep in ((BUILDINGS, BUILDING_STRIPS, 0.6), (WALLS, WALL_STRIPS, 0.6)):
-        for i, (path, h, shader) in enumerate(group):
-            visible = rand.random() < keep
-            show(path, visible)
+    for group, strip_set in ((BUILDINGS, BUILDING_STRIPS), (WALLS, WALL_STRIPS)):
+        for i, (box, h, shader) in enumerate(group):
+            visible = rand.random() < 0.6
+            show(box, visible)
             if not visible:
                 continue
             (x0, y0), (x1, y1) = strip_set[i % 4]
-            set_pose(path, (rand.uniform(x0, x1), rand.uniform(y0, y1), h / 2), (0.0, 0.0, rand.uniform(0, 360)))
+            set_transform_attributes(box,
+                                     location=Gf.Vec3d(rand.uniform(x0, x1), rand.uniform(y0, y1), h / 2),
+                                     rotation=Gf.Vec3f(0.0, 0.0, rand.uniform(0, 360)))
             set_texture(shader, rand.choice(WALL_TEX), rand.choice([0.0, 90.0]))
 
     # trees & props: base on the floor, any heading, resized to 2–12 m
-    for i, (path, unit) in enumerate(PROPS):
+    for i, (holder, unit) in enumerate(PROPS):
         visible = rand.random() < 0.7
-        show(path, visible)
+        show(holder, visible)
         if not visible:
             continue
         (x0, y0), (x1, y1) = PROP_STRIPS[i % 4]
-        set_pose(path, (rand.uniform(x0, x1), rand.uniform(y0, y1), 0.0),
-                 (PROP_TILT_X, 0.0, rand.uniform(0, 360)),
-                 unit * rand.uniform(*PROP_SIZE_M))
+        s = unit * rand.uniform(*PROP_SIZE_M)
+        set_transform_attributes(holder,
+                                 location=Gf.Vec3d(rand.uniform(x0, x1), rand.uniform(y0, y1), 0.0),
+                                 rotation=Gf.Vec3f(PROP_TILT_X, 0.0, rand.uniform(0, 360)),
+                                 scale=Gf.Vec3f(s, s, s))
 
 
 _last_look = [None]
@@ -5515,15 +5755,16 @@ _last_look = [None]
 def randomise_drone_look():
     """Exactly one drone per photo: hide the previous look, show a new one at DRONE_POS."""
     if _last_look[0] is not None:
-        set_pose(_last_look[0]["path"], PARK)
-        show(_last_look[0]["path"], False)
+        show(_last_look[0]["prim"], False)
     d = rand.choices(DRONE_LOOKS, weights=[x["weight"] for x in DRONE_LOOKS])[0]
-    set_pose(d["path"], DRONE_POS,
-             (rand.uniform(-20, 20), rand.uniform(-20, 20), rand.uniform(0, 360)),   # tilt and heading
-             d["unit"] * rand.uniform(*DRONE_SIZE_M))
+    s = d["unit"] * rand.uniform(*DRONE_SIZE_M)
+    set_transform_attributes(d["prim"],
+                             location=Gf.Vec3d(*DRONE_POS),
+                             rotation=Gf.Vec3f(rand.uniform(-20, 20), rand.uniform(-20, 20), rand.uniform(0, 360)),
+                             scale=Gf.Vec3f(s, s, s))
     for shader in d["shaders"]:    # recolour looks: every part its own colour
-        set_color(shader, random_color())
-    show(d["path"], True)
+        shader.GetInput("diffuse_color_constant").Set(random_color())
+    show(d["prim"], True)
     SHOWN[d["path"]] += 1
     _last_look[0] = d
 
@@ -5531,12 +5772,15 @@ def randomise_drone_look():
 def preload_assets():
     """Show every sky and texture once, so downloads finish before the first photo, not during it."""
     print(f"preloading {len(SKIES)} skies and {len(set(FLOOR_TEX + WALL_TEX))} textures...", flush=True)
+    show(floor, True)
     for sky in SKIES:
-        set_input("/World/Light", "inputs:texture:file", Sdf.ValueTypeNames.Asset, Sdf.AssetPath(sky))
-        render(5)
+        UsdLux.DomeLight(dome).GetTextureFileAttr().Set(Sdf.AssetPath(sky))
+        for _ in range(5):
+            simulation_app.update()
     for tex in sorted(set(FLOOR_TEX + WALL_TEX)):
         set_texture(FLOOR_SHADER, tex)
-        render(3)
+        for _ in range(3):
+            simulation_app.update()
 # ▲▲▲ END OF INSERT ▲▲▲
 ```
 
@@ -5549,7 +5793,7 @@ def preload_assets():
 # DELETE the whole randomise_drone() function — randomise_drone_look() replaces it:
 # def randomise_drone():
 #     ...
-#     set_pose("/World/Drone", DRONE_POS, ...)
+#     set_transform_attributes(drone, ...)
 
 # REPLACE randomise_scene() with:
 def randomise_scene():
@@ -5560,37 +5804,67 @@ def randomise_scene():
     randomise_drone_look()         # ← NEW: replaces randomise_drone()
 ```
 
-**Part C — more rendered frames per photo.**
+`randomise_scene()` calls functions defined later in the file (Sections 2C and 2D). That is fine in Python: a function looks up the names it uses when it runs, and it first runs in Section 3, after everything is defined.
+
+**Part C — more renders per photo.**
 
 ```python
 # ── FILE: ...\scripts\sdg\generate_drone_data.py ────────────────────────────
-# ── SECTION: the two constants above Section 1 ──────────────────────────────
+# ── SECTION: the two constants near the top of the file (Section 0) ─────────
 
-# BEFORE: FRAME_UPDATES = 8
-FRAME_UPDATES = 16    # frames rendered per photo (4.2B: raised from 8 — new skies and textures need more draws)
+# BEFORE: RT_SUBFRAMES = 8
+RT_SUBFRAMES = 16     # renders per photo (4.2B: raised from 8 — new skies and textures need more renders)
 ```
 
-**Parts D and E — preload during warm-up, and print the drone mix at the end.**
+**Part D — replace Section 3.** Replace everything from `# ── SECTION 3` to the end of the file with:
 
 ```python
 # ── FILE: ...\scripts\sdg\generate_drone_data.py ────────────────────────────
-# ── SECTION: Section 3 — warm-up lines and the end of the file ──────────────
+# ── SECTION: REPLACE Section 3, from "# ── SECTION 3" to the end of the file
 
-print("warming up renderer...", flush=True)   # ← EXISTING
-place_camera()                                # ← EXISTING
-render(WARMUP_UPDATES)                        # ← EXISTING
-preload_assets()                              # ← NEW (Part D)
-print("capturing", flush=True)                # ← EXISTING
+# ── SECTION 3 — the capture loop ────────────────────────────────────────────
+def drone_and_distractor_boxes():
+    """Split the boxes in the photo just captured into drone boxes and the rest."""
+    out = bbox_annot.get_data()
+    drone_ids = {int(k) for k, v in out["info"]["idToLabels"].items() if "drone" in str(v)}
+    drone_boxes = [b for b in out["data"] if int(b["semanticId"]) in drone_ids]
+    return drone_boxes, len(out["data"]) - len(drone_boxes)
 
-# ... the for loop, unchanged ...
 
-# ▼▼▼ INSERT HERE! — directly ABOVE simulation_app.close() (Part E) ▼▼▼
-for path, n in sorted(SHOWN.items()):
-    print(f"[drone] {path}: shown in {n} of {args.num_frames} photos")
-# ▲▲▲ END OF INSERT ▲▲▲
+preload_assets()                       # ← NEW: download every sky and texture before the first photo
 
-simulation_app.close()                        # ← EXISTING, still the last line
+print("warming up renderer...", flush=True)
+for _ in range(WARMUP_STEPS):          # writer not attached yet: these photos are not saved
+    randomise_scene()
+    place_camera()
+    rep.orchestrator.step(rt_subframes=RT_SUBFRAMES)
+SHOWN.clear()                          # ← NEW: count only the saved photos
+
+writer.attach(render_product)
+print("capturing", flush=True)
+
+for i in range(args.num_frames):
+    randomise_scene()                                       # 1. lights, distractors, background, drone look
+    place_camera()                                          # 2. new camera spot
+    rep.orchestrator.step(rt_subframes=RT_SUBFRAMES)        # 3. render; the writer saves 4 files
+    drone_boxes, n_other = drone_and_distractor_boxes()     # 4. print a check
+    sizes = " ".join(f"{int(b['x_max'] - b['x_min'])}x{int(b['y_max'] - b['y_min'])}px" for b in drone_boxes)
+    look = _last_look[0]["path"].rsplit("/", 1)[-1]
+    print(f"frame {i + 1}/{args.num_frames}  drone={len(drone_boxes)} {sizes}  other={n_other}  {look}", flush=True)
+
+# release resources, then wait until every file is on disk
+writer.detach()
+bbox_annot.detach()
+render_product.destroy()
+rep.orchestrator.wait_until_complete()
+
+for path, n in sorted(SHOWN.items()):   # ← NEW: how often each drone look appeared
+    print(f"[drone] {path}: shown in {n} of {args.num_frames} photos", flush=True)
+print("done", flush=True)
+simulation_app.close()
 ```
+
+Compared with 4.2's Section 3, the drone-size check is gone, because there is no single drone any more; Step 5 prints each model's size as it loads instead. Each frame line now ends with the name of the drone look used, and `distractors=` becomes `other=`, because a downloaded tree with its own class label would be counted there too.
 
 **Why objects are hidden at random rather than always shown.** If every photo contained 12 buildings, 8 walls and 8 trees, the detector would never see a drone against open sky or a bare field, and both are common at demo time. Hiding each object independently gives a spread from nearly empty scenes to cluttered ones across the dataset.
 
@@ -5602,7 +5876,7 @@ simulation_app.close()                        # ← EXISTING, still the last lin
 
 </details>
 
-### Step 7 — Generate 20 trial frames, inspect them, then run the production batch
+### Step 7 — Generate 20 trial frames and inspect them
 
 <details>
 <summary>Expand Step 7</summary>
@@ -5613,84 +5887,81 @@ Twenty frames reveal a missing texture, a white sky or a giant tree in a couple 
 
 *Run from:* `any folder`
 ```bat
-rmdir /s /q C:\projects\drone_pursuit\drone_pursuit\data\raw
-mkdir C:\projects\drone_pursuit\drone_pursuit\data\raw
+del /q C:\projects\drone_pursuit\drone_pursuit\data\raw\*
+del /q C:\projects\drone_pursuit\drone_pursuit\data\preview\*
 python C:\projects\drone_pursuit\drone_pursuit\scripts\sdg\generate_drone_data.py --num_frames 20 --headless
+python C:\projects\drone_pursuit\drone_pursuit\scripts\sdg\preview_boxes.py
 ```
 
 **Linux version**
 ```bash
 conda activate env_drone
 export OMNI_KIT_ACCEPT_EULA=YES
-rm -rf ~/projects/drone_pursuit/drone_pursuit/data/raw && mkdir -p ~/projects/drone_pursuit/drone_pursuit/data/raw
+rm -f ~/projects/drone_pursuit/drone_pursuit/data/raw/* ~/projects/drone_pursuit/drone_pursuit/data/preview/*
 python ~/projects/drone_pursuit/drone_pursuit/scripts/sdg/generate_drone_data.py --num_frames 20 --headless
+python ~/projects/drone_pursuit/drone_pursuit/scripts/sdg/preview_boxes.py
 ```
 
-**Emptying `data\raw` first** prevents old frames from mixing into the new dataset. The script numbers files from `0000` again on every run, so a shorter run leaves older, higher-numbered frames in place.
+**Emptying `data\raw` first** prevents old frames from mixing into the new dataset. The writer numbers files from `0000` again on every run, so a shorter run leaves older, higher-numbered frames in place.
 
 **What the console shows, in order:**
 
 ```
-[bg] skies: 12 usable                 ← one line per pool; NOT FOUND lines above it name any missing file
+[bg] skies: 12 usable                 ← one line per list; NOT FOUND lines above it name any missing file
 [bg] /World/Background/Prop_00: Red_Maple.usd authored size ...
 [drone] /World/Drones/Drone_00_recolor: cf2x.usd size ..., 14 editable meshes
-warming up renderer...
 preloading 12 skies and 11 textures...
+warming up renderer...
 capturing
-frame 1/20  boxes=4                   ← 1 drone box + 3 distractor boxes, for example
+frame 1/20  drone=1 22x9px  other=3  Drone_00_original
 ...
-frame 20/20  boxes=6
+frame 20/20  drone=1 48x20px  other=5  Drone_04_recolor
 [drone] /World/Drones/Drone_00_original: shown in 6 of 20 photos
 ...
+done
 ```
 
-`boxes=` now counts the distractors too, so values above 1 are normal. Each prop's `authored size` tells you whether the model arrived in metres (a tree around `10 x 10 x 12`) or centimetres (around `1000 x 1000 x 1200`). The script rescales both correctly.
+Each prop's `authored size` tells you whether the model arrived in metres (a tree around `10 x 10 x 12`) or centimetres (around `1000 x 1000 x 1200`). The script rescales both correctly.
 
-**Check the boxes by eye** with 4.1's preview script. It draws every box, so distractors get rectangles too; only the one around the drone matters here.
-
-```bat
-python C:\projects\drone_pursuit\drone_pursuit\scripts\sdg\preview_boxes.py
-```
-
-Once the trial frames pass the checkpoint below, run the production batch in **4.2 Step 3**, then **4.3** to convert the frames.
+**Check the boxes by eye** in `data\preview`: in every `zoom_*.png` the thin red line encloses the drone, whichever model it is. Distractor boxes in `preview_*.png` are yellow; background objects have no boxes.
 
 </details>
 
-> ✅ **Checkpoint 4.2B** — In the console, every `[bg] ... usable` line shows at least 1 (skies, floor textures and wall textures stop the script if they reach 0). The run prints `frame 20/20` and stops on its own, and the `shown in N of 20 photos` counts add up to 20.
+> ✅ **Checkpoint 4.2B** — In the console, every `[bg] ... usable` line shows at least 1 (skies, floor textures and wall textures stop the script if they reach 0). The run prints `done` and stops on its own, with no red `[Error]` lines, and the `shown in N of 20 photos` counts add up to 20. `data\raw` holds 80 files.
 >
 > Flipping through the 20 trial frames, you see:
 > - **several different floors**, including at least one frame where the floor is absent and the sky photo's ground shows;
 > - **several different skies**, some outdoor and some indoor;
-> - **boxes with brick, wood or metal surfaces** behind the drone in some frames, and open views in others;
+> - **boxes with brick, wood or metal surfaces** behind the drone in some frames, and open views in others, with each picture repeating at roughly metre scale rather than stretched across the whole box;
 > - **trees standing upright** at plausible sizes (if `trees & props: 0 usable` printed, frames simply have no trees);
 > - **different drone models from frame to frame**, some in their original paint and some with brightly mixed part colours;
-> - **exactly one drone per frame**, fully visible in front of everything and never hidden by a background object.
+> - **exactly one drone per frame**, never hidden by a background object;
+> - **near and far drones**, from under 10 pixels to well over 50 pixels wide.
 >
-> In `data\preview`, the rectangle around the drone hugs it in every frame.
+> In `data\preview`, the red line around the drone hugs it in every `zoom_*.png`.
 
 ### Troubleshooting 4.2 / 4.2B
 
 | What you see | Cause | Fix |
 |---|---|---|
+| The run never finishes, or nothing prints after the start-up warnings | Isaac Sim was started with Isaac Lab's configuration (`isaaclab.bat -p`, or `AppLauncher` copied into the script), which switches Replicator's orchestrator off | Run with plain `python`; see 4.1, *Troubleshooting 2* |
+| `NameError: name 'drone' is not defined` | `randomise_drone()` is still in Section 2B, or 4.2's drone-size check is still in Section 3 | Delete `randomise_drone()` (Step 6 Part B) and replace Section 3 (Step 6 Part D) |
+| `NameError` for `randomise_background`, `randomise_drone_look` or `preload_assets` | Step 6 Part B or D was done but Part A was not | Add the Part A functions at the end of Section 2D |
+| Two drones in one frame | 4.1's `/World/Drone` lines are still in Section 1 | Replace Section 1 as in Step 3 Part B |
 | `NOT FOUND` for every NVIDIA path | No connection to NVIDIA's asset server, or you use the offline Isaac Sim asset pack, which does not include `NVIDIA/Assets/Skies` or the vegetation library | Fill `data\bg\floor`, `wall` and `sky` from Step 2; the script uses local files on their own |
-| Buildings, walls or floor pink, flat white or untextured grey in some frames | The texture had not finished loading when the photo was read | Raise `FRAME_UPDATES` from `16` to `32` |
-| Sky pure white or black in some frames | Same loading delay, for the sky photograph | Same fix: raise `FRAME_UPDATES` |
+| Buildings, walls or floor pink, flat white or untextured grey in some frames | The texture had not finished loading when the photo was taken | Raise `RT_SUBFRAMES` from `16` to `32` |
+| Floor or buildings show one huge stretched picture | The box was built with a scale setting instead of `make_box()` sizes | Build every textured box with `make_box(path, x, y, z)` |
+| Sky pure white or black in some frames | Same loading delay, for the sky photograph | Raise `RT_SUBFRAMES` from `16` to `32` |
 | The run sits at `preloading ...` for a long time on the first run | The 4K skies and tree models are downloading | Wait; later runs read them from the local cache |
 | More than about 1 frame in 10 washed out to white | A bright sky photo multiplied by 4.2's dome intensity of up to 6000 | In `randomise_lights()`, lower `rand.uniform(500, 6000)` to `rand.uniform(500, 3000)` |
 | Trees appear as bare trunks without leaves | The leaf materials failed to load, a known NVIDIA vegetation asset issue | Bare trunks are still valid clutter; to remove trees, delete the four `Vegetation` lines |
 | Trees lie on their side | The model was authored with a different "up" direction | Set `PROP_TILT_X = 90.0` (or `-90.0` if they now lie the other way) |
 | Trees float above or sink into the floor | The model's origin is not at its base | Harmless for detection; remove that model from the list if it bothers you |
-| Script stops with `none usable` | A required pool (skies, floor or wall textures) ended up empty | Read the `NOT FOUND` lines above the error; add local files to that folder |
-| Two drones in one frame | The 4.1 Crazyflie spawn was not removed | Delete the `drone_cfg` lines (Step 5 Part A) |
-| Script stops with an error mentioning `/World/Drone` | `randomise_drone()` is still called, but Step 5 Part A removed that drone | Delete `randomise_drone()` and update `randomise_scene()` (Step 6 Part B) |
-| `NameError: name 'randomise_background' is not defined` | Step 6 Part B was done but Part A was not | Add the Part A functions at the end of Section 2D |
+| Script stops with `none usable` | A required list (skies, floor or wall textures) ended up empty | Read the `NOT FOUND` lines above the error; add local files to that folder |
 | A `_recolor` drone always shows its original paint | Its parts are still instanced (`0 editable meshes` printed), so no material can be attached | Harmless; that model simply gets no colour variety |
 | A drone appears tilted 90°, or far off-centre | The model was authored with a different "up" axis, or its origin is not at its centre | Remove that file from `data\drones\`, or leave it; the tight box still follows the drone wherever it is in the image |
 | `drone models: 0 usable` and the script stops | No Isaac Sim robot files reachable and `data\drones\` empty | Check the connection, or download the two Pegasus models from Step 2 |
 | Local files listed as usable but render pink | The file is not a colour map (a normal or roughness map), or it is corrupt | Open it in an image viewer; replace it with the `diff` / `color` version |
-| The run never finishes, or nothing prints after the startup warnings | A `rep.trigger`, `BasicWriter` or `rep.orchestrator` call was added back, for example copied from an NVIDIA example | Remove it; see 4.1, *Troubleshooting 2* |
-
-</details>
 
 ---
 
@@ -5700,7 +5971,7 @@ Once the trial frames pass the checkpoint below, run the production batch in **4
 <summary>Expand Step 3</summary>
 
 > **Environment:** `env_drone`
-> **Do this after 4.2B.** It is the last step of 4.2 and produces the dataset 4.3 converts.
+> **Do this after Checkpoint 4.2B.** It is the last step of 4.2 and produces the dataset 4.3 converts.
 
 *Run from:* `any folder` — *the script lives in:* `C:\projects\drone_pursuit\drone_pursuit\scripts\sdg\` — *output goes to:* `C:\projects\drone_pursuit\drone_pursuit\data\raw\`
 ```bat
@@ -5722,23 +5993,26 @@ python ~/projects/drone_pursuit/drone_pursuit/scripts/sdg/generate_drone_data.py
 dir /b C:\projects\drone_pursuit\drone_pursuit\data\raw\rgb_*.png | find /c /v ""
 ```
 
-When it finishes, `data\raw` holds about 10 000 files (4 per frame), minus any frames printed as `skipped`.
+When the run prints `done`, `data\raw` holds exactly 10 000 files: `BasicWriter` saves 4 per frame, and every requested frame is saved.
+
+**Do not stop the run early and keep the files.** `rep.orchestrator.wait_until_complete()` at the end is what guarantees the last frames reach the disk. If a run is interrupted, empty `data\raw` and start again.
 
 </details>
 
-> ✅ **Checkpoint 4.2** — The run ends with `frame 2500/2500` and stops on its own. Flipping through 30 random production frames, you see:
-> - near and far drones;
+> ✅ **Checkpoint 4.2** — The run prints `frame 2500/2500`, the `shown in N of 2500 photos` lines, then `done`, and stops on its own. `data\raw` holds 10 000 files. Run `preview_boxes.py`, and flip through 30 random `preview_*.png` and their `zoom_*.png`. You see:
+> - near and far drones, with most drones at least 10 pixels wide;
 > - sky and ground backgrounds;
 > - bright and dark scenes, with distractors present;
 > - **some frames with the drone strongly backlit and nearly a silhouette**;
-> - from 4.2B, different floors, skies, scenery, and drone models and colours.
+> - different floors, skies, scenery, and drone models and colours.
 >
-> In every frame the drone is findable by you. If a human cannot find it, the network will not.
+> In every frame the drone is findable by you, at least in its `zoom_*.png`. If a human cannot find it, the network will not.
 >
 > If no frame looks harshly lit, the sun is not being changed. Check that `/World/Sun` exists in Section 1, and that `randomise_scene()` still calls `randomise_lights()`.
 
 </details>
 
+---
 ---
 
 
