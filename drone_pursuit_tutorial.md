@@ -3887,32 +3887,50 @@ Linux translation:
 <details>
 <summary>Expand 4.1</summary>
 
-> **What this subchapter does:** creates a standalone script, separate from the RL environment, that spawns a Crazyflie tagged with the semantic class "drone". It points a camera at the drone from randomly chosen positions and saves each frame together with its bounding box. It runs outside the pursuit env because data generation wants high-quality rendering while the RL env wants step speed, and mixing the two makes both harder to tune. The 20 trial frames it produces are checked by eye before 4.2 scales the run to 2500.
+> **What this subchapter does:** creates a standalone script, separate from the RL environment, that loads a Crazyflie tagged with the semantic class "drone". It points a camera at the drone from randomly chosen positions, and Replicator saves each photo together with the drone's bounding box. The script runs outside the pursuit env because data generation wants high-quality rendering while the RL env wants step speed, and mixing the two makes both harder to tune. The 20 trial frames it produces are checked by eye before 4.2 scales the run to 2500.
 
 ### Why synthetic images arrive pre-labelled
 
-The renderer knows which object produced every pixel. Tagging the Crazyflie with `semantic_tags=[("class", "drone")]` marks it as the object that matters. A Replicator *annotator*, a reader attached to the camera's image, then reports the rectangle around that object's visible pixels for every frame, with no manual labelling. That leaves you three jobs: tag the right object, photograph it from varied positions, and (in 4.2) randomise everything else, so the network learns the drone's shape rather than the scenery behind it.
+The renderer knows which object produced every pixel. Tagging the Crazyflie with the label `class: drone` marks it as the object that matters. A Replicator *annotator*, a reader attached to the camera's image, then reports the rectangle around that object's visible pixels for every frame, with no manual labelling. That leaves you three jobs: tag the right object, photograph it from varied positions, and (in 4.2) randomise everything else, so the network learns the drone's shape rather than the scenery behind it.
+
+### Why this script starts Isaac Sim directly, not through Isaac Lab
+
+Every other script in this tutorial starts Isaac Sim through Isaac Lab's `AppLauncher`. This one uses Isaac Sim's own `SimulationApp`, for two reasons.
+
+`AppLauncher` starts Isaac Sim with one of Isaac Lab's app configuration files (`IsaacLab\apps\*.kit`). Every one of those files contains this line, which switches off Replicator's **orchestrator**, the part of Replicator that captures a photo on request and tells the writer to save it:
+
+```
+exts."omni.replicator.core".Orchestrator.enabled = false
+```
+
+Isaac Lab does this to speed up RL training, which never needs the orchestrator. Synthetic data generation does: the standard Replicator calls `rep.orchestrator.step()` and `rep.orchestrator.wait_until_complete()` wait for the orchestrator to report that a photo is done, and a disabled orchestrator never reports it, so the script waits forever. `SimulationApp` loads Isaac Sim's default configuration, where the orchestrator is on.
+
+The second reason is portability. Written this way, the script follows the pattern of NVIDIA's Isaac Sim 5.1 Replicator tutorials (*Synthetic Data Generation → Getting Started Scripts*) line for line. Any Replicator example from NVIDIA's documentation can be pasted into it without translation, and anyone who knows those tutorials can read it.
+
+The script uses nothing from Isaac Lab, so it runs in `env_drone` with plain `python` instead of `isaaclab.bat`.
 
 ### How the script is built
 
-The script has three sections, written in Steps 1–3:
+The script has four sections, written in Steps 1–3:
 
 ```
-SECTION 1  the scene     ground, two lights, the tagged Crazyflie
-SECTION 2  the camera    a Tello-shaped camera + two annotators (photo, boxes)
-SECTION 3  the loop      for each frame: move camera → render → read → save 4 files
+SECTION 0  start-up      start Isaac Sim, empty stage in metres, z up, capture only on request
+SECTION 1  the scene     floor, two lights, the tagged Crazyflie
+SECTION 2  the camera    a Tello-shaped camera, the image it renders, the writer that saves it,
+                         and one annotator that prints a check to the console
+SECTION 3  the loop      for each photo: move camera → rep.orchestrator.step() → print the check
 ```
 
-The script saves files itself, in a plain Python loop. It does **not** use Replicator's `BasicWriter` or `rep.orchestrator`, the pattern in many NVIDIA examples. Under Isaac Lab on Isaac Sim 5.1 that pattern either never stops writing or waits forever (see *Troubleshooting 2* below). Using a loop that the script controls also guarantees exactly `--num_frames` photos, each with its labels.
+Each call to `rep.orchestrator.step()` renders one photo and makes Replicator's `BasicWriter` save four files for it. The script never saves anything itself.
 
-### Step 1 — Create the folders and the script's opening section
+### Step 1 — Create the folders and the script's opening sections
 
 <details>
 <summary>Expand Step 1</summary>
 
 > **Environment:** `env_drone` (the `mkdir` needs no environment; the script does)
 
-This step writes the top of the generator. That covers the `AppLauncher` boilerplate that starts Isaac Sim with rendering enabled, then a ground plane, two lights, and the Crazyflie carrying its semantic tag. The tag is the one line that makes labels possible: without it the box annotator returns nothing, and every frame is dropped in 4.3.
+This step writes Sections 0 and 1: starting Isaac Sim, then a floor, two lights, and the Crazyflie carrying its label. The label is the one line that makes labels possible: without it the box annotator returns nothing, and every frame is dropped in 4.3.
 
 *Run from:* `C:\projects\drone_pursuit\drone_pursuit`
 ```bat
@@ -3924,66 +3942,75 @@ mkdir C:\projects\drone_pursuit\drone_pursuit\scripts\sdg C:\projects\drone_purs
 
 ```python
 # ── FILE: C:\projects\drone_pursuit\drone_pursuit\scripts\sdg\generate_drone_data.py
-# ── This is a NEW file. Everything below is section 1 of 3; sections 2 and 3
+# ── This is a NEW file. Everything below is sections 0 and 1; sections 2 and 3
 # ──          are appended in Step 2 and Step 3, in this order, at the END.
 
-"""Standalone SDG: labeled images of a Crazyflie for detector training."""
+"""Standalone SDG: labelled images of a Crazyflie for detector training."""
 import argparse
-from isaaclab.app import AppLauncher
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--num_frames", type=int, default=200)
 parser.add_argument("--out_dir", type=str, default=r"C:\projects\drone_pursuit\drone_pursuit\data\raw")
 parser.add_argument("--seed", type=int, default=0)
-AppLauncher.add_app_launcher_args(parser)
+parser.add_argument("--headless", action="store_true")
 args = parser.parse_args()
-args.enable_cameras = True                       # cameras need the render pipeline
-app_launcher = AppLauncher(args)
-simulation_app = app_launcher.app
+
+# ── SECTION 0 — start Isaac Sim ─────────────────────────────────────────────
+from isaacsim import SimulationApp
+
+simulation_app = SimulationApp(launch_config={"headless": args.headless})
 
 # ---- everything below runs inside the sim app ----
-import json
 import os
 import random
 
-import numpy as np
-from PIL import Image
-
+import carb.settings
 import omni.replicator.core as rep
 import omni.usd
-from pxr import Gf, UsdGeom
+from isaacsim.core.utils.semantics import add_labels
+from isaacsim.core.utils.stage import add_reference_to_stage
+from isaacsim.storage.native import get_assets_root_path
+from pxr import Gf, Sdf, Usd, UsdGeom
 
-import isaaclab.sim as sim_utils
-from isaaclab.sim import SimulationContext
-from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR
-
-sim = SimulationContext(sim_utils.SimulationCfg(dt=0.01))
+omni.usd.get_context().new_stage()
 stage = omni.usd.get_context().get_stage()
+UsdGeom.SetStageMetersPerUnit(stage, 1.0)        # 1 unit = 1 metre, as in Isaac Lab
+UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)  # z is "up", as in Isaac Lab
+rep.orchestrator.set_capture_on_play(False)      # save only when step() is called
+carb.settings.get_settings().set("rtx/post/dlss/execMode", 2)   # DLSS Quality: NVIDIA's advice below 600x600
+rng = random.Random(args.seed)
 
-WARMUP_UPDATES = 30   # frames rendered once at start, so assets finish loading
-FRAME_UPDATES = 8     # frames rendered per photo, so the image settles after a camera move
+ASSETS = get_assets_root_path()
+if ASSETS is None:
+    raise RuntimeError("Isaac Sim asset root not found: check your internet connection")
+
+RT_SUBFRAMES = 8      # renders per photo, so the image settles after the camera move
+WARMUP_STEPS = 3      # photos taken before the writer is attached, so assets finish loading
 
 # ── SECTION 1 — the scene ───────────────────────────────────────────────────
-# ground + two lights (both get randomized in 4.2)
-sim_utils.GroundPlaneCfg().func("/World/ground", sim_utils.GroundPlaneCfg())
+# a grid floor (the same file Isaac Lab's ground plane loads)
+add_reference_to_stage(f"{ASSETS}/Isaac/Environments/Grid/default_environment.usd", "/World/ground")
+grid_light = stage.GetPrimAtPath("/World/ground/SphereLight")
+if grid_light.IsValid():
+    UsdGeom.Imageable(grid_light).MakeInvisible()   # the floor file's own light would add to ours
 
 # ambient fill — stands in for skylight bouncing around
-dome_cfg = sim_utils.DomeLightCfg(intensity=2000.0)
-dome_cfg.func("/World/Light", dome_cfg)
+dome = stage.DefinePrim("/World/Light", "DomeLight")
+dome.CreateAttribute("inputs:intensity", Sdf.ValueTypeNames.Float).Set(2000.0)
 
 # the sun — a single strong source coming from one direction
-sun_cfg = sim_utils.DistantLightCfg(intensity=3000.0, angle=0.53)
-sun_cfg.func("/World/Sun", sun_cfg)
+sun = stage.DefinePrim("/World/Sun", "DistantLight")
+sun.CreateAttribute("inputs:intensity", Sdf.ValueTypeNames.Float).Set(3000.0)
+sun.CreateAttribute("inputs:angle", Sdf.ValueTypeNames.Float).Set(0.53)
 
-# the subject of every photo: a Crazyflie, tagged with its class
+# the subject of every photo: a Crazyflie, 1.5 m above the floor, tagged with its class
 DRONE_POS = (0.0, 0.0, 1.5)
-drone_cfg = sim_utils.UsdFileCfg(
-    usd_path=f"{ISAAC_NUCLEUS_DIR}/Robots/Bitcraze/Crazyflie/cf2x.usd",
-    semantic_tags=[("class", "drone")],          # ← this line is what produces the labels
-)
-drone_cfg.func("/World/Drone", drone_cfg, translation=DRONE_POS)
+drone = stage.DefinePrim("/World/Drone", "Xform")             # holder we position
+UsdGeom.Xformable(drone).AddTranslateOp().Set(Gf.Vec3d(*DRONE_POS))
+add_reference_to_stage(f"{ASSETS}/Isaac/Robots/Bitcraze/Crazyflie/cf2x.usd", "/World/Drone/cf2x")
+add_labels(drone, labels=["drone"], instance_name="class")      # ← this is what produces the labels
 
-# ── SECTION 2 (Step 2) GOES HERE — camera and annotators ────────────────────
+# ── SECTION 2 (Step 2) GOES HERE — camera, writer and annotator ─────────────
 # ── SECTION 3 (Step 3) GOES BELOW THAT — the capture loop ───────────────────
 ```
 
@@ -3995,22 +4022,32 @@ parser.add_argument("--out_dir", type=str,
                     default=os.path.expanduser("~/projects/drone_pursuit/drone_pursuit/data/raw"))
 ```
 
+**What the less obvious lines do:**
+
+- **`from isaacsim import SimulationApp` comes before every other Omniverse import.** Modules such as `omni.replicator.core` and `pxr` only exist once Isaac Sim is running, so they are imported after `SimulationApp(...)`, never at the top of the file.
+- **`SetStageMetersPerUnit(stage, 1.0)` and `SetStageUpAxis(...)`** make the empty stage use metres and a vertical z axis, as every Isaac Lab scene does. The Crazyflie file is stored in metres. On a stage left in another unit, Isaac Sim rescales it on load, and a 10 cm drone becomes several metres wide.
+- **`set_capture_on_play(False)`.** By default, Replicator saves a photo on every rendered frame while the simulation plays. Turning that off means files are saved only when the script calls `rep.orchestrator.step()`, so 20 requested photos give exactly 20 saved photos.
+- **The drone sits inside a holder, `/World/Drone`.** The Crazyflie file is loaded one level down, at `/World/Drone/cf2x`, and the script positions and labels the holder. The file's own top level already carries a position of its own, and adding a second one there would fail. The label on the holder applies to every part of the drone below it.
+- **`add_labels(drone, labels=["drone"], instance_name="class")`** is Isaac Sim's labelling call. It attaches the label `drone` under the label type `class`, which is what the box annotator reports and what 4.3 filters on.
+- **The floor stays bluish.** The grid file's own colour is blue-grey. That colour never reaches the training data: 4.2B replaces this floor with a randomly textured one.
+
 Note the asset path. Isaac Sim 5.x moved the Crazyflie to `Robots/Bitcraze/Crazyflie/cf2x.usd`, while older tutorials say `Robots/Crazyflie/`. The rename is listed in the Isaac Lab release notes, and it is a concrete example of why 1.0 pinned a commit.
 
 </details>
 
-### Step 2 — Add the camera and the two annotators that read each image
+### Step 2 — Add the camera, the writer and the annotator
 
 <details>
 <summary>Expand Step 2</summary>
 
 > **Environment:** none needed — you are editing a file.
 
-This step creates three things:
+This step creates four things:
 
 - **The camera** that takes each photograph.
 - **The render product**, the 640×480 image the camera exposes onto.
-- **Two annotators**, readers attached to that image. `rgb` returns the photo, and `bounding_box_2d_tight` returns the drone's box.
+- **`BasicWriter`**, Replicator's standard writer. On every `rep.orchestrator.step()` it saves four files per photo: the colour image and three files describing the boxes.
+- **One annotator**, `bounding_box_2d_tight`, attached to the same image. It is not needed to save anything; the script reads it after each photo only to print a one-line check to the console.
 
 The camera settings are not free choices. A 12 mm focal length on a 20.955 mm-wide sensor gives a field of view of about 82°, and 640×480 gives a 4:3 image; together they match the Tello's lens. The reason is the same as in Chapter 3.1 Part E: a detector trained with a different field of view sees a differently sized drone at the same distance.
 
@@ -4018,10 +4055,10 @@ The camera settings are not free choices. A 12 mm focal length on a 20.955 mm-wi
 
 ```python
 # ── FILE: ...\scripts\sdg\generate_drone_data.py ────────────────────────────
-# ── SECTION: append directly BELOW the drone_cfg.func(...) line from Step 1 ─
+# ── SECTION: append directly BELOW the add_labels(...) line from Step 1 ─────
 
 # ▼▼▼ INSERT HERE! ▼▼▼
-# ── SECTION 2 — camera and the two "sensors" that read each image ───────────
+# ── SECTION 2 — camera, render product, writer and one annotator ────────────
 # a plain USD camera: 12 mm lens on a 20.955 mm sensor ≈ 82° wide, like a Tello
 CAM_PATH = "/World/Camera"
 cam = UsdGeom.Camera.Define(stage, CAM_PATH)
@@ -4030,17 +4067,30 @@ cam.GetHorizontalApertureAttr().Set(20.955)
 cam.GetVerticalApertureAttr().Set(20.955 * 480 / 640)     # 4:3, like the real drone
 cam.GetClippingRangeAttr().Set(Gf.Vec2f(0.01, 1000.0))
 cam_pose_op = UsdGeom.Xformable(cam.GetPrim()).AddTransformOp()
+target = Gf.Vec3d(*DRONE_POS)
 
-# render product = the 640x480 image the camera exposes onto
+
+def place_camera():
+    """Put the camera at a random spot and turn it to face the drone."""
+    eye = Gf.Vec3d(rng.uniform(-3, 3), rng.uniform(-3, 3), rng.uniform(0.5, 3.0))
+    view = Gf.Matrix4d().SetLookAt(eye, target, Gf.Vec3d(0, 0, 1))   # z is "up"
+    cam_pose_op.Set(view.GetInverse())
+
+
 render_product = rep.create.render_product(CAM_PATH, (640, 480))
 
-# annotators = readers attached to that image: one for colour, one for boxes
-rgb_annot = rep.AnnotatorRegistry.get_annotator("rgb")
-bbox_annot = rep.AnnotatorRegistry.get_annotator("bounding_box_2d_tight")
-rgb_annot.attach(render_product)
+# BasicWriter saves rgb_XXXX.png + the three bounding_box_2d_tight_* files
+os.makedirs(args.out_dir, exist_ok=True)
+writer = rep.writers.get("BasicWriter")
+writer.initialize(output_dir=args.out_dir, rgb=True, bounding_box_2d_tight=True)
+
+# a separate box annotator, only to print a per-photo check to the console
+bbox_annot = rep.annotators.get("bounding_box_2d_tight")
 bbox_annot.attach(render_product)
 # ▲▲▲ END OF INSERT ▲▲▲
 ```
+
+**Moving the camera is ordinary Python, not a Replicator randomiser.** `place_camera()` picks a random spot between 0.5 m and 3 m high, within 3 m of the drone on each side, and turns the camera to face the drone. NVIDIA's Getting Started Scripts use the same approach, a plain function that edits the scene through the USD API before each capture, for changes that follow a custom rule.
 
 **Tight versus loose boxes:** a *loose* box encloses the object's full extent, even where another object hides part of it. A *tight* box encloses only the pixels actually visible. The detector is trained on what it can see, so tight is the matching choice.
 
@@ -4053,14 +4103,13 @@ bbox_annot.attach(render_product)
 
 > **Environment:** `env_drone`
 
-This step adds the loop that takes the photos. For each frame it does four things, in order:
+This step adds the loop that takes the photos. It starts with three warm-up photos that are not saved, because the writer is attached only after them. They give the drone and floor files, which load from NVIDIA's servers, time to appear; they also avoid a known Windows issue in which the writer skips the first photo. After the warm-up, the script prints the drone's measured size once. Then, for each photo, it does three things in order:
 
-1. Place the camera at a random spot between 0.5 m and 3 m high, within 3 m of the drone, turned to face it.
-2. Render 8 frames, so the image settles after the move.
-3. Read the photo and the box from the annotators.
-4. Save four files.
+1. Move the camera with `place_camera()`.
+2. Call `rep.orchestrator.step(rt_subframes=8)`. Replicator renders the photo 8 times over so the image settles after the move, and `BasicWriter` saves its four files.
+3. Read the box annotator and print how many boxes it found, and how many pixels wide and tall each one is.
 
-The file names are the ones Replicator's `BasicWriter` would use, so 4.2 and 4.3 read them unchanged. Twenty frames take a few seconds and are enough to reveal a broken camera pose, a missing tag or an empty output folder. The production run in 4.2 takes far longer, so anything wrong is worth finding here.
+At the end, `rep.orchestrator.wait_until_complete()` waits until every file has reached the disk before Isaac Sim closes.
 
 *File to edit:* `C:\projects\drone_pursuit\drone_pursuit\scripts\sdg\generate_drone_data.py`
 
@@ -4070,50 +4119,32 @@ The file names are the ones Replicator's `BasicWriter` would use, so 4.2 and 4.3
 
 # ▼▼▼ INSERT HERE! ▼▼▼
 # ── SECTION 3 — the capture loop ────────────────────────────────────────────
-os.makedirs(args.out_dir, exist_ok=True)
-rng = random.Random(args.seed)
-target = Gf.Vec3d(*DRONE_POS)
-
-
-def place_camera():
-    """Put the camera at a random spot and turn it to face the drone."""
-    eye = Gf.Vec3d(rng.uniform(-3, 3), rng.uniform(-3, 3), rng.uniform(0.5, 3.0))
-    view = Gf.Matrix4d().SetLookAt(eye, target, Gf.Vec3d(0, 0, 1))   # z is "up"
-    cam_pose_op.Set(view.GetInverse())
-
-
-def render(n):
-    """Render n frames. Plain app updates: nothing here can wait forever."""
-    for _ in range(n):
-        simulation_app.update()
-
-
 print("warming up renderer...", flush=True)
-place_camera()
-render(WARMUP_UPDATES)
+for _ in range(WARMUP_STEPS):          # writer not attached yet: these photos are not saved
+    place_camera()
+    rep.orchestrator.step(rt_subframes=RT_SUBFRAMES)
+
+# check: the drone loaded at its real size (about 0.1 m across)
+size = (UsdGeom.BBoxCache(Usd.TimeCode.Default(), [UsdGeom.Tokens.default_])
+        .ComputeWorldBound(drone).ComputeAlignedRange().GetSize())
+print(f"drone size: {size[0]:.2f} x {size[1]:.2f} x {size[2]:.2f} m", flush=True)
+
+writer.attach(render_product)
 print("capturing", flush=True)
 
 for i in range(args.num_frames):
-    place_camera()
-    render(FRAME_UPDATES)
+    place_camera()                                          # 1. new camera spot
+    rep.orchestrator.step(rt_subframes=RT_SUBFRAMES)        # 2. render; the writer saves 4 files
+    boxes = bbox_annot.get_data()["data"]                   # 3. read the boxes, print a check
+    sizes = [f"{int(b['x_max'] - b['x_min'])}x{int(b['y_max'] - b['y_min'])}px" for b in boxes]
+    print(f"frame {i + 1}/{args.num_frames}  boxes={len(boxes)}  {' '.join(sizes)}", flush=True)
 
-    rgb = rgb_annot.get_data()
-    bbox = bbox_annot.get_data()
-    if rgb is None or rgb.size == 0:
-        print(f"frame {i + 1}/{args.num_frames}  skipped (image not ready)", flush=True)
-        continue
-
-    # same file names BasicWriter uses, so 4.2 and 4.3 read them unchanged
-    Image.fromarray(rgb[:, :, :3]).save(os.path.join(args.out_dir, f"rgb_{i:04d}.png"))
-    np.save(os.path.join(args.out_dir, f"bounding_box_2d_tight_{i:04d}.npy"), bbox["data"])
-    labels = {str(k): v for k, v in bbox["info"]["idToLabels"].items()}
-    with open(os.path.join(args.out_dir, f"bounding_box_2d_tight_labels_{i:04d}.json"), "w") as f:
-        json.dump(labels, f)
-    with open(os.path.join(args.out_dir, f"bounding_box_2d_tight_prim_paths_{i:04d}.json"), "w") as f:
-        json.dump(list(bbox["info"]["primPaths"]), f)
-
-    print(f"frame {i + 1}/{args.num_frames}  boxes={len(bbox['data'])}", flush=True)
-
+# release resources, then wait until every file is on disk
+writer.detach()
+bbox_annot.detach()
+render_product.destroy()
+rep.orchestrator.wait_until_complete()
+print("done", flush=True)
 simulation_app.close()
 # ▲▲▲ END OF INSERT — this is the end of the file ▲▲▲
 ```
@@ -4126,22 +4157,33 @@ del /q C:\projects\drone_pursuit\drone_pursuit\data\raw\*
 python C:\projects\drone_pursuit\drone_pursuit\scripts\sdg\generate_drone_data.py --num_frames 20 --headless
 ```
 
-**What you should see**, after the usual block of startup warnings:
+Use plain `python`, not `isaaclab.bat -p`. The script needs no Isaac Lab code, and plain `python` keeps Isaac Lab's configuration out of the run entirely.
+
+**What you should see**, after a long block of start-up lines and warnings:
 
 ```
 warming up renderer...
+drone size: 0.13 x 0.13 x 0.03 m
 capturing
-frame 1/20  boxes=1
-frame 2/20  boxes=1
+frame 1/20  boxes=1  14x6px
+frame 2/20  boxes=1  22x9px
 ...
-frame 20/20  boxes=1
+frame 20/20  boxes=1  11x5px
+done
 ```
 
-`boxes=1` means the drone was found and labelled in that frame. The whole capture takes a few seconds. After `frame 20/20`, Isaac Sim can take up to a minute to shut down; if it doesn't, press `Ctrl+C`, because every file has already been saved.
+Your exact numbers will differ. What matters:
 
-These warnings appear on every run and are harmless:
+- **`drone size`**: the first two numbers should be around a tenth of a metre. Numbers around 10 mean the drone was rescaled on load; see *Troubleshooting 2*.
+- **`boxes=1`** on every line: the drone was found and labelled in every photo.
+- **The pixel sizes**: mostly between about 8 and 40 pixels wide. The section *Why the drone is so small* in Step 4 explains why that is correct.
+- **`done`**, then the script exits on its own. Isaac Sim can take up to a minute to shut down afterwards; if it doesn't, press `Ctrl+C`, because every file has already been saved.
 
-- `DLSS increasing input dimensions` comes from an internal upscaling step working on a small image.
+These lines appear on every run and are harmless:
+
+- `Skipping unsupported non-NVIDIA GPU` refers to a laptop's built-in graphics chip, which Isaac Sim ignores.
+- Many `... has been deprecated in favor of ...` warnings come from older Isaac Sim modules that are still loaded for compatibility.
+- `pxr.Semantics is deprecated` comes from Replicator's own start-up.
 - `rendervar copy ... is counter-performant` means copying images is slightly slower than it could be.
 
 **Linux version:**
@@ -4151,7 +4193,7 @@ export OMNI_KIT_ACCEPT_EULA=YES
 rm -f ~/projects/drone_pursuit/drone_pursuit/data/raw/*
 python ~/projects/drone_pursuit/drone_pursuit/scripts/sdg/generate_drone_data.py --num_frames 20 --headless
 ```
-On a Linux machine with no display attached, always pass `--headless`; without it Kit tries to open a window and fails. If the first run stalls at `vkCreateInstance failed`, install the Vulkan loader and ICD for your driver. This is the most common Linux-only failure, and it is a driver problem, not an Isaac Lab one.
+On a Linux machine with no display attached, always pass `--headless`; without it Kit tries to open a window and fails. If the first run stalls at `vkCreateInstance failed`, install the Vulkan loader and ICD for your driver. This is the most common Linux-only failure, and it is a driver problem, not an Isaac Sim one.
 
 </details>
 
@@ -4164,7 +4206,7 @@ On a Linux machine with no display attached, always pass `--headless`; without i
 
 *Folder to open:* `C:\projects\drone_pursuit\drone_pursuit\data\raw\`
 
-Each frame has four files, so 20 frames give 80 files:
+`BasicWriter` saves four files per frame, so 20 frames give 80 files:
 
 | File | What it holds |
 |---|---|
@@ -4179,17 +4221,18 @@ dir /b C:\projects\drone_pursuit\drone_pursuit\data\raw | find /c /v ""
 ```
 It should print `80`.
 
-Open a few PNGs and confirm the drone is visible from varied angles and distances.
-
 **Why the boxes are not on the photos.** The detector learns from these photos, and in real flight the Tello's camera never sees rectangles. Photos with boxes drawn on them would teach it to look for red rectangles instead of drones. So the photo and the box are stored separately: the photo is the question, and the box is the answer sheet that goes with it.
 
-To check that the answers match the questions, draw each box onto a **copy** of its photo.
+**Why the drone is so small.** At a distance of *d* metres, the camera's 82° lens covers a strip about 1.74 × *d* metres wide, spread across 640 pixels. The Crazyflie is about 0.1 m across, so it appears roughly 37 ÷ *d* pixels wide: about 37 pixels at 1 m, 18 at 2 m, 12 at 3 m and 9 at 4 m. The camera lands between about 0.5 m and 4.4 m from the drone, so most photos show it 10–20 pixels wide. That is correct, not a fault. During the chase in Chapter 7, the flight code shrinks each 960×720 Tello frame to 640×480 before the detector sees it, so a real drone 3 m away also arrives about 12 pixels wide. The training images match the size the detector meets in flight.
+
+To check that the boxes match the photos, draw each box onto a **copy** of its photo. Because the drone is so small, the script also saves an 8× enlarged copy of the area around it. The enlarged copy is cut from the clean photo and its box is drawn 3 pixels outside the drone, so the red line never covers the drone's pixels.
 
 *File to CREATE:* `C:\projects\drone_pursuit\drone_pursuit\scripts\sdg\preview_boxes.py`
 
 ```python
 # ── FILE: C:\projects\drone_pursuit\drone_pursuit\scripts\sdg\preview_boxes.py
-# ── Draws each frame's saved box onto a COPY of its photo, for checking by eye.
+# ── Draws each frame's saved box onto a COPY of its photo, for checking by eye,
+# ──   plus an enlarged copy of the area around the drone.
 # ──   The originals in data\raw are never changed.
 
 import glob
@@ -4212,6 +4255,23 @@ for png in sorted(glob.glob(os.path.join(RAW, "rgb_*.png"))):
         draw.rectangle([b["x_min"], b["y_min"], b["x_max"], b["y_max"]], outline=(255, 0, 0), width=2)
 
     img.save(os.path.join(OUT, f"preview_{idx}.png"))
+
+    # enlarged copy, so a 12-pixel drone can be checked by eye
+    if len(boxes):
+        b = boxes[0]
+        Z = 8                                                     # enlargement factor
+        cx, cy = (b["x_min"] + b["x_max"]) / 2, (b["y_min"] + b["y_max"]) / 2
+        half = max(b["x_max"] - b["x_min"], b["y_max"] - b["y_min"], 16)   # window at least 32x32 px
+        x0, y0 = int(cx - half), int(cy - half)
+        clean = Image.open(png).convert("RGB")                    # the photo WITHOUT the box drawn on it
+        crop = clean.crop((x0, y0, x0 + 2 * int(half), y0 + 2 * int(half)))
+        crop = crop.resize((crop.width * Z, crop.height * Z), Image.NEAREST)
+        zd = ImageDraw.Draw(crop)
+        zd.rectangle([(b["x_min"] - x0) * Z - 3, (b["y_min"] - y0) * Z - 3,       # 3 px outside the drone,
+                      (b["x_max"] - x0 + 1) * Z + 2, (b["y_max"] - y0 + 1) * Z + 2],  # so it never covers it
+                     outline=(255, 0, 0), width=1)
+        crop.save(os.path.join(OUT, f"zoom_{idx}.png"))
+
     print(f"{idx}: {len(boxes)} box(es)  {[(int(b['x_min']), int(b['y_min']), int(b['x_max']), int(b['y_max'])) for b in boxes]}")
 
 print(f"done — open {OUT}")
@@ -4228,7 +4288,12 @@ OUT = os.path.expanduser("~/projects/drone_pursuit/drone_pursuit/data/preview")
 python C:\projects\drone_pursuit\drone_pursuit\scripts\sdg\preview_boxes.py
 ```
 
-Open `C:\projects\drone_pursuit\drone_pursuit\data\preview\`. In every `preview_*.png`, the red rectangle should hug the drone closely on all four sides. Then open one `..._labels_*.json` in Notepad and confirm it contains `"drone"`.
+Open `C:\projects\drone_pursuit\drone_pursuit\data\preview\`. It holds two images per frame:
+
+- **`preview_00XX.png`**, the full photo with the box drawn on it. On a distant drone the 2-pixel red line covers most of the drone; that is expected.
+- **`zoom_00XX.png`**, the area around the drone enlarged 8×. The drone appears as a blocky shape, because each block is one real pixel. The thin red line should enclose all of the drone's dark pixels, touching them on all four sides, with little empty space inside.
+
+Then open one `..._labels_*.json` in Notepad and confirm it contains `"drone"`, and one `..._prim_paths_*.json` and confirm it contains `/World/Drone`.
 
 The `data\preview` folder is for your eyes only. Nothing later reads it, and you can delete it once you're satisfied.
 
@@ -4246,7 +4311,7 @@ A labelling problem found here costs a few minutes. The same problem found in Ch
 
 #### What you see
 
-The script starts Isaac Sim, then stops at one of the Replicator lines (for example `rep.create.render_product(...)`, an annotator's `.attach(...)`, or `writer.attach(...)` in writer-based scripts) with:
+The script starts Isaac Sim, then stops at one of the Replicator lines (for example `rep.create.render_product(...)`, an annotator's `.attach(...)`, or `writer.attach(...)`) with:
 
 ```
 TypeError: Unable to write from unknown dtype, kind=i, size=0
@@ -4375,33 +4440,33 @@ Moving the generator to a separate environment would not avoid the fix either. R
 
 </details>
 
-### Troubleshooting 2 — the script never finishes, or fills `data\raw` with thousands of files
+### Troubleshooting 2 — the script never finishes, or the drone is missing or huge
 
 <details>
 <summary>Expand</summary>
 
 > **Environment:** `env_drone`
-> **Where this appears:** Step 3, if you use Replicator's `BasicWriter` and `rep.orchestrator` (as in many NVIDIA examples) instead of this subchapter's loop
+> **Where this appears:** Step 3
 
-#### What you see
+#### The script never prints `capturing`, or never prints `done`
 
-One of two symptoms:
+If the script stops printing after `warming up renderer...` and no files appear, `rep.orchestrator.step()` is waiting for an orchestrator that is switched off. That happens when Isaac Sim was started with Isaac Lab's configuration, in one of two ways:
 
-- **Runaway:** the run doesn't stop. `data\raw` fills with thousands of `.npy`, `.png` and `.json` files, and after a while the log shows `Throttling generation due to I/O bottleneck`, meaning the disk can't keep up.
-- **Silent hang:** after the startup warnings nothing more is printed, not even a first progress line, and no files appear, even after many minutes.
+- **It was run with `isaaclab.bat -p`**, or
+- **the script was edited to use `AppLauncher`**, for example by copying the opening of another script in this tutorial.
 
-#### Why it happens
+You can see the setting that causes this in your own Isaac Lab installation:
 
-Isaac Lab switches Replicator's orchestrator off. Every app configuration file in IsaacLab\apps\ contains exts."omni.replicator.core".Orchestrator.enabled = false, added for faster RL training, and AppLauncher loads one of these files at startup. The usual Replicator recipe waits for the orchestrator's "frame done" signal (rep.orchestrator.run_until_complete(), wait_until_complete() or step()). A disabled orchestrator never sends it, so the wait never ends. To check this on your installation, run findstr /n "Orchestrator" apps\*.kit from C:\Users\[YOUR_USER]\IsaacLab.
+```bat
+cd C:\Users\[YOUR_USER]\IsaacLab
+findstr /n "Orchestrator" apps\*.kit
+```
 
-The two symptoms differ only in what happens while the script waits:
+Each of the four files it lists contains `Orchestrator.enabled = false`.
 
-- **With a `BasicWriter` attached**, the app keeps rendering and the writer saves every rendered frame, giving the runaway.
-- **Without a writer**, nothing is saved, giving the silent hang.
+**Fix:**
 
-#### Fix
-
-1. Stop the run with `Ctrl+C`. Isaac Sim often ignores it, so check whether the process is still alive, because a leftover run keeps writing into `data\raw`:
+1. Stop the run with `Ctrl+C`. Isaac Sim often ignores it, so check whether the process is still alive:
 
     ```bat
     tasklist /fi "imagename eq python.exe"
@@ -4419,25 +4484,29 @@ The two symptoms differ only in what happens while the script waits:
     del /q C:\projects\drone_pursuit\drone_pursuit\data\raw\*
     ```
 
-3. Use this subchapter's script as given. It never calls the orchestrator. It renders with `simulation_app.update()`, a plain "render one frame" call with nothing to wait for, and reads the annotators directly, the same way Isaac Lab's own camera sensors work. When you adapt a Replicator example from NVIDIA's documentation, swap its writer and orchestrator calls for this pattern.
+3. Make sure Section 0 starts Isaac Sim with `SimulationApp`, exactly as in Step 1, and run the script with plain `python` as in Step 3.
 
-#### Other symptoms in the capture loop
+Do not fix this by editing Isaac Lab's `.kit` files. They configure every Isaac Lab run, including RL training, and a later Isaac Lab update would undo the edit without warning.
+
+#### Other symptoms
 
 | What you see | Cause | Fix |
 |---|---|---|
-| Stops at `warming up renderer...` and never prints `capturing` | Rendering itself is stuck, not Replicator | Read the last 30 lines of the log file named in the `Logging to file:` line |
-| Many frames print `skipped (image not ready)` | The annotator had no image yet | Raise `WARMUP_UPDATES` to `60` |
-| Many frames print `boxes=0` | The drone was out of view, or the `semantic_tags` line is missing | Check the tag line in Step 1; a rare `boxes=0` is fine |
-| In `preview_*.png` the rectangle sits beside the drone, as if from the previous angle | The box was read before the image settled after the camera move | Raise `FRAME_UPDATES` from `8` to `16` |
-| Terminal sits after `frame 20/20` | Isaac Sim is slow to shut down | Wait a minute or press `Ctrl+C`; the files are already saved |
+| Stops at `warming up renderer...` and the console shows an error | Rendering itself failed, not Replicator | Read the last 30 lines of the log file named in the `Logging to file:` line |
+| `RuntimeError: Isaac Sim asset root not found` | The drone and floor files load from NVIDIA's servers, which could not be reached | Check the internet connection and rerun |
+| `drone size` shows numbers around 10, and the photos show no drone | The stage was not in metres, so the drone was rescaled about 100× on load | Check the two `SetStage...` lines in Section 0 |
+| A frame prints a box of about `640x480px` | The camera is inside an oversized drone (same cause as the row above) | Same fix as the row above |
+| Many frames print `boxes=0` | The drone was out of view, or the `add_labels` line is missing | Check the `add_labels` line in Step 1; a rare `boxes=0` is fine |
+| 76 files instead of 80 | The writer skipped the first photo (a known Windows issue) | Raise `WARMUP_STEPS` from `3` to `5` |
+| Photos look smeared, or drones show ghost edges | The image had not settled after the camera moved | Raise `RT_SUBFRAMES` from `8` to `16` |
+| In `zoom_*.png` the box sits beside the drone | The box was read before the image settled | Raise `RT_SUBFRAMES` from `8` to `16` |
+| Terminal sits after `done` | Isaac Sim is slow to shut down | Wait a minute or press `Ctrl+C`; the files are already saved |
 
 </details>
 
-> ✅ **Checkpoint 4.1** — The run prints `frame 20/20` and stops on its own. `data\raw` holds 80 files (4 per frame). In every `data\preview\preview_*.png` the red rectangle hugs the drone. The labels JSON contains the `drone` class.
+> ✅ **Checkpoint 4.1** — The run prints `drone size` with values around 0.1 m, prints `boxes=1` on every frame, reaches `done` and exits on its own. `data\raw` holds 80 files (4 per frame). In every `data\preview\zoom_*.png` the red line encloses the drone's pixels. The labels JSON contains the `drone` class, and the prim-paths JSON contains `/World/Drone`.
 
 </details>
-
----
 
 ## 4.2 Randomise Lighting, Background and Pose, Then Generate 2500 Frames (≤1.5h)
 
