@@ -1,65 +1,73 @@
 # ── FILE: C:\projects\drone_pursuit\drone_pursuit\scripts\sdg\generate_drone_data.py
-# ── 4.1 version 3: no Replicator writer, trigger or orchestrator. The Python
-# ──   loop moves the camera, renders with simulation_app.update(), and saves
-# ──   the files itself — the same way Isaac Lab's own camera sensors work.
+# ── 4.1, SimulationApp version. Starts Isaac Sim the way NVIDIA's Isaac Sim 5.1
+# ──   Replicator "Getting Started Scripts" do: capture-on-play off, a USD-API
+# ──   change before each photo (here: the camera position), rep.orchestrator.step()
+# ──   to capture, BasicWriter to save, rep.orchestrator.wait_until_complete() at the end.
+# ──   No randomisation of lights or objects yet: that is 4.2.
 
-"""Standalone SDG: labeled images of a Crazyflie for detector training."""
+"""Standalone SDG: labelled images of a Crazyflie for detector training."""
 import argparse
-from isaaclab.app import AppLauncher
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--num_frames", type=int, default=200)
 parser.add_argument("--out_dir", type=str, default=r"C:\projects\drone_pursuit\drone_pursuit\data\raw")
 parser.add_argument("--seed", type=int, default=0)
-AppLauncher.add_app_launcher_args(parser)
+parser.add_argument("--headless", action="store_true")
 args = parser.parse_args()
-args.enable_cameras = True                       # cameras need the render pipeline
-app_launcher = AppLauncher(args)
-simulation_app = app_launcher.app
+
+# ── SECTION 0 — start Isaac Sim ─────────────────────────────────────────────
+from isaacsim import SimulationApp
+
+simulation_app = SimulationApp(launch_config={"headless": args.headless})
 
 # ---- everything below runs inside the sim app ----
-import json
 import os
 import random
 
-import numpy as np
-from PIL import Image
-
+import carb.settings
 import omni.replicator.core as rep
 import omni.usd
-from pxr import Gf, UsdGeom
+from isaacsim.core.utils.semantics import add_labels
+from isaacsim.core.utils.stage import add_reference_to_stage
+from isaacsim.storage.native import get_assets_root_path
+from pxr import Gf, Sdf, Usd, UsdGeom
 
-import isaaclab.sim as sim_utils
-from isaaclab.sim import SimulationContext
-from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR
-
-sim = SimulationContext(sim_utils.SimulationCfg(dt=0.01))
+omni.usd.get_context().new_stage()
 stage = omni.usd.get_context().get_stage()
+UsdGeom.SetStageMetersPerUnit(stage, 1.0)        # 1 unit = 1 metre, as in Isaac Lab
+UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)  # z is "up", as in Isaac Lab
+rep.orchestrator.set_capture_on_play(False)      # save only when step() is called
+carb.settings.get_settings().set("rtx/post/dlss/execMode", 2)   # DLSS Quality: NVIDIA's advice below 600x600
+rng = random.Random(args.seed)
 
-WARMUP_UPDATES = 30   # frames rendered once at start, so assets finish loading
-FRAME_UPDATES = 8     # frames rendered per photo, so the image settles after a camera move
+ASSETS = get_assets_root_path()
+if ASSETS is None:
+    raise RuntimeError("Isaac Sim asset root not found: check your internet connection")
+
+RT_SUBFRAMES = 8      # renders per photo, so the image settles after the camera move
+WARMUP_STEPS = 3      # photos taken before the writer is attached, so assets finish loading
 
 # ── SECTION 1 — the scene ───────────────────────────────────────────────────
-# ground + two lights (both get randomized in 4.2)
-sim_utils.GroundPlaneCfg().func("/World/ground", sim_utils.GroundPlaneCfg())
+# the grey grid floor (the same file Isaac Lab's GroundPlaneCfg loads)
+add_reference_to_stage(f"{ASSETS}/Isaac/Environments/Grid/default_environment.usd", "/World/ground")
 
 # ambient fill — stands in for skylight bouncing around
-dome_cfg = sim_utils.DomeLightCfg(intensity=2000.0)
-dome_cfg.func("/World/Light", dome_cfg)
+dome = stage.DefinePrim("/World/Light", "DomeLight")
+dome.CreateAttribute("inputs:intensity", Sdf.ValueTypeNames.Float).Set(2000.0)
 
 # the sun — a single strong source coming from one direction
-sun_cfg = sim_utils.DistantLightCfg(intensity=3000.0, angle=0.53)
-sun_cfg.func("/World/Sun", sun_cfg)
+sun = stage.DefinePrim("/World/Sun", "DistantLight")
+sun.CreateAttribute("inputs:intensity", Sdf.ValueTypeNames.Float).Set(3000.0)
+sun.CreateAttribute("inputs:angle", Sdf.ValueTypeNames.Float).Set(0.53)
 
-# the subject of every photo: a Crazyflie, tagged with its class
+# the subject of every photo: a Crazyflie, 1.5 m above the floor, tagged with its class
 DRONE_POS = (0.0, 0.0, 1.5)
-drone_cfg = sim_utils.UsdFileCfg(
-    usd_path=f"{ISAAC_NUCLEUS_DIR}/Robots/Bitcraze/Crazyflie/cf2x.usd",
-    semantic_tags=[("class", "drone")],          # ← this line is what produces the labels
-)
-drone_cfg.func("/World/Drone", drone_cfg, translation=DRONE_POS)
+drone = stage.DefinePrim("/World/Drone", "Xform")             # holder we position
+UsdGeom.Xformable(drone).AddTranslateOp().Set(Gf.Vec3d(*DRONE_POS))
+add_reference_to_stage(f"{ASSETS}/Isaac/Robots/Bitcraze/Crazyflie/cf2x.usd", "/World/Drone/cf2x")
+add_labels(drone, labels=["drone"], instance_name="class")      # ← this is what produces the labels
 
-# ── SECTION 2 — camera and the two "sensors" that read each image ───────────
+# ── SECTION 2 — camera, render product, writer and one annotator ────────────
 # a plain USD camera: 12 mm lens on a 20.955 mm sensor ≈ 82° wide, like a Tello
 CAM_PATH = "/World/Camera"
 cam = UsdGeom.Camera.Define(stage, CAM_PATH)
@@ -68,19 +76,6 @@ cam.GetHorizontalApertureAttr().Set(20.955)
 cam.GetVerticalApertureAttr().Set(20.955 * 480 / 640)     # 4:3, like the real drone
 cam.GetClippingRangeAttr().Set(Gf.Vec2f(0.01, 1000.0))
 cam_pose_op = UsdGeom.Xformable(cam.GetPrim()).AddTransformOp()
-
-# render product = the 640x480 image the camera exposes onto
-render_product = rep.create.render_product(CAM_PATH, (640, 480))
-
-# annotators = readers attached to that image: one for colour, one for boxes
-rgb_annot = rep.AnnotatorRegistry.get_annotator("rgb")
-bbox_annot = rep.AnnotatorRegistry.get_annotator("bounding_box_2d_tight")
-rgb_annot.attach(render_product)
-bbox_annot.attach(render_product)
-
-# ── SECTION 3 — the capture loop ────────────────────────────────────────────
-os.makedirs(args.out_dir, exist_ok=True)
-rng = random.Random(args.seed)
 target = Gf.Vec3d(*DRONE_POS)
 
 
@@ -91,36 +86,42 @@ def place_camera():
     cam_pose_op.Set(view.GetInverse())
 
 
-def render(n):
-    """Render n frames. Plain app updates: nothing here can wait forever."""
-    for _ in range(n):
-        simulation_app.update()
+render_product = rep.create.render_product(CAM_PATH, (640, 480))
 
+# BasicWriter saves rgb_XXXX.png + the three bounding_box_2d_tight_* files
+os.makedirs(args.out_dir, exist_ok=True)
+writer = rep.writers.get("BasicWriter")
+writer.initialize(output_dir=args.out_dir, rgb=True, bounding_box_2d_tight=True)
 
+# a separate box annotator, only to print a per-photo check to the console
+bbox_annot = rep.annotators.get("bounding_box_2d_tight")
+bbox_annot.attach(render_product)
+
+# ── SECTION 3 — the capture loop ────────────────────────────────────────────
 print("warming up renderer...", flush=True)
-place_camera()
-render(WARMUP_UPDATES)
+for _ in range(WARMUP_STEPS):          # writer not attached yet: these photos are not saved
+    place_camera()
+    rep.orchestrator.step(rt_subframes=RT_SUBFRAMES)
+
+# check 1: the drone loaded at its real size (about 0.1 m across)
+size = (UsdGeom.BBoxCache(Usd.TimeCode.Default(), [UsdGeom.Tokens.default_])
+        .ComputeWorldBound(drone).ComputeAlignedRange().GetSize())
+print(f"drone size: {size[0]:.2f} x {size[1]:.2f} x {size[2]:.2f} m", flush=True)
+
+writer.attach(render_product)
 print("capturing", flush=True)
 
 for i in range(args.num_frames):
-    place_camera()
-    render(FRAME_UPDATES)
+    place_camera()                                          # 1. new camera spot
+    rep.orchestrator.step(rt_subframes=RT_SUBFRAMES)        # 2. render; the writer saves 4 files
+    boxes = bbox_annot.get_data()["data"]
+    sizes = [f"{int(b['x_max'] - b['x_min'])}x{int(b['y_max'] - b['y_min'])}px" for b in boxes]
+    print(f"frame {i + 1}/{args.num_frames}  boxes={len(boxes)}  {' '.join(sizes)}", flush=True)
 
-    rgb = rgb_annot.get_data()
-    bbox = bbox_annot.get_data()
-    if rgb is None or rgb.size == 0:
-        print(f"frame {i + 1}/{args.num_frames}  skipped (image not ready)", flush=True)
-        continue
-
-    # same file names BasicWriter uses, so 4.2 and 4.3 read them unchanged
-    Image.fromarray(rgb[:, :, :3]).save(os.path.join(args.out_dir, f"rgb_{i:04d}.png"))
-    np.save(os.path.join(args.out_dir, f"bounding_box_2d_tight_{i:04d}.npy"), bbox["data"])
-    labels = {str(k): v for k, v in bbox["info"]["idToLabels"].items()}
-    with open(os.path.join(args.out_dir, f"bounding_box_2d_tight_labels_{i:04d}.json"), "w") as f:
-        json.dump(labels, f)
-    with open(os.path.join(args.out_dir, f"bounding_box_2d_tight_prim_paths_{i:04d}.json"), "w") as f:
-        json.dump(list(bbox["info"]["primPaths"]), f)
-
-    print(f"frame {i + 1}/{args.num_frames}  boxes={len(bbox['data'])}", flush=True)
-
+# release resources, then wait until every file is on disk
+writer.detach()
+bbox_annot.detach()
+render_product.destroy()
+rep.orchestrator.wait_until_complete()
+print("done", flush=True)
 simulation_app.close()
