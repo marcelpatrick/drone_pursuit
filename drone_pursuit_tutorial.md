@@ -4392,7 +4392,7 @@ One of two symptoms:
 
 #### Why it happens
 
-Both symptoms have the same cause. The usual Replicator recipe stops after N frames using a counter (`rep.trigger.on_frame(max_execs=N)`) and a wait (`rep.orchestrator.run_until_complete()`, or `rep.orchestrator.step()` inside a loop). The wait listens for the orchestrator's "frame done" signal. When Isaac Sim is started through Isaac Lab's `AppLauncher` on 5.1, that signal never arrives, so the wait never ends.
+Isaac Lab switches Replicator's orchestrator off. Every app configuration file in IsaacLab\apps\ contains exts."omni.replicator.core".Orchestrator.enabled = false, added for faster RL training, and AppLauncher loads one of these files at startup. The usual Replicator recipe waits for the orchestrator's "frame done" signal (rep.orchestrator.run_until_complete(), wait_until_complete() or step()). A disabled orchestrator never sends it, so the wait never ends. To check this on your installation, run findstr /n "Orchestrator" apps\*.kit from C:\Users\[YOUR_USER]\IsaacLab.
 
 The two symptoms differ only in what happens while the script waits:
 
