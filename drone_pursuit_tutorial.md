@@ -4527,6 +4527,9 @@ Do not fix this by editing Isaac Lab's `.kit` files. They configure every Isaac 
 >                   └ lights, distractors, drone (4.2) + sky, floor, scenery, drone model (4.2B)
 > ```
 
+-> Why train with random objects and unrealistic backgrounds and colors? 
+> If we only train the model with images of a drone against trees, walls or roads, it will learn that any compact object in front of trees, walls or roads is a drone. It will take this shortcut (are there trees on the background, hence it's a drone) instead of learning the drone shape. By training the model with a wide variety of backgrounds (even unrealistic ones) and on images of drones together with other compact objects (cubes, spheres, cones) it will learn what a drone looks like, instead of using the shortcut to assume that any compact object against a forest or road background is a drone. Cubes, spheres, cones, work as negative examples, forcing the model to focus on the drone instead of  just any compact object. Also, using training images of drones in unrealistic colors (pink, orange) forces the model to learn the drone shape. Otherwise, it could take the color shortcut and assume that any gray compact object is a drone. The rule is: Randomise what the model should ignore, add objects it must reject; the object of interest's shape is what's left and that's what the model will detect.
+
 ### Step 1 — Decide what to randomise, and what each dial buys at demo time
 
 <details>
