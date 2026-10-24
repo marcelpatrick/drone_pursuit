@@ -4520,7 +4520,8 @@ Do not fix this by editing Isaac Lab's `.kit` files. They configure every Isaac 
 > This tutorial uses the second way, and copies two helper functions from those snippets (`set_transform_attributes` and an OmniPBR material helper). Two reasons. First, several changes follow custom rules, such as keeping the camera between 0.5 m and 6 m from the drone, which a graph randomiser cannot express. Second, on Isaac Sim 5.1 Replicator's shortcut for dome-light brightness fails with `Type mismatch for .../DomeLight.intensity: expected 'int'`, while setting the light's USD attribute `inputs:intensity` directly works.
 >
 > The capture loop from 4.1 calls `randomise_scene()` once per photo, just before it moves the camera:
->
+> The script starts Isaac Sim with SimulationApp, as in 4.1, so Replicator's orchestrator is available
+> 
 > ```
 > for each photo:   randomise_scene()  →  place_camera()  →  rep.orchestrator.step()  (render + BasicWriter saves)
 >                   └ lights, distractors, drone (4.2) + sky, floor, scenery, drone model (4.2B)
