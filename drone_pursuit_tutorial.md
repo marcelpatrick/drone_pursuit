@@ -4944,6 +4944,7 @@ Your exact numbers will differ. The checks:
     dir /b C:\projects\drone_pursuit\drone_pursuit\data\raw | find /c /v ""
     ```
 6. **In `data\preview`:** every `zoom_*.png` shows the drone inside a thin red line. In the `preview_*.png` images, distractor boxes are yellow, the shapes have different colours from photo to photo, and the overall brightness and shadow direction change between photos.
+> At this point it is possible that the Replicator has created images where the drone is so small or far that is nearly invisible. Even then, because the simulator has the exact that about the drone's position, it will draw a bounding box anyways, around its reported position. In these cases, all you'll see is a thin and tiny red bounding box with no drone inside. Step 4.3 drops these cases where the bounding box is too small for training. 
 
 </details>
 
