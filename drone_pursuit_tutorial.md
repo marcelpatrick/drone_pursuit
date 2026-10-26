@@ -6350,6 +6350,19 @@ Open `C:\projects\drone_pursuit\drone_pursuit\data\yolo_check\`. Every green rec
 
 **What this block produces:** `drone_detector.onnx`, a YOLOv8-nano network that takes a 480×640 RGB frame and returns a rectangle around the drone in it. Training happens in `drone_vision`; the ONNX file is the only thing that crosses into `env_drone`, for the reason established in 1.3 — the two environments hold incompatible torch versions and ONNX carries no framework with it.
 
+**MODEL TRAINING WORKFLOW:**
+
+- **Generation (4.1–4.2B):** `generate_drone_data.py` creates synthetic images of drones and distractors. Each image's box coordinates are saved in separate `.npy` files. Preview images draw those boxes, only for human visual checking.
+- **Conversion (4.3):** `convert_to_yolo.py` keeps only images where the drone is visible and converts the drone box location coordinates into YOLO `.txt` files. Splits train (85%) and validation (15%).
+   - Why it is ok to use synthetic images as test and validation?: Replicator always creates the exact objects we ask it and correctly draws bounding boxes around the correct objects because it knows, by its code, exactly where each object is (deterministic process, not probabilistic)
+- **Training data:** synthetic images with no boxes drawn on them, plus separate `.txt` files giving each drone's box location.
+- **Training (5.1):** YOLO receives the training images, with no box information, and predicts box locations. It compares those predictions to the `.txt` box locations, measures the error (`box_loss`) and adjusts its weights to reduce it.
+- **Validation:** with its weights frozen, the model predicts boxes on the unseen validation images and compares them to their `.txt` box coordinates. It scores itself with precision, recall and mAP50: mean Average Precision at IoU (Intersection over Union) min 0.50 of intersection surface, and the best-scoring version is saved as `best.pt`.
+- **Reality Test (5.2):** the detector is checked on real life arena frames it has never seen.
+
+
+
+
 **Folders used in this block:**
 
 ```
