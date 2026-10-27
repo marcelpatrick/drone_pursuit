@@ -6151,11 +6151,17 @@ Expected output, for the 2500-frame production batch, is one line such as `kept 
 
 > **Environment:** none needed — you are creating a text file.
 
-**Why this step exists.** Step 1 filled `data\yolo` with images and label files, but YOLO cannot work out by itself which folder holds the images to learn from, which holds the images to test on, or what object it is looking for. In this step you create a new, small text file that tells it: `drone.yaml`. A `.yaml` file stores settings as `name: value` lines. This one does for the dataset what `QuadcopterEnvCfg` does for the environment: it lists the settings that code reads before it starts.
+**Why this step exists.** Step 1 put the images and their label files into folders inside `data\yolo`. YOLO still has to be told where those folders are and what the labels mean: inside the label files, the drone is written only as the number `0`, so YOLO needs to know that `0` means "drone". In this step you create a small new text file that tells it: `drone.yaml`.
 
-It answers three questions: where the **training** images are (`images\train`, the ones YOLO learns from), where the **validation** images are (`images\val`, the ones it tests itself on), and which **classes** (kinds of object) exist. Here there is only one, `drone`, with id `0`.
+Think of it as the dataset's table of contents. It does not change or convert any image or label (Step 1's script already did that). It only lists where each part is and what it is called:
 
-**Where it is used:** the `yolo train` command in Chapter 5.1 is given this file's path. Declaring one class, instead of the 80 the stock model knows, is why each detection later comes out as 5 numbers (4 for the box, 1 score) instead of 84.
+- where the **training** images are (`images\train`, the ones YOLO learns from);
+- where the **validation** images are (`images\val`, the ones it tests itself on);
+- which **classes** (kinds of object to look for) exist: here only one, `0: drone`.
+
+YOLO finds each image's label file by itself, in the matching `labels` folder. A `.yaml` file is a plain text file that stores settings as `name: value` lines.
+
+**Where it is used:** in Chapter 5.1 you start the training by giving YOLO this file's path. It reads this table of contents first, then loads the images it lists.
 
 *File to CREATE (new, empty file):* `C:\projects\drone_pursuit\drone_pursuit\data\yolo\drone.yaml`
 
