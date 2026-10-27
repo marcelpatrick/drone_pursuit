@@ -6630,7 +6630,7 @@ app.close()
 - Use the best checkpoint from Chapter 3.3 - Step 3:
 eg: in  `C:\projects\drone_pursuit\drone_pursuit>` run:
 ```py
-python C:\projects\drone_pursuit\drone_pursuit\scripts\demo\capture_arena_frames.py --checkpoint C:\projects\drone_pursuit\drone_pursuit\logs\skrl\quadcopter_direct\2026-09-30_13-27-20_ppo_torch\checkpoints\best_agent.pt`
+python C:\projects\drone_pursuit\drone_pursuit\scripts\demo\capture_arena_frames.py --checkpoint C:\projects\drone_pursuit\drone_pursuit\logs\skrl\quadcopter_direct\2026-09-30_13-27-20_ppo_torch\checkpoints\best_agent.pt
 ```
 
 ```bat
