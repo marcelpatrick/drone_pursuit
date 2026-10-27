@@ -6428,6 +6428,9 @@ conda activate drone_vision
 cd C:\projects\drone_pursuit\drone_pursuit
 yolo detect train data=C:\projects\drone_pursuit\drone_pursuit\data\yolo\drone.yaml model=yolov8n.pt epochs=60 imgsz=640 batch=16 name=drone_v1
 ```
+-> This command trains the drone detector: it starts from YOLOv8n and fine-tunes it on your images saved in `C:\projects\drone_pursuit\drone_pursuit\data\yolo\`
+- **Train** (learning/fine-tuning): Uses images from `C:\projects\drone_pursuit\drone_pursuit\data\yolo\images\train` and labels from `C:\projects\drone_pursuit\drone_pursuit\data\yolo\labels\train`
+- **Test** (during training): Uses images from `C:\projects\drone_pursuit\drone_pursuit\data\yolo\images\val` and labels from `C:\projects\drone_pursuit\drone_pursuit\data\yolo\labels`
 
 20–40 min typically. While it runs, open the output folder. Two files matter: `train_batch0.jpg` shows augmented training samples with their boxes drawn — your last chance to catch a label bug from 4.3 — and `results.png` plots the loss and metric curves.
 
