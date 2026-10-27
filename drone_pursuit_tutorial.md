@@ -6432,7 +6432,7 @@ yolo detect train data=C:\projects\drone_pursuit\drone_pursuit\data\yolo\drone.y
 - **Train** (learning/fine-tuning): Uses images from `C:\projects\drone_pursuit\drone_pursuit\data\yolo\images\train` and labels from `C:\projects\drone_pursuit\drone_pursuit\data\yolo\labels\train`
 - **Test** (during training): Uses images from `C:\projects\drone_pursuit\drone_pursuit\data\yolo\images\val` and labels from `C:\projects\drone_pursuit\drone_pursuit\data\yolo\labels`
 
-20–40 min typically. While it runs, open the output folder. Two files matter: `train_batch0.jpg` shows augmented training samples with their boxes drawn — your last chance to catch a label bug from 4.3 — and `results.png` plots the loss and metric curves.
+20–40 min typically. While it runs, open the output folder.
 
 </details>
 
@@ -6447,9 +6447,14 @@ Training ends with a folder of scores. This step tells you which numbers to read
 
 *Folder to open:* `C:\projects\drone_pursuit\drone_pursuit\runs\detect\drone_v1\`
 
-- **box_loss / cls_loss** — localisation error and classification error. Both should fall steadily.
-- **mAP50** — *mean Average Precision at 50% IoU*. **IoU** (Intersection over Union) scores how much a predicted box overlaps the true one, 0 to 1; "at 50" counts a detection as correct when that overlap is at least 0.5; **AP** integrates precision across confidence thresholds; the **m** averages over classes, of which we have one. For a single distinctive object with matching backgrounds, expect **mAP50 above 0.9**.
-- **mAP50-95** — the same measure averaged over stricter overlap thresholds up to 0.95, so it is always lower. Above 0.6 is fine here, because the policy needs roughly where the drone is, not a surgically exact corner.
+- **mAP50** | `drone_v1\results.csv`, last row, `metrics/mAP50(B)` | how often the predicted box overlaps the true box by at least 50% | ≥ 0.9
+- **mAP50-95** | `drone_v1\results.csv`, last row, `metrics/mAP50-95(B)` | the same, averaged over stricter overlaps up to 95% | ≥ 0.6
+- **Loss curves** | `drone_v1\results.png` | box_loss = box position error, cls_loss = "is it a drone" error | both fall steadily, then flatten
+- **Training labels** | `drone_v1\train_batch0.jpg` | the training images with their true boxes drawn | every visible drone boxed, label `0`
+- **Predictions vs truth** | `drone_v1\val_batch0_labels.jpg` vs `val_batch0_pred.jpg` | true boxes vs the model's boxes on unseen images | predicted boxes sit on the true ones, confidence > 0.5
+- **Confusion matrix** | `drone_v1\confusion_matrix_normalized.png` | share of drones found, missed, or false alarms | drone→drone ≥ 0.9; background cells near 0
+- **Precision-recall curve** | `drone_v1\BoxPR_curve.png` | trade-off between false alarms and misses | curve hugs the top-right corner
+- **F1 curve** | `drone_v1\BoxF1_curve.png` | balance of precision and recall at each confidence level | peak ≥ 0.9
 
 If mAP50 comes in below 0.8, the cause is almost always the data rather than the hyperparameters: check 4.3's drop rate, re-run the box spot-check, and confirm the training set actually contains hard cases such as a distant drone against ground clutter.
 
