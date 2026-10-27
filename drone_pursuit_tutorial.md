@@ -6511,7 +6511,7 @@ from isaaclab.sensors import TiledCamera, TiledCameraCfg
     tiled_camera: TiledCameraCfg = TiledCameraCfg(
         prim_path="/World/envs/env_.*/Robot/body/front_cam",       # rides on the defender
         offset=TiledCameraCfg.OffsetCfg(pos=(0.04, 0.0, 0.01), rot=(1.0, 0.0, 0.0, 0.0),
-                                        convention="ros"),
+                                        convention="world"),
         data_types=["rgb"],
         spawn=sim_utils.PinholeCameraCfg(focal_length=cam_focal_mm,           # linked to 3.1 Part E
                                          horizontal_aperture=cam_aperture_mm, # linked to 3.1 Part E
