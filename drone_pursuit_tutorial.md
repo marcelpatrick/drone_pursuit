@@ -6489,6 +6489,7 @@ mkdir C:\projects\drone_pursuit\drone_pursuit\data\arena_frames
 
 *File to edit:* `C:\projects\drone_pursuit\drone_pursuit\source\drone_pursuit\drone_pursuit\tasks\direct\quadcopter\quadcopter_env.py`
 
+
 ```python
 # ── FILE: ...\tasks\direct\quadcopter\quadcopter_env.py ─────────────────────
 # ── SECTION: the imports at the top of the file ─────────────────────────────
@@ -6498,9 +6499,12 @@ from isaaclab.sensors import TiledCamera, TiledCameraCfg
 # ▲▲▲ END OF INSERT ▲▲▲
 
 
-# ── SECTION: class QuadcopterEnvCfg, below the 3.1 Part E camera constants ──
+# ── SECTION: class QuadcopterEnvCfg, directly below capture_ttc_s ───────────
+# ──          (must sit BELOW cam_width, cam_height and cam_focal_mm,        ─
+# ──           because the camera block reads those three values)          ─
 
     capture_ang_size = 0.19      # ← EXISTING, from 3.3 Step 4
+    capture_ttc_s = 0.27         # ← EXISTING, from 3.3 Step 4
 
     # ▼▼▼ INSERT HERE! — the camera that RENDERS (3.1 Part E only described it) ▼▼▼
     tiled_camera: TiledCameraCfg = TiledCameraCfg(
@@ -6508,9 +6512,10 @@ from isaaclab.sensors import TiledCamera, TiledCameraCfg
         offset=TiledCameraCfg.OffsetCfg(pos=(0.04, 0.0, 0.01), rot=(1.0, 0.0, 0.0, 0.0),
                                         convention="ros"),
         data_types=["rgb"],
-        spawn=sim_utils.PinholeCameraCfg(focal_length=12.0,        # = cam_focal_mm!
+        spawn=sim_utils.PinholeCameraCfg(focal_length=cam_focal_mm,           # linked to 3.1 Part E
+                                         horizontal_aperture=cam_aperture_mm, # linked to 3.1 Part E
                                          clipping_range=(0.05, 30.0)),
-        width=640, height=480,                                     # = cam_width/height!
+        width=cam_width, height=cam_height,                                   # linked to 3.1 Part E
     )
     # ▲▲▲ END OF INSERT ▲▲▲
 
@@ -6530,7 +6535,7 @@ from isaaclab.sensors import TiledCamera, TiledCameraCfg
         # ... rest unchanged ...
 ```
 
-The focal length here must equal `cam_focal_mm` from 3.1 Part E. If they differ, the rendered frames obey a different geometry from the readings the policy trained on, and Chapter 6.1 Step 2 will report a constant-factor disagreement.
+**Why the camera reads `cam_focal_mm`, `cam_aperture_mm`, `cam_width` and `cam_height` instead of typing numbers.** The policy was trained on readings calculated with those four values (3.1 Part E). If the rendered camera used different ones, the same attacker would appear at a different size and position in the image than the policy expects, and Chapter 6.1 Step 2 would report a constant-factor disagreement. Linking them means that if you change a value in 3.1 Part E after measuring your Tello, the rendering camera changes with it. This only works because the camera block sits below those four lines in the same class. Python reads a class from top to bottom, so placing it above them gives a `NameError`.
 
 Then run `play.py` with your Chapter-3 checkpoint and dump `self._camera.data.output["rgb"]` to PNGs. Save about 20 frames spread across the approach, not 20 from the final second.
 
