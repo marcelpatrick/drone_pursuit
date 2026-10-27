@@ -6151,7 +6151,11 @@ Expected output, for the 2500-frame production batch, is one line such as `kept 
 
 > **Environment:** none needed — you are creating a text file.
 
-`drone.yaml` is the file the `yolo train` command in 5.1 is pointed at. It names the two split folders and declares that this dataset has exactly one class. That one class is what makes the exported ONNX output shape `(1, 5, 6300)` rather than the 80-class `(1, 84, 8400)` you saw in the 1.3 smoke test.
+**Why this step exists.** Step 1 filled `data\yolo` with images and label files, but YOLO cannot work out by itself which folder holds the images to learn from, which holds the images to test on, or what object it is looking for. In this step you create a new, small text file that tells it: `drone.yaml`. A `.yaml` file stores settings as `name: value` lines. This one does for the dataset what `QuadcopterEnvCfg` does for the environment: it lists the settings that code reads before it starts.
+
+It answers three questions: where the **training** images are (`images\train`, the ones YOLO learns from), where the **validation** images are (`images\val`, the ones it tests itself on), and which **classes** (kinds of object) exist. Here there is only one, `drone`, with id `0`.
+
+**Where it is used:** the `yolo train` command in Chapter 5.1 is given this file's path. Declaring one class, instead of the 80 the stock model knows, is why each detection later comes out as 5 numbers (4 for the box, 1 score) instead of 84.
 
 *File to CREATE (new, empty file):* `C:\projects\drone_pursuit\drone_pursuit\data\yolo\drone.yaml`
 
@@ -6184,7 +6188,11 @@ names:
 
 > **Environment:** `env_drone`
 
-4.1's `preview_boxes.py` checked the generator's boxes. This check is different: it rebuilds each rectangle **from the YOLO numbers** that 5.1 will actually train on, so it tests the conversion arithmetic itself. A swapped width and height, or a centre computed from the wrong corner, is immediately obvious in a picture and completely invisible in the numbers: the drop count and file counts all look correct while every box is wrong.
+**Why this step exists.** Step 1's script changed every box from corner pixels into YOLO's centre-and-size fractions. If that arithmetic has a bug, for example width and height swapped, every number still looks plausible and the file counts still match, so nothing warns you. The bug only shows up in Chapter 5, as a detector that never scores well after 20–40 minutes of training.
+
+So this step creates a small script, `check_yolo_labels.py`, that runs the conversion backwards: it reads 10 YOLO label files, turns the fractions back into pixels, and draws the rectangles on copies of their images. You then look at the pictures. A green box hugging each drone proves the conversion is right.
+
+This is different from 4.1's `preview_boxes.py`, which drew the generator's original boxes. This one draws the converted numbers that 5.1 will actually train on. The copies go to `data\yolo_check`, outside `data\yolo`, so they are never trained on.
 
 *File to CREATE:* `C:\projects\drone_pursuit\drone_pursuit\scripts\sdg\check_yolo_labels.py`
 
@@ -6250,9 +6258,12 @@ Open `C:\projects\drone_pursuit\drone_pursuit\data\yolo_check\`. Every green rec
 
 > ### 📦 Handing the dataset to Block E
 > 
-> Block E reads exactly one thing: the folder `data/yolo/`, containing four subfolders and a
-> descriptor. Everything else produced in Block D — the raw `.npy` boxes, the labels JSON, the
-> unconverted PNGs — has already done its job and stays on the helper's disk.
+> **Read this only if** Block D ran on a separate Linux machine (the *helper*) and Block E will
+> run on your Windows machine (the *main* machine). Block E needs one thing from Block D: the
+> `data/yolo/` folder built in 4.3, holding the images, their label files and `drone.yaml`.
+> Everything else Block D produced (raw `.npy` boxes, labels JSON, unconverted PNGs) has already
+> been used and stays on the helper. Below, the helper zips and checks the folder (Step H-0); the
+> main machine unzips it, fixes the one Windows path and counts the files (Steps H-1 to H-3).
 >
 > ```
 >   🐧 HELPER MACHINE (Linux)                     🖥️ MAIN MACHINE (Windows)
@@ -6348,7 +6359,11 @@ Open `C:\projects\drone_pursuit\drone_pursuit\data\yolo_check\`. Every green rec
 <details>
 <summary>Expand Block E</summary>
 
-**What this block produces:** `drone_detector.onnx`, a YOLOv8-nano network that takes a 480×640 RGB frame and returns a rectangle around the drone in it. Training happens in `drone_vision`; the ONNX file is the only thing that crosses into `env_drone`, for the reason established in 1.3 — the two environments hold incompatible torch versions and ONNX carries no framework with it.
+**What this block is for.** Block D gave you about 2,500 labelled drone images. This block uses them to train a **detector**: a neural network that looks at a camera frame and draws a rectangle around the drone in it. The policy from Block C cannot read images; it needs to know where the attacker sits in the frame, and from Chapter 6 on the detector is what tells it.
+
+The result is one file, `drone_detector.onnx`. ONNX is a file format that stores a trained network without the library that trained it. Training happens in `drone_vision`, the environment that has the YOLO library. The policy runs in `env_drone`, which needs a different torch version, as you saw in 1.3. The `.onnx` file is how the detector moves from one environment to the other.
+
+The workflow below follows the images from generation to the final test.
 
 **MODEL TRAINING WORKFLOW:**
 
@@ -6386,11 +6401,11 @@ C:\projects\drone_pursuit\drone_pursuit\models\               ← the exported .
 <details>
 <summary>Expand 5.1</summary>
 
-> **What this subchapter does:** takes YOLOv8n, a network already trained on millions of everyday photographs, and continues its training on your 2500 drone renders so it specialises in one class. Fine-tuning rather than training from scratch is why a few thousand images suffice: the network already encodes edges, textures and lighting, and only has to learn what a drone looks like. Deliverable: `best.pt`, which 5.2 stress-tests and exports.
+> **What this subchapter does:** trains the detector. Training one from zero would need far more images than you have, so you start from **YOLOv8n**, a detector Ultralytics already trained on a large public photo collection covering 80 everyday object types. It already knows how to find edges, shapes and objects in general. This subchapter continues its training on your drone images (this is called **fine-tuning**) until it specialises in one class, `drone`. Step 1 runs the training; Step 2 reads its scores. The result is `best.pt`, the best-scoring version of the trained network, which 5.2 tests on chase footage and converts to ONNX.
 
 ### Why the nano size
 
-YOLOv8 ships in five sizes, n/s/m/l/x. Chapter 6.2 runs the detector inside the simulation loop and Chapter 7.2 runs it inside a 20 Hz flight loop, where a detector taking longer than 50 ms starves the control rate. Nano is about 3 million parameters and infers in a few milliseconds. Larger models earn their cost on cluttered many-class scenes, not on one distinctive object.
+YOLOv8 comes in five sizes, from n (nano: smallest and fastest) to x (largest and most accurate). This tutorial uses nano because the detector has to run on every control step. On the real drone (Chapter 7.2) the control loop runs 20 times a second, which leaves 50 ms per pass for everything; a slower detector delays every command. Nano has about 3 million parameters (the adjustable numbers inside the network) and finds an object in a few milliseconds. The larger sizes pay off on scenes with many kinds of objects; here there is one.
 
 ### Step 1 — Run the training
 
@@ -6398,6 +6413,8 @@ YOLOv8 ships in five sizes, n/s/m/l/x. Chapter 6.2 runs the detector inside the 
 <summary>Expand Step 1</summary>
 
 > **Environment:** `drone_vision`
+
+This step starts the training. The command gives YOLO three things: the `drone.yaml` from 4.3 (where the images are), the starting model `yolov8n.pt` (downloaded automatically the first time), and how long to train (`epochs=60`: 60 full passes through all training images). Everything YOLO produces goes into a new folder, `runs\detect\drone_v1\`.
 
 *Run from:* `C:\projects\drone_pursuit\drone_pursuit` — *output lands in:* `C:\projects\drone_pursuit\drone_pursuit\runs\detect\drone_v1\`
 ```bat
@@ -6416,6 +6433,8 @@ yolo detect train data=C:\projects\drone_pursuit\drone_pursuit\data\yolo\drone.y
 <summary>Expand Step 2</summary>
 
 > **Environment:** none needed — you are reading the output files.
+
+Training ends with a folder of scores. This step tells you which numbers to read and which values mean the detector is good enough to move on. The question they answer: does the detector find the drone on the validation images, the 15% it never trained on?
 
 *Folder to open:* `C:\projects\drone_pursuit\drone_pursuit\runs\detect\drone_v1\`
 
@@ -6438,7 +6457,7 @@ If mAP50 comes in below 0.8, the cause is almost always the data rather than the
 <details>
 <summary>Expand 5.2</summary>
 
-> **What this subchapter does:** a detector can score above 0.9 mAP on its own validation split and still miss the attacker in the pursuit arena, because the SDG scene and the arena differ in lighting, background and typical viewing distance. This subchapter captures frames from the defender's own camera during a real chase, tests the detector on those, and then exports it to ONNX at 480×640 so it can run inside `env_drone` in Chapter 6.
+> **What this subchapter does:** 5.1 scored the detector on images from the same generator it trained on. The pursuit arena from Chapters 2–3 looks different: other lighting, other backgrounds, and the attacker usually far away and small. A detector can score well in 5.1 and still miss the attacker there. So Step 1 records about 20 frames from a camera on the defender during a simulated chase, Step 2 runs the detector on them to see where it fails, and Step 3 converts it into `drone_detector.onnx` so Chapter 6 can run it inside `env_drone`.
 
 ### Step 1 — Attach a camera to the defender and capture chase frames
 
@@ -6447,7 +6466,7 @@ If mAP50 comes in below 0.8, the cause is almost always the data rather than the
 
 > **Environment:** `env_drone` — this runs Isaac Lab to capture the frames.
 
-This step attaches a `TiledCameraCfg` to the defender's body and saves what it sees while your Chapter 3 policy chases. Those images are the ones the detector will really face, and the same camera stays in place for Chapter 6.2's demo — so this is also a dry run of that wiring.
+Until now the defender had no real camera: 3.1 Part E only described one as numbers for the readings. This step adds a camera that actually produces images, using `TiledCameraCfg` (Isaac Lab's camera setting, built for many environments each rendering at once), attached to the front of the defender. You then play your Chapter 3 policy and save what the camera sees. These frames are what the detector will face in Chapter 6, and the same camera stays in place for 6.2's demo.
 
 *Run from:* `any folder`
 ```bat
@@ -6515,6 +6534,8 @@ python C:\projects\drone_pursuit\drone_pursuit\scripts\skrl\play.py --task Templ
 
 > **Environment:** `drone_vision`
 
+This step runs the detector on the arena frames from Step 1 and saves copies with its rectangles drawn on them. You then look at which frames it missed, and how far away the attacker was in those.
+
 *Run from:* `C:\projects\drone_pursuit\drone_pursuit` — *predictions are saved under:* `C:\projects\drone_pursuit\drone_pursuit\runs\detect\predict\`
 ```bat
 conda activate drone_vision
@@ -6531,6 +6552,8 @@ The typical finding is that detection is reliable when the attacker is near and 
 <summary>Expand Step 3</summary>
 
 > **Environment:** `drone_vision`
+
+This step converts `best.pt` into `drone_detector.onnx` and copies it into `models\`. `best.pt` opens only with the Ultralytics library, which lives in `drone_vision`. The `.onnx` file runs in `env_drone` through onnxruntime, a small library that runs ONNX files without torch. It is the same conversion you tested in 1.3 with the stock model.
 
 *Run from:* `C:\projects\drone_pursuit\drone_pursuit` — *the finished model belongs in:* `C:\projects\drone_pursuit\drone_pursuit\models\`
 ```bat
@@ -6562,9 +6585,9 @@ Re-run the 1.3 onnxruntime smoke test in `env_drone` against this file. The inpu
 <details>
 <summary>Expand Block F</summary>
 
-**What this block produces:** a chase in which everything the defender knows about the attacker comes from a rendered camera frame passed through your detector — no positions read from the simulator.
+**What this block is for.** The policy (Block C) was trained on attacker readings calculated from the simulator's exact positions. The detector (Block E) works on images. The real drone has no exact positions, only camera images. This block connects the two inside the simulation: the defender's camera renders a frame, the detector draws a rectangle, and new code turns that rectangle into the seven attacker readings the policy expects (defined in 3.1). If the defender still catches the attacker this way, the whole chain works before any hardware is involved.
 
-**The one thing this block adds** is the converter between the detector's pixel rectangle and the policy's seven readings. Everything else already exists: the policy from Block C, the detector from Block E, and the camera from 5.2.
+The only new code is that converter (6.1) and a script that runs the full loop (6.2). The policy, the detector and the camera already exist.
 
 **The files created in this block:**
 
@@ -6589,7 +6612,7 @@ C:\projects\drone_pursuit\drone_pursuit\scripts\demo\vision_pursuit_demo.py   �
 <details>
 <summary>Expand 6.1</summary>
 
-> **What this subchapter does:** builds the piece of code that sits between the detector and the policy and translates one's output into the other's input. Because Chapter 3.1 defined the policy's inputs in image terms already, the translation is only a rescale by the image dimensions — no focal length, no assumed target width. This subchapter then verifies the converter's output against the numbers `_camera_readings()` computed for the same moment, so that any strange behaviour in 6.2 can be attributed to the detector or the policy rather than to this file.
+> **What this subchapter does:** creates `vision_bridge.py`, the code between the detector and the policy. The detector outputs a rectangle in pixels. The policy expects seven readings, such as how far left or right of the image centre the attacker is and how wide it looks. Because 3.1 already defined those readings in image terms, converting is mostly dividing pixel values by the image width and height. Steps 2 and 3 then check that the converter gives the same seven numbers `_camera_readings()` produced in training, so that if the chase misbehaves in 6.2, you know this file is not the cause.
 
 ### What the converter has to do
 
@@ -6616,7 +6639,7 @@ There is still one thing to get wrong here, and Step 2 exists to catch it: the i
 
 > **Environment:** none needed — you are creating a folder and a file.
 
-Two classes go in one file. `DroneDetector` loads the ONNX model under onnxruntime and returns the single highest-scoring rectangle, or `None` when nothing clears the confidence threshold. `CameraReadingBridge` rescales that rectangle into the seven numbers, remembers the previous values so it can compute the three rates of change, and holds those values frozen on a miss — the exact pattern the policy met in training whenever `ang_size` fell below the visibility threshold. Chapter 7.2's flight script imports both classes unchanged.
+This step creates the converter file. It holds two **classes** (Python blueprints for objects that keep data between calls). `DroneDetector` loads `drone_detector.onnx` and, for each frame, returns the single most confident rectangle, or `None` when nothing scores above the 0.4 confidence threshold. `CameraReadingBridge` turns that rectangle into the seven readings. It remembers the previous frame's values for two reasons: to compute the three rates of change (how much each reading moved since the last frame), and to keep the last values when the detector misses, as the policy saw in training whenever the attacker looked too small. Chapter 7.2's flight script reuses both classes unchanged.
 
 *Run from:* `any folder`
 ```bat
@@ -6691,7 +6714,7 @@ class CameraReadingBridge:
 
 > **Environment:** `env_drone`
 
-For any given moment you can produce the same seven readings twice: once by projecting ground truth through the camera model (`_camera_readings()` from 3.1 Part F) and once by running the detector on the rendered frame and passing the rectangle through the converter. Agreement proves the two definitions match. This is the check that catches the field-of-view mismatch flagged in 3.1 Part E, which produces no error and degrades the chase in a way that looks like a training problem.
+The policy was trained on readings calculated from exact positions (`_camera_readings()`, 3.1 Part F). From now on it gets readings measured from images. If the two methods disagree, the policy receives numbers that mean something different from what it learned, and no error appears: the chase just gets worse and looks like a training problem. This step computes the readings both ways for the same moments and compares them. The usual cause of disagreement is a camera whose field of view (how wide the lens sees) differs from the one assumed in 3.1 Part E.
 
 *Folders involved:* frames in `C:\projects\drone_pursuit\drone_pursuit\data\arena_frames\`, converter in `C:\projects\drone_pursuit\drone_pursuit\scripts\demo\vision_bridge.py`
 
@@ -6713,7 +6736,7 @@ Acceptance: bearings agree within a few hundredths, angular size within about 20
 
 > **Environment:** `env_drone`
 
-Feed the converter frames in which the attacker is genuinely out of view. It must return `visible = 0`, hold the previous bearings unchanged, and report all three deltas as zero. Zeroing the bearings instead of holding them would send the policy a reading meaning "the attacker is dead ahead", which is the opposite of what losing sight means, and the defender would fly straight on.
+This step checks what the converter does when the detector finds nothing. Feed it frames in which the attacker is out of view. It must report `visible = 0`, keep the previous left/right and up/down readings (the *bearings*), and report all three rates of change as zero. Resetting the bearings to zero instead would be wrong: a zero bearing means "the attacker is straight ahead", so after losing sight the defender would fly straight on.
 
 </details>
 
@@ -6731,7 +6754,7 @@ Feed the converter frames in which the attacker is genuinely out of view. It mus
 <details>
 <summary>Expand 6.2</summary>
 
-> **What this subchapter does:** connects the pursuit env with its onboard camera, your trained policy, the ONNX detector and the converter from 6.1 into one script. It runs a single environment and, on every control step, overwrites observation slots 6 to 12 with the seven numbers measured from a rendered frame. If the defender still captures, the complete see-decide-act loop works and only the hardware remains.
+> **What this subchapter does:** runs the complete chase with the camera in charge. A new script, `vision_pursuit_demo.py`, loads your Chapter 3 policy and the detector and runs one environment. On every control step it replaces the seven attacker readings (positions 6 to 12 of the 17-number observation) with values measured from the rendered camera frame. The defender's own speed and tilt still come from the simulator, just as they will come from the Tello's own sensors in Chapter 7. If the defender still catches the attacker, the full see-decide-act loop works and only the hardware remains.
 
 ### The demo architecture
 
@@ -6763,7 +6786,7 @@ Feed the converter frames in which the attacker is genuinely out of view. It mus
 
 > **Environment:** none needed to write it; `env_drone` to run it.
 
-This is the file that touches every subsystem, so expect to iterate on it.
+This step creates the demo script. Each pass of its loop does four things: takes the camera frame (SEE), puts the seven measured readings into the observation (SPLICE), asks the policy for commands (ACT), and prints the simulator's true distance next to the camera's estimate so you can compare them (COMPARE). It connects every part built so far, so expect a few fixes before it runs cleanly.
 
 *File to CREATE (new, empty file):* `C:\projects\drone_pursuit\drone_pursuit\scripts\demo\vision_pursuit_demo.py`
 
@@ -6838,6 +6861,8 @@ while app.is_running():
 
 > **Environment:** `env_drone`
 
+This step runs the demo. If it misbehaves, you first run it without the camera readings, which tells you whether the problem is in loading the policy or in the vision path.
+
 *Run from:* `any folder` — *the script lives in:* `C:\projects\drone_pursuit\drone_pursuit\scripts\demo\` — *checkpoints live in:* `C:\projects\drone_pursuit\drone_pursuit\logs\skrl\<run-folder>\checkpoints\`
 ```bat
 conda activate env_drone
@@ -6903,7 +6928,7 @@ Each of these builds on what you now have, ordered by effort:
 <details>
 <summary>Expand Block G</summary>
 
-**What this block produces:** `policy.onnx` — the decision-making network extracted from your skrl checkpoint — plus a flight script that runs it beside the detector on your laptop and commands a real Tello, and a set of recorded flights you use to improve both models.
+**What this block is for.** Everything so far ran in simulation. This block moves the two trained networks onto the real Tello. First the policy is extracted into its own file, `policy.onnx`, so it can run without Isaac Lab. Then a new flight script on your laptop reads the Tello's camera, runs the detector and the policy, and sends commands to the drone over Wi-Fi. Every flight is recorded, and the recordings are used to improve both networks.
 
 **Nothing is retrained to get here.** The policy already commands stick channels, already decides at your drone's measured rate, already expects delayed readings, and already uses only telemetry a Tello reports. That is what 1.4 bought by coming before Chapter 3.
 
@@ -6934,7 +6959,7 @@ C:\projects\drone_pursuit\drone_pursuit\flights\                        ← flig
 <details>
 <summary>Expand 7.1</summary>
 
-> **What this subchapter does:** the trained policy currently lives inside a skrl checkpoint that only Isaac Lab can open, and the flight script has no Isaac Lab installed. This subchapter extracts the decision-making network from that checkpoint and saves it as `policy.onnx`, then proves the exported file produces the same output as the checkpoint on identical input. It is the same operation you performed on the detector in 5.2, for the same reason.
+> **What this subchapter does:** your trained policy is stored inside a **checkpoint** (a skrl save file, `best_agent.pt`), which needs Isaac Lab and skrl to open. The flight script in 7.2 runs without Isaac Lab. So this subchapter extracts the part of the checkpoint that makes decisions and saves it as `policy.onnx`, the same kind of conversion 5.2 did for the detector. It then checks that the exported file gives the same commands as the checkpoint for the same inputs.
 
 ### What a checkpoint contains, and which part you need
 
@@ -6954,6 +6979,8 @@ Exporting means reaching past the training machinery and taking only the actor.
 <summary>Expand Step 1</summary>
 
 > **Environment:** `env_drone`
+
+This step creates `export_policy.py`. It loads the checkpoint the same way `play.py` does, keeps only the **actor** (the network that turns the 17 observations into 4 commands), and saves it as `models\policy.onnx`.
 
 *File to CREATE (new, empty file):* `C:\projects\drone_pursuit\drone_pursuit\scripts\demo\export_policy.py`
 
@@ -7034,7 +7061,7 @@ python C:\projects\drone_pursuit\drone_pursuit\scripts\demo\export_policy.py --c
 
 > **Environment:** `env_drone`
 
-Feed the same random 17 numbers to both the wrapped checkpoint and the ONNX file and compare the outputs. A faulty export produces a drone that flies badly for reasons you would otherwise spend days attributing to the hardware, the detector or the delay model.
+An export can go wrong without any error: the file loads but returns slightly different commands. On the drone that looks like bad flying, and you would blame the hardware, the detector or the delay. This step feeds the same 17 random numbers to the checkpoint and to the ONNX file and compares the four commands each returns.
 
 *File to edit:* `C:\projects\drone_pursuit\drone_pursuit\scripts\demo\export_policy.py`
 
@@ -7065,6 +7092,8 @@ Below about 1e-4 means faithful.
 
 > **Environment:** none needed — you are checking that two files exist.
 
+This step confirms that the two files the flight script needs sit in one folder: `drone_detector.onnx` from 5.2 and `policy.onnx` from Step 1.
+
 *Folder to open:* `C:\projects\drone_pursuit\drone_pursuit\models\`
 
 ```
@@ -7093,7 +7122,7 @@ These two files are the entire transfer. The environment, the reward function, t
 <details>
 <summary>Expand 7.2</summary>
 
-> **What this subchapter does:** assembles the detector, the converter, the exported policy and the Tello SDK into the loop that flies the drone, and records every observation and command to CSV plus the video to MP4. It then runs that loop with the propellers off, so every part can be verified while nothing can hurt you — including the channel-mapping error that otherwise sends the drone sideways into a wall.
+> **What this subchapter does:** creates the flight script, `fly_real.py`. It runs on your laptop and repeats the loop below 20 times a second: take the newest Tello camera frame, find the attacker with the detector, convert the rectangle with 6.1's converter, add the drone's own speed and tilt, ask the policy for four commands, and send them to the Tello. It records every reading and command to a CSV file and the video to an MP4, for use in 7.4. You then run it with the propellers removed, so every part can be checked safely, above all that each command moves the drone in the intended direction.
 
 ### The loop
 
@@ -7127,6 +7156,8 @@ These two files are the entire transfer. The environment, the reward function, t
 mkdir C:\projects\drone_pursuit\drone_pursuit\flights
 ```
 
+This step creates the `flights\` folder, where every flight's CSV and video will be saved.
+
 **Do this before flying, not after.** The script opens its log file immediately after takeoff, and Python's `open()` fails if the parent folder is missing — which would crash the script with the drone already in the air.
 
 </details>
@@ -7137,6 +7168,8 @@ mkdir C:\projects\drone_pursuit\drone_pursuit\flights
 <summary>Expand Step 2</summary>
 
 > **Environment:** `env_drone` to run it; none needed to write it.
+
+This step creates the flight script. It loads both ONNX files, connects to the Tello, starts recording, and runs the loop shown above until you stop it.
 
 *File to CREATE (new, empty file):* `C:\projects\drone_pursuit\drone_pursuit\scripts\demo\fly_real.py`
 
@@ -7280,7 +7313,7 @@ finally:
 
 > **Environment:** `env_drone` — 🔌 **Tello powered on, propellers OFF.**
 
-Take the propellers off, then disable takeoff and landing:
+This step runs the script with the drone powered on but unable to fly, and checks each part while you hold the attacker in your hand. A command pointing the wrong way costs nothing to find here; found in flight, it crashes the drone. Take the propellers off, then disable takeoff and landing:
 
 *File to edit:* `C:\projects\drone_pursuit\drone_pursuit\scripts\demo\fly_real.py`
 
@@ -7335,7 +7368,7 @@ Hold the attacker drone in front of the camera by hand and check all six rows:
 <details>
 <summary>Expand 7.3</summary>
 
-> **What this subchapter does:** runs the flight script for real, in six stages that each add exactly one new element. Staging matters because a failure at stage 3 names its own cause — the one thing stage 3 added — while jumping straight to a flying attacker turns any failure into an unanswerable question and often a broken drone.
+> **What this subchapter does:** flies the chase for real, in six stages. Each stage adds exactly one new thing: hover only, then the live policy, then a still attacker, a hand-carried one, a slow flying one, and a faster one. If stage 3 fails, the cause is the one thing stage 3 added. Going straight to a flying attacker leaves too many possible causes for any failure, and risks breaking the drone.
 
 ### Before every session
 
@@ -7347,6 +7380,8 @@ Propeller guards on. Eye protection. Clear space. Nobody else present. Battery a
 <summary>Expand Step 1</summary>
 
 > **Environment:** `env_drone` — 🔌 drone flying.
+
+Run the stages in order, and move on only when the current one works. The command is the same every time; the stages differ in small edits to the script and in where the attacker is.
 
 *Run from:* `any folder` — *the script lives in:* `C:\projects\drone_pursuit\drone_pursuit\scripts\demo\`
 ```bat
@@ -7374,6 +7409,8 @@ python C:\projects\drone_pursuit\drone_pursuit\scripts\demo\fly_real.py
 <summary>Expand Step 2</summary>
 
 > **Environment:** none needed — you are reading CSV files.
+
+When a stage fails, this step shows how to find the cause in the recorded CSV instead of guessing from what you saw. Match what the drone did to a row in the table, then check the column it names.
 
 *Folder to open:* `C:\projects\drone_pursuit\drone_pursuit\flights\`
 
@@ -7408,7 +7445,7 @@ Indoors in a private space is the least regulated situation. Outdoors in Canada,
 <details>
 <summary>Expand 7.4</summary>
 
-> **What this subchapter does:** turns the CSVs and videos recorded in 7.2 into two concrete improvements — a detector fine-tuned on real footage of your real target, and simulator constants corrected to match how your drone actually responded. Each cycle makes the simulation more truthful, so the next policy trained in it transfers better. This is the loop professional sim-to-real work runs continuously.
+> **What this subchapter does:** uses the flights recorded in 7.3 to improve the next round, in two ways. Step 1 retrains the detector on real footage of your target drone, which it has never seen. Step 2 adjusts simulator settings (how fast the drone speeds up, how much it drifts, how late the camera is) to match how the real Tello behaved; you then retrain the policy in that corrected simulation. Each cycle brings the simulation closer to reality, so the next policy works better on the drone.
 
 ### Why the policy is not trained on flight data directly
 
@@ -7432,7 +7469,7 @@ This is **system identification**: using measurements of the real system to corr
 
 > **Environment:** `drone_vision` for the YOLO commands; the frame extraction itself needs none.
 
-Your detector has only ever seen synthetic Crazyflie renders. The recorded videos are real footage of the real target drone, which is the single biggest difference between Chapter 6's conditions and Chapter 7's.
+The detector was trained only on simulated images of a Crazyflie. The videos recorded in 7.3 show your real target drone through the real Tello camera, so they are the best material for improving it. This step turns them into labelled training images and fine-tunes the detector on them.
 
 **1 — Extract frames** — every tenth, since consecutive frames at 20 Hz are nearly identical:
 
@@ -7474,6 +7511,8 @@ yolo detect train data=C:\projects\drone_pursuit\drone_pursuit\data\real\drone.y
 <summary>Expand Step 2</summary>
 
 > **Environment:** none needed — you are reading logs and editing cfg values.
+
+This step compares how the simulated drone behaves with how the real one did, using the flight CSVs, and adjusts four simulation settings to match. Then you retrain the policy.
 
 *Logs to read:* `C:\projects\drone_pursuit\drone_pursuit\flights\flight_<stamp>.csv`
 *File to edit:* `C:\projects\drone_pursuit\drone_pursuit\source\drone_pursuit\drone_pursuit\tasks\direct\quadcopter\quadcopter_env.py`
@@ -7531,6 +7570,8 @@ Then retrain (3.3 Step 1) and fly again (7.3).
 <details>
 <summary>Expand Appendix A</summary>
 
+A reference to use when something breaks, not a task. The first table lists the version of each library this tutorial was built with and why it is fixed. The second matches common symptoms to their likely cause.
+
 | Component | Version targeted | Pin reason |
 |---|---|---|
 | Isaac Sim | 5.1.0 (pip) | Isaac Lab 2.3 is built on it; Python 3.11 required |
@@ -7573,6 +7614,8 @@ Then retrain (3.3 Step 1) and fly again (7.3).
 
 <details>
 <summary>Expand Appendix B</summary>
+
+A planning table: how long each subchapter takes, whether it needs the drone, and which subchapters must be finished first.
 
 | Block | Subchapter | Hardware | ~Time | Depends on |
 |---|---|---|---|---|
