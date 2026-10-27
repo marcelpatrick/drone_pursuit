@@ -6625,7 +6625,8 @@ env.close()
 app.close()
 ```
 
-*Run from:* `any folder` — *checkpoints live in:* `C:\projects\drone_pursuit\drone_pursuit\logs\skrl\<name of your best or latest checkpoint>\checkpoints\`
+*Run from:* `any folder` — *checkpoints live in:* `C:\projects\drone_pursuit\drone_pursuit\logs\skrl\quadcopter_direct`
+
 - Use the best checkpoint from Chapter 3.3 - Step 3:
 eg: `C:\projects\drone_pursuit\drone_pursuit>python C:\projects\drone_pursuit\drone_pursuit\scripts\demo\capture_arena_frames.py --checkpoint C:\projects\drone_pursuit\drone_pursuit\logs\skrl\quadcopter_direct\2026-09-30_13-27-20_ppo_torch\checkpoints\best_agent.pt`
 
