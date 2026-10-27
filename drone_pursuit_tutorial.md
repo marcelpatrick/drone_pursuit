@@ -6538,38 +6538,186 @@ from isaaclab.sensors import TiledCamera, TiledCameraCfg
 
 **Why the camera reads `cam_focal_mm`, `cam_aperture_mm`, `cam_width` and `cam_height` instead of typing numbers.** The policy was trained on readings calculated with those four values (3.1 Part E). If the rendered camera used different ones, the same attacker would appear at a different size and position in the image than the policy expects, and Chapter 6.1 Step 2 would report a constant-factor disagreement. Linking them means that if you change a value in 3.1 Part E after measuring your Tello, the rendering camera changes with it. This only works because the camera block sits below those four lines in the same class. Python reads a class from top to bottom, so placing it above them gives a `NameError`.
 
-Then run `play.py` with your Chapter-3 checkpoint and dump `self._camera.data.output["rgb"]` to PNGs. Save about 20 frames spread across the approach, not 20 from the final second.
-
-*Run from:* `C:\projects\drone_pursuit\drone_pursuit` — *frames go to:* `C:\projects\drone_pursuit\drone_pursuit\data\arena_frames\`
-```bat
-python C:\projects\drone_pursuit\drone_pursuit\scripts\skrl\play.py --task Template-Drone-Pursuit-Direct-v0 --num_envs 1 --enable_cameras
-```
 
 </details>
 
-### Step 2 — Run the detector on those frames and study the misses
+### Step 2 — Record frames from the defender's camera during a chase
 
 <details>
 <summary>Expand Step 2</summary>
 
-> **Environment:** `drone_vision`
+> **Environment:** `env_drone` — this runs Isaac Lab.
 
-This step runs the detector on the arena frames from Step 1 and saves copies with its rectangles drawn on them. You then look at which frames it missed, and how far away the attacker was in those.
+Step 1 gave the defender a camera, but nothing saves what it sees yet. This step creates a short script, `capture_arena_frames.py`, that runs one chase with your trained policy and saves a picture from the defender's camera every quarter of a second, until it has 40. Each file name records how far away the attacker really was when the picture was taken, for example `frame_012_d03.45m.png` means 3.45 m. Step 3 uses those distances to show at which range the detector starts missing.
 
-*Run from:* `C:\projects\drone_pursuit\drone_pursuit` — *predictions are saved under:* `C:\projects\drone_pursuit\drone_pursuit\runs\detect\predict\`
+*Run from:* `any folder`
 ```bat
-conda activate drone_vision
-yolo predict model=C:\projects\drone_pursuit\drone_pursuit\runs\detect\drone_v1\weights\best.pt source=C:\projects\drone_pursuit\drone_pursuit\data\arena_frames save=True conf=0.4
+mkdir C:\projects\drone_pursuit\drone_pursuit\scripts\demo
 ```
 
-The typical finding is that detection is reliable when the attacker is near and fails when it is a 12-pixel speck at range. If misses are frequent at the distances that matter — under about 5 m — go back to 4.2, add camera positions further from the drone, generate another batch, and fine-tune. Testing on frames from the environment where the detector will actually run is the check most often skipped, and the one that catches this before Chapter 6 turns it into an unexplained drop in capture rate.
+*File to CREATE (new, empty file):* `C:\projects\drone_pursuit\drone_pursuit\scripts\demo\capture_arena_frames.py`
+
+```python
+# ── FILE: C:\projects\drone_pursuit\drone_pursuit\scripts\demo\capture_arena_frames.py
+# ── NEW file — the whole content, nothing to insert into.
+# ── Loads : your Ch.3 checkpoint, passed on the command line
+# ── Writes: C:\projects\drone_pursuit\drone_pursuit\data\arena_frames\frame_XXX_dDD.DDm.png
+
+import argparse, os
+from isaaclab.app import AppLauncher
+
+parser = argparse.ArgumentParser()
+parser.add_argument("--checkpoint", type=str, required=True)   # your Ch.3 best_agent.pt
+parser.add_argument("--num_frames", type=int, default=40)      # how many pictures to save
+parser.add_argument("--every", type=int, default=5)            # 1 picture every 5 control steps = 0.25 s at 20 Hz
+parser.add_argument("--out", type=str,
+                    default=r"C:\projects\drone_pursuit\drone_pursuit\data\arena_frames")
+AppLauncher.add_app_launcher_args(parser)
+args = parser.parse_args()
+args.enable_cameras = True                                     # the camera renders nothing without this
+app = AppLauncher(args).app
+
+import gymnasium as gym
+import numpy as np
+import torch
+from PIL import Image
+from skrl.utils.runner.torch import Runner
+from isaaclab_rl.skrl import SkrlVecEnvWrapper
+from isaaclab_tasks.utils import load_cfg_from_registry
+import drone_pursuit.tasks  # noqa: F401  (registers your task)
+
+TASK = "Template-Drone-Pursuit-Direct-v0"
+env_cfg = load_cfg_from_registry(TASK, "env_cfg_entry_point")
+env_cfg.scene.num_envs = 1                                     # one chase is enough
+env = gym.make(TASK, cfg=env_cfg, render_mode=None)
+raw_env = env.unwrapped                                        # to reach the camera and the true distance
+env = SkrlVecEnvWrapper(env)
+
+# rebuild the skrl agent exactly as train.py does, then load your checkpoint
+agent_cfg = load_cfg_from_registry(TASK, "skrl_cfg_entry_point")
+runner = Runner(env, agent_cfg)
+runner.agent.load(args.checkpoint)
+runner.agent.set_running_mode("eval")
+
+os.makedirs(args.out, exist_ok=True)
+obs, _ = env.reset()
+step, saved = 0, 0
+while app.is_running() and saved < args.num_frames:
+    with torch.no_grad():
+        actions = runner.agent.act(obs, timestep=0, timesteps=0)[0]
+    obs, _, _, _, _ = env.step(actions)
+    step += 1
+    if step % args.every:                                      # not a saving step: keep flying
+        continue
+
+    rgb = raw_env._camera.data.output["rgb"][0].cpu().numpy()  # (480, 640, 3)
+    if rgb.dtype != np.uint8:                                  # some versions return 0..1 floats
+        rgb = (np.clip(rgb, 0.0, 1.0) * 255).astype(np.uint8)
+    dist = raw_env._dist[0].item()                             # true distance, metres
+
+    name = f"frame_{saved:03d}_d{dist:05.2f}m.png"
+    Image.fromarray(rgb[..., :3]).save(os.path.join(args.out, name))
+    print(f"saved {name}", flush=True)
+    saved += 1
+
+print(f"done — {saved} frames in {args.out}", flush=True)
+env.close()
+app.close()
+```
+
+*Run from:* `any folder` — *checkpoints live in:* `C:\projects\drone_pursuit\drone_pursuit\logs\skrl\<run-folder>\checkpoints\`
+```bat
+conda activate env_drone
+python C:\projects\drone_pursuit\drone_pursuit\scripts\demo\capture_arena_frames.py --checkpoint C:\projects\drone_pursuit\drone_pursuit\logs\skrl\<run-folder>\checkpoints\best_agent.pt
+```
+
+The script stops by itself after 40 pictures. Because it saves at regular intervals across several chases, the pictures cover the whole approach: far, mid-range and close.
+
+Open `data\arena_frames\` and check two things: the attacker is visible in most pictures, and the distances in the file names range from several metres down to under one. If every distance is tiny, the chases are too short: raise `--every` to 10 and run again.
+
+⚠️ If the script fails at `runner.agent.act(...)` or at loading the checkpoint, the cause is usually the skrl version. Compare those lines with your own `scripts\skrl\play.py`, which loads the same checkpoint successfully, and copy its version of them.
 
 </details>
 
-### Step 3 — Export the detector to ONNX at 480×640
+### Step 3 — Run the detector on those frames and measure where it misses
 
 <details>
 <summary>Expand Step 3</summary>
+
+> **Environment:** `drone_vision`
+
+Step 2 produced 40 pictures from the defender's point of view, each labelled with the attacker's true distance. This step answers the question 5.2 exists for: does the detector trained in 5.1 still find the attacker in these pictures, and up to what distance? It does this in two ways. First, YOLO draws its boxes on copies of the pictures, so you can see the hits and misses. Second, a small new script, `score_arena_frames.py`, counts how often the detector found the attacker at each range.
+
+**1 — See the hits and misses.**
+
+*Run from:* `C:\projects\drone_pursuit\drone_pursuit` — *pictures with boxes are saved under:* `C:\projects\drone_pursuit\drone_pursuit\runs\detect\predict\`
+```bat
+conda activate drone_vision
+cd C:\projects\drone_pursuit\drone_pursuit
+yolo predict model=C:\projects\drone_pursuit\drone_pursuit\runs\detect\drone_v1\weights\best.pt source=C:\projects\drone_pursuit\drone_pursuit\data\arena_frames save=True conf=0.4
+```
+
+Open the `predict` folder. A box should sit on the attacker, and nowhere else, in most pictures.
+
+**2 — Count them by distance.**
+
+*File to CREATE (new, empty file):* `C:\projects\drone_pursuit\drone_pursuit\scripts\demo\score_arena_frames.py`
+
+```python
+# ── FILE: C:\projects\drone_pursuit\drone_pursuit\scripts\demo\score_arena_frames.py
+# ── NEW file — the whole content.
+# ── Reads: data\arena_frames\frame_XXX_dDD.DDm.png (Step 2) and best.pt (5.1)
+
+import re
+from pathlib import Path
+from ultralytics import YOLO
+
+FRAMES = Path(r"C:\projects\drone_pursuit\drone_pursuit\data\arena_frames")
+MODEL = r"C:\projects\drone_pursuit\drone_pursuit\runs\detect\drone_v1\weights\best.pt"
+CONF = 0.4                                   # same confidence threshold the converter uses in Chapter 6
+BANDS = [(0, 2), (2, 5), (5, 99)]            # distance ranges in metres
+
+model = YOLO(MODEL)
+rows = []
+for img in sorted(FRAMES.glob("frame_*.png")):
+    dist = float(re.search(r"_d([\d.]+)m", img.stem).group(1))   # distance from the file name
+    result = model.predict(str(img), conf=CONF, verbose=False)[0]
+    found = len(result.boxes) > 0
+    conf = float(result.boxes.conf.max()) if found else 0.0
+    rows.append((dist, found))
+    print(f"{img.name}: {'FOUND ' if found else 'missed'}  confidence {conf:.2f}")
+
+print("\ndistance     pictures   found   rate")
+for lo, hi in BANDS:
+    band = [found for d, found in rows if lo <= d < hi]
+    if band:
+        print(f"{lo:>2}–{hi:<2} m     {len(band):>6}   {sum(band):>5}   {sum(band) / len(band):5.0%}")
+```
+
+*Run from:* `any folder`
+```bat
+python C:\projects\drone_pursuit\drone_pursuit\scripts\demo\score_arena_frames.py
+```
+
+Expected output ends with a small table, for example:
+
+```
+distance     pictures   found   rate
+ 0–2  m           14      14    100%
+ 2–5  m           17      16     94%
+ 5–99 m            9       4     44%
+```
+
+**How to read it.** What matters is the 0–2 m and 2–5 m rows, because the chase is decided at those distances. Both should be at about 90% or higher. A low rate beyond 5 m is normal: there the attacker is only a few pixels wide.
+
+**If the 2–5 m row is low,** the detector has not seen enough small, distant drones. Go back to 4.2 and widen the camera distance range in `place_camera()`, generate another batch, re-run 4.3, and train again in 5.1 with a new `name=` (for example `drone_v2`). Then repeat this step with the new `best.pt`.
+
+</details>
+
+### Step 4 — Export the detector to ONNX at 480×640
+
+<details>
+<summary>Expand Step 4</summary>
 
 > **Environment:** `drone_vision`
 
@@ -6588,8 +6736,9 @@ Re-run the 1.3 onnxruntime smoke test in `env_drone` against this file. The inpu
 </details>
 
 > ✅ **Checkpoint 5.2 — MILESTONE: Problem 2 (perception) SOLVED**
-> 1. Detector finds the attacker in real arena frames at chase-relevant distances
-> 2. `drone_detector.onnx` loads and runs inside `env_drone`, input `[1, 3, 480, 640]`, output `(1, 5, 6300)`
+> 1. `data\arena_frames\` holds about 40 defender-camera pictures, spanning far to close distances
+> 2. `score_arena_frames.py` reports about 90% or more found in both the 0–2 m and 2–5 m rows
+> 3. `drone_detector.onnx` loads and runs inside `env_drone`, input `[1, 3, 480, 640]`, output `(1, 5, 6300)`
 
 </details>
 
