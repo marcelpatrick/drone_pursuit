@@ -6761,6 +6761,53 @@ copy C:\projects\drone_pursuit\drone_pursuit\runs\detect\drone_v1\weights\best.o
 
 Re-run the 1.3 onnxruntime smoke test in `env_drone` against this file. The input shape should now read `[1, 3, 480, 640]` and the output `(1, 5, 6300)` — four box numbers plus one class score for each of 6300 candidate boxes.
 
+**Test the exported detector inside `env_drone`.** The 1.3 test used the stock model at 640×640. For your detector you need a copy of that test pointing at `drone_detector.onnx`, with a 480×640 input.
+
+**1 — Create the test file** (no environment needed):
+
+```bat
+cd C:\projects\drone_pursuit\drone_pursuit
+notepad test_detector_onnx.py
+```
+
+Notepad offers to create the file; click **Yes**. Paste this in, save with Ctrl+S, and close:
+
+```python
+import numpy as np, onnxruntime as ort
+
+sess = ort.InferenceSession(
+    r"C:\projects\drone_pursuit\drone_pursuit\models\drone_detector.onnx",
+    providers=["CPUExecutionProvider"],
+)
+inp = sess.get_inputs()[0]
+print("input:", inp.name, inp.shape)
+
+dummy = np.random.rand(1, 3, 480, 640).astype(np.float32)   # one 480x640 frame of random numbers
+out = sess.run(None, {inp.name: dummy})
+print("output:", out[0].shape)
+print("drone_detector.onnx runs inside env_drone")
+```
+
+**2 — Run it in `env_drone`:**
+
+```bat
+conda activate env_drone
+python C:\projects\drone_pursuit\drone_pursuit\test_detector_onnx.py
+```
+
+**Expected output:**
+
+```
+input: images [1, 3, 480, 640]
+output: (1, 5, 6300)
+drone_detector.onnx runs inside env_drone
+```
+
+- **`[1, 3, 480, 640]`:** the detector accepts one 640×480 colour frame, the same size the defender's camera produces.
+- **`(1, 5, 6300)`:** the detector proposes 6,300 candidate boxes per frame. Each is described by 5 numbers: 4 for the box position and size, and 1 for how sure it is that the box contains a drone.
+
+If the input reads `[1, 3, 640, 640]`, Step 4's export command was run without `imgsz=480,640`. If the output reads `(1, 84, ...)`, the stock `yolov8n.onnx` was copied instead of your `best.onnx`.
+
 </details>
 
 > ✅ **Checkpoint 5.2 — MILESTONE: Problem 2 (perception) SOLVED**
