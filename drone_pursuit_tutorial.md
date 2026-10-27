@@ -6480,7 +6480,8 @@ If mAP50 comes in below 0.8, the cause is almost always the data rather than the
 
 > **Environment:** `env_drone` — this runs Isaac Lab to capture the frames.
 
-Until now the defender had no real camera: 3.1 Part E only described one as numbers for the readings. This step adds a camera that actually produces images, using `TiledCameraCfg` (Isaac Lab's camera setting, built for many environments each rendering at once), attached to the front of the defender. You then play your Chapter 3 policy and save what the camera sees. These frames are what the detector will face in Chapter 6, and the same camera stays in place for 6.2's demo.
+Until now, the defender had no camera in our simulations. We generated synthetic drone images from different vantage points but not necessarily from the point of view of a camera placed on the defender drone. This chapter places a virtual camera on the defender drone in the simulation, so we can run the simulation and generate attacker drone images from the defender's angle.
+Why?: we will use these images to test whether the model can identify drones filmed from a defender camera's angle just as well as the generated images it trained on
 
 *Run from:* `any folder`
 ```bat
