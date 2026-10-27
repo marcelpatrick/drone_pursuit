@@ -6561,7 +6561,9 @@ mkdir C:\projects\drone_pursuit\drone_pursuit\scripts\demo
 # ── FILE: C:\projects\drone_pursuit\drone_pursuit\scripts\demo\capture_arena_frames.py
 # ── NEW file — the whole content, nothing to insert into.
 # ── Loads : your Ch.3 checkpoint, passed on the command line
-# ── Writes: C:\projects\drone_pursuit\drone_pursuit\data\arena_frames\frame_XXX_dDD.DDm.png
+# ── Writes: data\arena_frames\frame_XXX_dDD.DDm_vN.png        (clean, for the detector test)
+# ──         data\arena_frames_check\frame_XXX_dDD.DDm_vN.png  (red box where the attacker should be)
+# ──   v1 = attacker in the camera's view right now, v0 = out of view (or too small to detect)
 
 import argparse, os
 from isaaclab.app import AppLauncher
@@ -6580,7 +6582,7 @@ app = AppLauncher(args).app
 import gymnasium as gym
 import numpy as np
 import torch
-from PIL import Image
+from PIL import Image, ImageDraw
 from skrl.utils.runner.torch import Runner
 from isaaclab_rl.skrl import SkrlVecEnvWrapper
 from isaaclab_tasks.utils import load_cfg_from_registry
@@ -6599,12 +6601,16 @@ runner = Runner(env, agent_cfg)
 runner.agent.load(args.checkpoint)
 runner.agent.set_running_mode("eval")
 
+check_dir = args.out + "_check"
 os.makedirs(args.out, exist_ok=True)
+os.makedirs(check_dir, exist_ok=True)
+
 obs, _ = env.reset()
 step, saved = 0, 0
 while app.is_running() and saved < args.num_frames:
     with torch.no_grad():
-        actions = runner.agent.act(obs, timestep=0, timesteps=0)[0]
+        outputs = runner.agent.act(obs, timestep=0, timesteps=0)
+        actions = outputs[-1].get("mean_actions", outputs[0])  # best guess, no random variation
     obs, _, _, _, _ = env.step(actions)
     step += 1
     if step % args.every:                                      # not a saving step: keep flying
@@ -6615,9 +6621,24 @@ while app.is_running() and saved < args.num_frames:
         rgb = (np.clip(rgb, 0.0, 1.0) * 255).astype(np.uint8)
     dist = raw_env._dist[0].item()                             # true distance, metres
 
-    name = f"frame_{saved:03d}_d{dist:05.2f}m.png"
-    Image.fromarray(rgb[..., :3]).save(os.path.join(args.out, name))
-    print(f"saved {name}", flush=True)
+    # where the attacker is in the frame RIGHT NOW (no delay), from 3.1 Part F
+    bx_t, by_t, asz_t, vis_t = raw_env._camera_readings()
+    bx, by, asz, visible = bx_t[0].item(), by_t[0].item(), asz_t[0].item(), vis_t[0].item()
+
+    name = f"frame_{saved:03d}_d{dist:05.2f}m_v{int(visible > 0.5)}.png"
+    img = Image.fromarray(rgb[..., :3])
+    img.save(os.path.join(args.out, name))                     # clean copy: for the detector test
+
+    check = img.copy()                                         # marked copy: for you to look at
+    if visible > 0.5:
+        W, H = img.size
+        xc, yc = W / 2 + bx * W / 2, H / 2 + by * H / 2        # bearing → pixel position
+        half = max(asz * W / 2, 6)                             # at least 12 px wide, so you can see it
+        ImageDraw.Draw(check).rectangle([xc - half, yc - half, xc + half, yc + half],
+                                        outline=(255, 0, 0), width=2)
+    check.save(os.path.join(check_dir, name))
+
+    print(f"saved {name}  bx={bx:+.2f} by={by:+.2f} size={asz:.3f}", flush=True)
     saved += 1
 
 print(f"done — {saved} frames in {args.out}", flush=True)
