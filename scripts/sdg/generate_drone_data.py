@@ -250,9 +250,9 @@ def randomise_scene():
 # ── SECTION 2C — background pools and objects (4.2B Step 4) ─────────────────
 BG_DIR = r"C:\projects\drone_pursuit\drone_pursuit\data\bg"
 
-
+# Fetches all background assets I downloaded to my local machine
 def local_files(subfolder, extensions):
-    """Every file in data\\bg\\<subfolder>\\ with one of the given extensions."""
+    """Lists Every file in data\\bg\\<subfolder>\\ with one of the accepted given extensions."""
     found = []
     for ext in extensions:
         found += glob.glob(os.path.join(BG_DIR, subfolder, f"*{ext}"))
@@ -278,7 +278,8 @@ def keep_existing(label, paths, required=True):
         raise RuntimeError(f"[bg] {label}: none usable - read the NOT FOUND lines above")
     return usable
 
-
+# List Assets
+# Generates the list of assets the Replicator can choose from when generating different synthetic scenes 
 SKIES = keep_existing("skies", [
     # outdoor
     f"{NVIDIA_NUCLEUS_DIR}/Assets/Skies/Clear/qwantani_4k.hdr",
@@ -382,6 +383,9 @@ def load_model(holder_path, usd):
 
 build_rng = random.Random(7)       # fixed seed = the same building and wall sizes on every run
 
+# MATERIAL ASSIGNEMENT:
+# Gives floor, buildings and walls a randomly assigned texture from the materials downloaded to my local folder
+
 FLOOR_SHADER = create_textured_material("/World/Looks/Floor", floor)
 
 BUILDINGS = []                     # (prim, height, shader)
@@ -399,6 +403,7 @@ for i in range(8):
     show(box, False)
 
 PROPS = []                         # (holder prim, scale that makes the model's largest side 1 m)
+# Loads max 8 props per scene (downloaded into my local folder)
 for i in range(8 if PROP_USDS else 0):
     usd = PROP_USDS[i % len(PROP_USDS)]
     path = f"/World/Background/Prop_{i:02d}"
@@ -417,12 +422,13 @@ for i in range(8 if PROP_USDS else 0):
     PROPS.append((holder, 1.0 / largest))
 # ▲▲▲ END OF INSERT ▲▲▲
 
-# ▼▼▼ INSERT HERE! ▼▼▼
+# ▼▼▼ NEW! loads new drone models downloded to my local machine ▼▼▼
 # ── SECTION 2D — the attacker drone: several models × two looks (4.2B Step 5) ─
 DRONE_DIR = r"C:\projects\drone_pursuit\drone_pursuit\data\drones"
 DRONE_SIZE_M = (0.08, 0.35)        # largest side after resizing, in metres
 RECOLOR_SHARE = 0.5                # share of photos that show a recoloured look
 
+#Fetches the drone assets downloaded to my local machine, in the drone dir
 drone_files = []
 for ext in (".usd", ".usda", ".usdc", ".usdz"):
     drone_files += [p.replace("\\", "/") for p in glob.glob(os.path.join(DRONE_DIR, f"*{ext}"))]
@@ -485,7 +491,7 @@ if not DRONE_LOOKS:
 SHOWN = Counter()                  # how many saved photos each look appeared in, printed at the end
 # ▲▲▲ END OF INSERT ▲▲▲
 
-# ▼▼▼ INSERT HERE! ▼▼▼
+# ▼▼▼ NEW! ▼▼▼ Picks Sky assets from both NVIDIA library and downloaded by myself to my local folders and randomizes them when generating the scenes with rand.choice()
 def randomise_background():
     # sky: a different photo, turned to face a different way
     UsdLux.DomeLight(dome).GetTextureFileAttr().Set(Sdf.AssetPath(rand.choice(SKIES)))

@@ -21,6 +21,7 @@ from isaaclab.terrains import TerrainImporterCfg
 from isaaclab.utils import configclass
 # ▼▼▼ NEW! ▼▼▼
 from isaaclab.utils.math import subtract_frame_transforms, quat_apply
+from isaaclab.sensors import TiledCamera, TiledCameraCfg
 # ▲▲▲ END OF INSERT ▲▲▲
 
 ##
@@ -167,11 +168,23 @@ class QuadcopterEnvCfg(DirectRLEnvCfg):
     # ▲▲▲ END OF INSERT ▲▲▲
     # ▲▲▲ END OF INSERT ▲▲▲ 
 
+    # ▼▼▼ NEW! — the camera that RENDERS (3.1 Part E only described it) ▼▼▼
+    tiled_camera: TiledCameraCfg = TiledCameraCfg(
+        prim_path="/World/envs/env_.*/Robot/body/front_cam",       # rides on the defender
+        offset=TiledCameraCfg.OffsetCfg(pos=(0.04, 0.0, 0.01), rot=(1.0, 0.0, 0.0, 0.0),
+                                        convention="world"),       # ← was "ros": "world" looks forward
+        data_types=["rgb"],
+        spawn=sim_utils.PinholeCameraCfg(focal_length=cam_focal_mm,           # linked to 3.1 Part E
+                                         horizontal_aperture=cam_aperture_mm, # linked to 3.1 Part E
+                                         clipping_range=(0.05, 30.0)),
+        width=cam_width, height=cam_height,                                   # linked to 3.1 Part E
+    )
+    # ▲▲▲ END OF INSERT ▲▲▲
+
     # reward scales
     lin_vel_reward_scale = -0.05
     ang_vel_reward_scale = -0.01
     # distance_to_goal_reward_scale = 15.0          <<< commented out because it was only used for the initial test task (hoverring over a fixed point) In the pursuit task, the target is the moving attacker, not a fixed point
-
     # ---------------------------- REWARD FUNCTION PARAMETERS -----------------------------------------------------------
     # ▼▼▼ NEW! — the pursuit reward dials ▼▼▼
     closing_reward_scale = 2.0      # per m/s of speed TOWARD the target
@@ -269,6 +282,12 @@ class QuadcopterEnv(DirectRLEnv):
     def _setup_scene(self):
         self._robot = Articulation(self.cfg.robot)
         self._attacker = Articulation(self.cfg.attacker)               # NEW: register the attacker on the scene
+
+        # ▼▼▼ NEW! - adding a camera to the defender drone ▼▼▼
+        self._camera = TiledCamera(self.cfg.tiled_camera)
+        self.scene.sensors["camera"] = self._camera
+        # ▲▲▲ END OF INSERT ▲▲▲
+
         self.scene.articulations["robot"] = self._robot
         self.scene.articulations["attacker"] = self._attacker          # NEW: register the attacker on the scene
 
