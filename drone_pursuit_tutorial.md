@@ -6958,18 +6958,267 @@ class CameraReadingBridge:
 
 > **Environment:** `env_drone`
 
-The policy was trained on readings calculated from exact positions (`_camera_readings()`, 3.1 Part F). From now on it gets readings measured from images. If the two methods disagree, the policy receives numbers that mean something different from what it learned, and no error appears: the chase just gets worse and looks like a training problem. This step computes the readings both ways for the same moments and compares them. The usual cause of disagreement is a camera whose field of view (how wide the lens sees) differs from the one assumed in 3.1 Part E.
+Step 1 wrote the converter, but nothing has proved it gives the policy the same numbers it learned on. In training, `_camera_readings()` (3.1 Part F) calculated the attacker's readings from exact positions. From now on, the policy gets readings measured from camera pictures. If the two disagree, the policy receives numbers that mean something different from what it learned, and no error appears: the chase just gets worse and looks like a training problem.
 
-*Folders involved:* frames in `C:\projects\drone_pursuit\drone_pursuit\data\arena_frames\`, converter in `C:\projects\drone_pursuit\drone_pursuit\scripts\demo\vision_bridge.py`
+**Why:** to confirm that, for the same moment, the calculated readings and the readings measured from the picture match.
 
-Reuse the frame-capture setup from 5.2, but for each saved frame also record what `_camera_readings()` computed for that moment. Then run the converter on the image and compare:
+This step records new defender-camera pictures and saves the calculated readings next to each one. A new script then measures the same readings from each picture, using your detector and the converter, and compares the two.
+
+*Folders involved:* pictures and readings in `C:\projects\drone_pursuit\drone_pursuit\data\bridge_check\`, converter in `C:\projects\drone_pursuit\drone_pursuit\scripts\demo\vision_bridge.py`
+
+#### Part A — Make the capture script save its readings and lock the attacker's width
+
+<details>
+<summary>Expand Part A</summary>
+
+> **Environment:** none needed — you are editing a file.
+
+The 5.2 pictures can't be reused for this comparison, for two reasons. First, the capture script only *printed* the calculated readings; it never saved them. Second, since 3.2B, the simulator pretends the attacker has a different width (8 to 35 cm) every episode when it calculates the size reading. The drone drawn on screen is always the same Crazyflie, about 13 cm wide. With a random width, the calculated size and the size in the picture would disagree even with a perfect converter.
+
+This part adds two things to `capture_arena_frames.py`. One is a new option, `--fixed_span`, that locks the pretend width to the width of the drone on screen. The other is a new file, `readings.csv`, written beside the pictures. It is a table with one row per picture: its file name, the true distance, and the calculated readings. That table is the answer key the comparison in Part C checks against.
+
+Without the new option, the script behaves exactly as in 5.2, so the 5.2 instructions still work.
+
+*File to edit:* `C:\projects\drone_pursuit\drone_pursuit\scripts\demo\capture_arena_frames.py`
+
+```python
+# ── FILE: C:\projects\drone_pursuit\drone_pursuit\scripts\demo\capture_arena_frames.py
+# ── SECTION: the first import line ──────────────────────────────────────────
+
+# ▼▼▼ REPLACE  import argparse, os  WITH: ▼▼▼
+import argparse, os, csv
+# ▲▲▲ END ▲▲▲
+
+
+# ── SECTION: the parser, directly below the --out argument ──────────────────
+
+parser.add_argument("--out", type=str,                                         # ← EXISTING
+                    default=r"C:\projects\drone_pursuit\drone_pursuit\data\arena_frames")
+# ▼▼▼ INSERT HERE! ▼▼▼
+parser.add_argument("--fixed_span", type=float, default=None)  # 6.1: lock the attacker width (metres)
+# ▲▲▲ END OF INSERT ▲▲▲
+
+
+# ── SECTION: directly below  env_cfg.scene.num_envs = 1 ─────────────────────
+
+env_cfg.scene.num_envs = 1                                     # ← EXISTING
+# ▼▼▼ INSERT HERE! ▼▼▼
+if args.fixed_span is not None:          # 6.1: same width in the calculation as on screen
+    env_cfg.attacker_span_range = (args.fixed_span, args.fixed_span)
+# ▲▲▲ END OF INSERT ▲▲▲
+
+
+# ── SECTION: directly below  os.makedirs(check_dir, exist_ok=True) ──────────
+
+os.makedirs(check_dir, exist_ok=True)                          # ← EXISTING
+# ▼▼▼ INSERT HERE! — the answer key, one row per saved picture ▼▼▼
+csv_file = open(os.path.join(args.out, "readings.csv"), "w", newline="")
+writer = csv.writer(csv_file)
+writer.writerow(["name", "dist_m", "bx", "by", "asz", "visible"])
+# ▲▲▲ END OF INSERT ▲▲▲
+
+
+# ── SECTION: inside the while loop, directly below the clean-copy save ──────
+
+    img.save(os.path.join(args.out, name))                     # ← EXISTING
+    # ▼▼▼ INSERT HERE! (same indentation as img.save) ▼▼▼
+    writer.writerow([name, f"{dist:.3f}", f"{bx:.4f}", f"{by:.4f}", f"{asz:.4f}", int(visible > 0.5)])
+    # ▲▲▲ END OF INSERT ▲▲▲
+
+
+# ── SECTION: the end of the file ────────────────────────────────────────────
+
+print(f"done — {saved} frames in {args.out}", flush=True)      # ← EXISTING
+# ▼▼▼ INSERT HERE! ▼▼▼
+csv_file.close()
+# ▲▲▲ END OF INSERT ▲▲▲
+env.close()                                                    # ← EXISTING
+app.close()                                                    # ← EXISTING
+```
+
+**Why the width is locked only here.** In training, the policy never sees pictures, only the seven readings. To teach it not to assume one attacker size, changing the size *number* was enough; the 3D model never needed resizing. This comparison is the first time the numbers are checked against rendered pictures, so for this capture alone the number must describe the drone that is actually drawn.
+
+</details>
+
+#### Part B — Capture a fresh set of pictures
+
+<details>
+<summary>Expand Part B</summary>
+
+> **Environment:** `env_drone` — this runs Isaac Lab.
+
+This runs one chase with your Chapter 3 policy, as in 5.2, and saves 40 pictures plus `readings.csv` into a **new** folder, `data\bridge_check`, so your 5.2 pictures stay untouched. `--fixed_span 0.13` locks the width to the on-screen Crazyflie's, about 13 cm tip to tip.
+
+*Run from:* `any folder` — *checkpoints live in:* `C:\projects\drone_pursuit\drone_pursuit\logs\skrl\quadcopter_direct`
+
+Use the same `best_agent.pt` as in 5.2 Step 2:
+
+```bat
+conda activate env_drone
+python C:\projects\drone_pursuit\drone_pursuit\scripts\demo\capture_arena_frames.py --checkpoint C:\projects\drone_pursuit\drone_pursuit\logs\skrl\quadcopter_direct\<run-folder>\checkpoints\best_agent.pt --out C:\projects\drone_pursuit\drone_pursuit\data\bridge_check --fixed_span 0.13
+```
+
+When it finishes, check two folders:
+
+- `data\bridge_check\` holds 40 pictures and `readings.csv`.
+- `data\bridge_check_check\` holds the same pictures with a red box where the calculation says the attacker is. Open a few. The red box should sit on the drone.
+
+You do not need to repeat the rest of 5.2. The detector is not retrained, re-scored or re-exported.
+
+</details>
+
+#### Part C — Create the checking script
+
+<details>
+<summary>Expand Part C</summary>
+
+> **Environment:** none needed — you are creating a file.
+
+This step creates a new file, `check_bridge.py`. It runs without Isaac Lab, on the saved pictures only, and has two parts.
+
+- **Part 1 (this step).** For every picture where the attacker is in view, it runs your detector and the converter, then prints the result beside the row from `readings.csv`. It uses a fresh converter for each picture: the pictures are a quarter of a second apart, so the three rates of change would mean nothing here. Only position and size are compared.
+- **Part 2 (used in Step 3).** It tests what the converter does when the attacker is out of view.
+
+*File to CREATE (new, empty file):* `C:\projects\drone_pursuit\drone_pursuit\scripts\demo\check_bridge.py`
+
+```python
+# ── FILE: C:\projects\drone_pursuit\drone_pursuit\scripts\demo\check_bridge.py
+# ── NEW file — the whole content, nothing to insert into.
+# ── Reads  : data\bridge_check\frame_*.png and data\bridge_check\readings.csv (Part B)
+# ──          models\drone_detector.onnx (5.2 Step 4)
+# ── Imports: vision_bridge.py, in this SAME folder (scripts\demo\)
+# ── NOTE   : no Isaac Lab here — it only reads saved files
+
+import csv
+from pathlib import Path
+import numpy as np
+from PIL import Image
+from vision_bridge import DroneDetector, CameraReadingBridge
+
+ROOT = Path(r"C:\projects\drone_pursuit\drone_pursuit")
+FRAMES = ROOT / "data" / "bridge_check"
+BEAR_TOL = 0.05        # bearings must agree within 0.05 ("a few hundredths")
+SIZE_TOL = 0.20        # size must agree within 20 %
+
+detector = DroneDetector(str(ROOT / "models" / "drone_detector.onnx"))
+with open(FRAMES / "readings.csv", newline="") as f:
+    rows = list(csv.DictReader(f))
+
+
+def load(name):
+    rgb = np.array(Image.open(FRAMES / name).convert("RGB"))
+    assert rgb.shape == (480, 640, 3), f"{name} is {rgb.shape}, the bridge expects (480, 640, 3)"
+    return rgb
+
+
+# ── PART 1 (Step 2): attacker in view — the same moment computed two ways ─────
+print("STEP 2 — projected (training) vs bridge (from image)\n")
+results = []                                         # (projected, bridge, ok)
+for r in rows:
+    if r["visible"] != "1":
+        continue                                     # out-of-view frames are for Part 2
+    box = detector.detect(load(r["name"]))
+    if box is None:
+        print(f"{r['name']}: detector found nothing, skipped (a 5.2 issue, not a bridge issue)")
+        continue
+    b = CameraReadingBridge().update(box)[:3]        # fresh bridge: only bx, by, size matter here
+    p = np.array([float(r["bx"]), float(r["by"]), float(r["asz"])])
+    ok = abs(b[0] - p[0]) <= BEAR_TOL and abs(b[1] - p[1]) <= BEAR_TOL and abs(b[2] / p[2] - 1) <= SIZE_TOL
+    results.append((p, b, ok))
+    print(f"{r['name']}\n   projected: bx={p[0]:+.3f} by={p[1]:+.3f} size={p[2]:.3f}"
+          f"\n   bridge   : bx={b[0]:+.3f} by={b[1]:+.3f} size={b[2]:.3f}   {'OK' if ok else 'MISMATCH'}")
+
+n_ok = sum(ok for _, _, ok in results)
+print(f"\nmatching frames: {n_ok} of {len(results)} compared   (need 15 or more)")
+
+
+def scale(i):                                        # how much bigger the bridge reading is, typically
+    v = [b[i] / p[i] for p, b, _ in results if abs(p[i]) > 0.1]
+    return float(np.median(v)) if v else float("nan")
+
+
+print(f"typical ratio bridge/projected:  horizontal {scale(0):+.2f}   vertical {scale(1):+.2f}   "
+      f"size {np.median([b[2] / p[2] for p, b, _ in results]) if results else float('nan'):.2f}")
+print("   all three near +1.00 → same camera on both sides")
+print("   a negative ratio     → that axis is flipped")
+print("   all three off by the same factor → field of view differs (focal length / aperture)")
+print("   only size off        → --fixed_span differs from the rendered drone's width")
+
+# ── PART 2 (Step 3): attacker out of view — the bridge must hold its last values ─
+print("\nSTEP 3 — out-of-view behaviour\n")
+bridge = CameraReadingBridge()
+last = bridge.update(np.array([400.0, 200.0, 32.0, 24.0]))   # a last sighting: right of and above centre
+out_frames = [r for r in rows if r["visible"] == "0"
+              and (abs(float(r["bx"])) >= 1 or abs(float(r["by"])) >= 1)]   # truly outside the picture
+if out_frames:
+    inputs = [(r["name"], detector.detect(load(r["name"]))) for r in out_frames]
+else:
+    print("no out-of-view frames were captured — testing a simulated detector miss instead")
+    inputs = [("simulated miss", None)]
+
+all_ok = True
+for name, box in inputs:
+    out = bridge.update(box)
+    frozen = np.allclose(out[:3], last[:3])
+    zero_d = np.allclose(out[3:6], 0.0)
+    ok = out[6] == 0.0 and frozen and zero_d
+    all_ok &= ok
+    note = "" if box is None else "   ← detector saw a drone that is not there"
+    print(f"{name}: visible={out[6]:.0f}  bearings held={frozen}  rates zero={zero_d}  "
+          f"{'OK' if ok else 'FAIL'}{note}")
+print(f"\nout-of-view check: {'PASS' if all_ok else 'FAIL'}")
+```
+
+</details>
+
+#### Part D — Run the comparison and read the result
+
+<details>
+<summary>Expand Part D</summary>
+
+> **Environment:** `env_drone` — it needs onnxruntime and Pillow, both already installed there.
+
+*Run from:* `any folder`
+
+```bat
+conda activate env_drone
+python C:\projects\drone_pursuit\drone_pursuit\scripts\demo\check_bridge.py
+```
+
+Each in-view picture prints two lines, one per method:
 
 ```
-frame 12   projected (training):  bx=+0.109  by=−0.250  size=0.053
-           bridge   (from image):  bx=+0.115  by=−0.244  size=0.049   ✓
+frame_012_d03.45m_v1.png
+   projected: bx=+0.109 by=-0.250 size=0.053
+   bridge   : bx=+0.115 by=-0.244 size=0.049   OK
 ```
 
-Acceptance: bearings agree within a few hundredths, angular size within about 20% — the rectangle genuinely widens and narrows as the attacker banks, so some spread is expected. A disagreement in *sign* means an axis is flipped. A disagreement by a large constant factor means the `TiledCameraCfg` focal length does not match the `cam_focal_mm` / `cam_aperture_mm` in the env cfg.
+Then a summary:
+
+```
+matching frames: 27 of 30 compared   (need 15 or more)
+typical ratio bridge/projected:  horizontal +1.01   vertical +0.98   size 1.06
+```
+
+**Acceptance.**
+
+- **Bearings** (`bx`, `by`): how far left/right and up/down of the image centre the attacker is. They must agree within 0.05.
+- **Size:** must agree within about 20%. Some spread is expected, because the drone looks wider when seen corner-on than side-on.
+
+You need at least 15 matching pictures, with distances in their file names ranging from far to close.
+
+**Reading the ratio line.** Each kind of mistake leaves a different fingerprint, so this line tells you where to look:
+
+- **All three near +1.00:** both methods use the same camera. This is the result you want.
+- **A negative ratio:** that axis is flipped. Left and right, or up and down, are swapped between `_camera_readings()` and the converter.
+- **All three off by the same factor**, for example 0.70: the rendered camera's field of view (how wide the lens sees) differs from the one used in the calculation. Check that `TiledCameraCfg` uses `cam_focal_mm` and `cam_aperture_mm` (see Checkpoint item 2).
+- **Only the size off, bearings fine:** 0.13 is not the on-screen drone's real width. Repeat Part B with the `--fixed_span` value that brings the size ratio close to 1.00. Your real hardware settings do not change.
+
+**Normal exceptions.** A few single mismatches are fine. They usually come from pictures closer than about 1 m, because the calculation measures from the drone's centre while the camera sits 4 cm in front of it. They can also come from a picture taken just as a chase restarted.
+
+A "detector found nothing, skipped" line is a detector miss, already measured in 5.2. It says nothing about the converter.
+
+</details>
 
 </details>
 
@@ -6978,16 +7227,43 @@ Acceptance: bearings agree within a few hundredths, angular size within about 20
 <details>
 <summary>Expand Step 3</summary>
 
-> **Environment:** `env_drone`
+> **Environment:** `env_drone` — no new command. This is Part 2 of the output you produced in Step 2 Part D.
 
-This step checks what the converter does when the detector finds nothing. Feed it frames in which the attacker is out of view. It must report `visible = 0`, keep the previous left/right and up/down readings (the *bearings*), and report all three rates of change as zero. Resetting the bearings to zero instead would be wrong: a zero bearing means "the attacker is straight ahead", so after losing sight the defender would fly straight on.
+Step 2 tested the converter while the attacker was visible. The policy also met the opposite case in training: whenever the attacker left the picture or looked too small, its last readings were held unchanged and the visible flag dropped to 0.
+
+**Why:** to confirm the converter does exactly the same when the detector finds nothing. If it reset the bearings to zero instead, that would mean "the attacker is straight ahead", so after losing sight the defender would fly straight on.
+
+Part 2 of `check_bridge.py` first gives the converter one fake sighting, right of and above the centre. Then it feeds it the pictures from Part B in which the attacker was truly outside the picture. For each one, the converter must report three things:
+
+- **`visible = 0`**
+- **The same bearings and size as the fake sighting** ("bearings held")
+- **All three rates of change at zero** ("rates zero")
+
+Expected output:
+
+```
+STEP 3 — out-of-view behaviour
+
+frame_031_d04.12m_v0.png: visible=0  bearings held=True  rates zero=True  OK
+frame_032_d04.60m_v0.png: visible=0  bearings held=True  rates zero=True  OK
+
+out-of-view check: PASS
+```
+
+**If a line ends with "← detector saw a drone that is not there",** the detector reported a box in a picture with no attacker in it, such as a false detection on the background. That is a detector problem (go back to 5.2), not a converter problem.
+
+**If it prints "no out-of-view frames were captured",** the policy kept the attacker in sight the whole time. The script then tests a simulated detector miss, which still checks the converter's logic. To also test real empty pictures, repeat Step 2 Part B with `--every 10` added. That spreads the 40 pictures over longer chases, which makes it likelier the attacker leaves the picture. Then run Part D again.
 
 </details>
 
 > ✅ **Checkpoint 6.1**
-> 1. Converter output matches the training-time projection on ≥15 varied frames
-> 2. Field of view confirmed identical between `TiledCameraCfg` and the cfg constants from 3.1
-> 3. Out-of-view frames produce `visible = 0` with frozen values and zero deltas
+> 1. `check_bridge.py` reports **15 or more matching frames**, with distances in the file names ranging from far to close.
+> 2. **Field of view identical** on both sides. The ratio line shows all three values near +1.00, and the camera reads the 3.1 values rather than typed numbers. To confirm the second part, run:
+>    ```bat
+>    findstr /n "focal_length= horizontal_aperture= width=cam_width" C:\projects\drone_pursuit\drone_pursuit\source\drone_pursuit\drone_pursuit\tasks\direct\quadcopter\quadcopter_env.py
+>    ```
+>    The lines found must show `cam_focal_mm`, `cam_aperture_mm`, `cam_width` and `cam_height`, not numbers.
+> 3. **Out-of-view check: PASS.** Pictures without the attacker produce `visible = 0`, held readings and zero rates of change.
 
 </details>
 
