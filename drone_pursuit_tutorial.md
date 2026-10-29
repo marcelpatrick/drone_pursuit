@@ -6548,7 +6548,11 @@ from isaaclab.sensors import TiledCamera, TiledCameraCfg
 
 > **Environment:** `env_drone` — this runs Isaac Lab.
 
-Step 1 gave the defender a camera, but nothing saves what it sees yet. This step creates a short script, `capture_arena_frames.py`, that runs one chase with your trained policy and saves a picture from the defender's camera every quarter of a second, until it has 40. Each file name records how far away the attacker really was when the picture was taken, for example `frame_012_d03.45m.png` means 3.45 m. Step 3 uses those distances to show at which range the detector starts missing.
+Step 1 gave the defender a camera, but nothing saves what it sees yet. This step creates a short script, `capture_arena_frames.py`, that runs one chase with your trained policy and saves a picture from the defender's camera every quarter of a second, until it has 40. Each file name records the attacker's true distance and whether it was in view, for example `frame_012_d03.45m_v1.png` means 3.45 m away and in view (`v0` = out of view). Step 3 uses those tags to show at which range the detector starts missing.
+
+The script also writes a small table, `readings.csv`, next to the pictures. For each picture it stores the readings the simulator *calculated* for that moment: where the attacker should appear in the picture and how big. Chapter 6.1 compares those calculated readings with readings measured from the pictures, so these same 40 pictures serve both chapters.
+
+For that comparison to be fair, the calculation must use the width of the drone actually drawn on screen. Since 3.2B, training pretends the attacker has a random width every episode, while the 3D model is always the same Crazyflie. So during this capture only, the script locks that width to the Crazyflie's, 0.13 m. This changes nothing in your training settings.
 
 *Run from:* `any folder`
 ```bat
@@ -6663,20 +6667,32 @@ app.close()
 
 *Run from:* `any folder` — *checkpoints live in:* `C:\projects\drone_pursuit\drone_pursuit\logs\skrl\quadcopter_direct`
 
-- Use the best checkpoint from Chapter 3.3 - Step 3:
-eg: in  `C:\projects\drone_pursuit\drone_pursuit>` run:
-```py
-python C:\projects\drone_pursuit\drone_pursuit\scripts\demo\capture_arena_frames.py --checkpoint C:\projects\drone_pursuit\drone_pursuit\logs\skrl\quadcopter_direct\2026-09-30_13-27-20_ppo_torch\checkpoints\best_agent.pt
-```
+Use the best checkpoint from Chapter 3.3 Step 3, whose path you recorded in `project_notes.txt`:
 
 ```bat
 conda activate env_drone
-python C:\projects\drone_pursuit\drone_pursuit\scripts\demo\capture_arena_frames.py --checkpoint C:\projects\drone_pursuit\drone_pursuit\logs\skrl\<run-folder>\checkpoints\best_agent.pt
+python C:\projects\drone_pursuit\drone_pursuit\scripts\demo\capture_arena_frames.py --checkpoint C:\projects\drone_pursuit\drone_pursuit\logs\skrl\quadcopter_direct\<run-folder>\checkpoints\best_agent.pt
 ```
+
+For example, with the run used while writing this tutorial:
+
+```bat
+python C:\projects\drone_pursuit\drone_pursuit\scripts\demo\capture_arena_frames.py --checkpoint C:\projects\drone_pursuit\drone_pursuit\logs\skrl\quadcopter_direct\2026-09-30_13-27-20_ppo_torch\checkpoints\best_agent.pt
+```
+
+The width lock (`--fixed_span`) is on by default at 0.13 m, so the command needs no extra option.
 
 The script stops by itself after 40 pictures. Because it saves at regular intervals across several chases, the pictures cover the whole approach: far, mid-range and close.
 
-Open `data\arena_frames\` and check two things: the attacker is visible in most pictures, and the distances in the file names range from several metres down to under one. If every distance is tiny, the chases are too short: raise `--every` to 10 and run again.
+Open `data\arena_frames\` and check three things:
+
+- **Distances range from several metres down to under one.** If every distance is tiny, the chases are too short: raise `--every` to 10 and run again.
+- **Many pictures are tagged `v1`.** About half is normal. At the start of each chase the attacker is often beside or behind the defender, so those pictures are tagged `v0`.
+- **`readings.csv` is there**, with 41 lines: one header line, then one line per picture.
+
+Then open `data\arena_frames_check\`. In the `v1` pictures, the red box should sit on the attacker.
+
+In the terminal output, out-of-view pictures can show very large readings, such as `bx=-53.29`. That is expected: when the attacker is beside or behind the defender, the calculation divides by a tiny forward distance. Those pictures are tagged `v0`, so no later step treats them as sightings.
 
 ⚠️ If the script fails at `runner.agent.act(...)` or at loading the checkpoint, the cause is usually the skrl version. Compare those lines with your own `scripts\skrl\play.py`, which loads the same checkpoint successfully, and copy its version of them.
 
@@ -6826,7 +6842,7 @@ If the input reads `[1, 3, 640, 640]`, Step 4's export command was run without `
 </details>
 
 > ✅ **Checkpoint 5.2 — MILESTONE: Problem 2 (perception) SOLVED**
-> 1. `data\arena_frames\` holds about 40 defender-camera pictures, spanning far to close distances
+> 1. `data\arena_frames\` holds about 40 defender-camera pictures, spanning far to close distances, plus `readings.csv` (one line per picture)
 > 2. `score_arena_frames.py` reports about 90% or more found in both the 0–2 m and 2–5 m rows
 > 3. `drone_detector.onnx` loads and runs inside `env_drone`, input `[1, 3, 480, 640]`, output `(1, 5, 6300)`
 
@@ -6977,112 +6993,11 @@ Step 1 wrote the converter, but nothing has proved it gives the policy the same 
 
 **Why:** to confirm that, for the same moment, the calculated readings and the readings measured from the picture match.
 
-This step records new defender-camera pictures and saves the calculated readings next to each one. A new script then measures the same readings from each picture, using your detector and the converter, and compares the two.
+This step uses the 40 pictures you captured in 5.2 Step 2, and the calculated readings saved next to them in `readings.csv`. A new script measures the same readings from each picture, using your detector and the converter, and compares the two.
 
-*Folders involved:* pictures and readings in `C:\projects\drone_pursuit\drone_pursuit\data\bridge_check\`, converter in `C:\projects\drone_pursuit\drone_pursuit\scripts\demo\vision_bridge.py`
+*Folders involved:* pictures and readings in `C:\projects\drone_pursuit\drone_pursuit\data\arena_frames\` (from 5.2 Step 2), converter in `C:\projects\drone_pursuit\drone_pursuit\scripts\demo\vision_bridge.py`
 
-#### Part A — Make the capture script save its readings and lock the attacker's width
-
-<details>
-<summary>Expand Part A</summary>
-
-> **Environment:** none needed — you are editing a file.
-
-The 5.2 pictures can't be reused for this comparison, for two reasons. First, the capture script only *printed* the calculated readings; it never saved them. Second, since 3.2B, the simulator pretends the attacker has a different width (8 to 35 cm) every episode when it calculates the size reading. The drone drawn on screen is always the same Crazyflie, about 13 cm wide. With a random width, the calculated size and the size in the picture would disagree even with a perfect converter.
-
-This part adds two things to `capture_arena_frames.py`. One is a new option, `--fixed_span`, that locks the pretend width to the width of the drone on screen. The other is a new file, `readings.csv`, written beside the pictures. It is a table with one row per picture: its file name, the true distance, and the calculated readings. That table is the answer key the comparison in Part C checks against.
-
-Without the new option, the script behaves exactly as in 5.2, so the 5.2 instructions still work.
-
-*File to edit:* `C:\projects\drone_pursuit\drone_pursuit\scripts\demo\capture_arena_frames.py`
-
-```python
-# ── FILE: C:\projects\drone_pursuit\drone_pursuit\scripts\demo\capture_arena_frames.py
-# ── SECTION: the first import line ──────────────────────────────────────────
-
-# ▼▼▼ REPLACE  import argparse, os  WITH: ▼▼▼
-import argparse, os, csv
-# ▲▲▲ END ▲▲▲
-
-
-# ── SECTION: the parser, directly below the --out argument ──────────────────
-
-parser.add_argument("--out", type=str,                                         # ← EXISTING
-                    default=r"C:\projects\drone_pursuit\drone_pursuit\data\arena_frames")
-# ▼▼▼ INSERT HERE! ▼▼▼
-parser.add_argument("--fixed_span", type=float, default=None)  # 6.1: lock the attacker width (metres)
-# ▲▲▲ END OF INSERT ▲▲▲
-
-
-# ── SECTION: directly below  env_cfg.scene.num_envs = 1 ─────────────────────
-
-env_cfg.scene.num_envs = 1                                     # ← EXISTING
-# ▼▼▼ INSERT HERE! ▼▼▼
-if args.fixed_span is not None:          # 6.1: same width in the calculation as on screen
-    env_cfg.attacker_span_range = (args.fixed_span, args.fixed_span)
-# ▲▲▲ END OF INSERT ▲▲▲
-
-
-# ── SECTION: directly below  os.makedirs(check_dir, exist_ok=True) ──────────
-
-os.makedirs(check_dir, exist_ok=True)                          # ← EXISTING
-# ▼▼▼ INSERT HERE! — the answer key, one row per saved picture ▼▼▼
-csv_file = open(os.path.join(args.out, "readings.csv"), "w", newline="")
-writer = csv.writer(csv_file)
-writer.writerow(["name", "dist_m", "bx", "by", "asz", "visible"])
-# ▲▲▲ END OF INSERT ▲▲▲
-
-
-# ── SECTION: inside the while loop, directly below the clean-copy save ──────
-
-    img.save(os.path.join(args.out, name))                     # ← EXISTING
-    # ▼▼▼ INSERT HERE! (same indentation as img.save) ▼▼▼
-    writer.writerow([name, f"{dist:.3f}", f"{bx:.4f}", f"{by:.4f}", f"{asz:.4f}", int(visible > 0.5)])
-    # ▲▲▲ END OF INSERT ▲▲▲
-
-
-# ── SECTION: the end of the file ────────────────────────────────────────────
-
-print(f"done — {saved} frames in {args.out}", flush=True)      # ← EXISTING
-# ▼▼▼ INSERT HERE! ▼▼▼
-csv_file.close()
-# ▲▲▲ END OF INSERT ▲▲▲
-env.close()                                                    # ← EXISTING
-app.close()                                                    # ← EXISTING
-```
-
-**Why the width is locked only here.** In training, the policy never sees pictures, only the seven readings. To teach it not to assume one attacker size, changing the size *number* was enough; the 3D model never needed resizing. This comparison is the first time the numbers are checked against rendered pictures, so for this capture alone the number must describe the drone that is actually drawn.
-
-</details>
-
-#### Part B — Capture a fresh set of pictures
-
-<details>
-<summary>Expand Part B</summary>
-
-> **Environment:** `env_drone` — this runs Isaac Lab.
-
-This runs one chase with your Chapter 3 policy, as in 5.2, and saves 40 pictures plus `readings.csv` into a **new** folder, `data\bridge_check`, so your 5.2 pictures stay untouched. `--fixed_span 0.13` locks the width to the on-screen Crazyflie's, about 13 cm tip to tip.
-
-*Run from:* `any folder` — *checkpoints live in:* `C:\projects\drone_pursuit\drone_pursuit\logs\skrl\quadcopter_direct`
-
-Use the same `best_agent.pt` as in 5.2 Step 2:
-
-```bat
-conda activate env_drone
-python C:\projects\drone_pursuit\drone_pursuit\scripts\demo\capture_arena_frames.py --checkpoint C:\projects\drone_pursuit\drone_pursuit\logs\skrl\quadcopter_direct\<run-folder>\checkpoints\best_agent.pt --out C:\projects\drone_pursuit\drone_pursuit\data\bridge_check --fixed_span 0.13
-```
-
-When it finishes, check two folders:
-
-- `data\bridge_check\` holds 40 pictures and `readings.csv`.
-- `data\bridge_check_check\` holds the same pictures with a red box where the calculation says the attacker is. Open a few. The red box should sit on the drone.
-
-You do not need to repeat the rest of 5.2. The detector is not retrained, re-scored or re-exported.
-
-</details>
-
-#### Part C — Create the checking script
+#### Part A — Create the checking script
 
 <details>
 <summary>Expand Part C</summary>
@@ -7099,7 +7014,7 @@ This step creates a new file, `check_bridge.py`. It runs without Isaac Lab, on t
 ```python
 # ── FILE: C:\projects\drone_pursuit\drone_pursuit\scripts\demo\check_bridge.py
 # ── NEW file — the whole content, nothing to insert into.
-# ── Reads  : data\bridge_check\frame_*.png and data\bridge_check\readings.csv (Part B)
+# ── Reads  : data\arena_frames\frame_*.png and data\arena_frames\readings.csv (5.2 Step 2)
 # ──          models\drone_detector.onnx (5.2 Step 4)
 # ── Imports: vision_bridge.py, in this SAME folder (scripts\demo\)
 # ── NOTE   : no Isaac Lab here — it only reads saved files
@@ -7111,7 +7026,7 @@ from PIL import Image
 from vision_bridge import DroneDetector, CameraReadingBridge
 
 ROOT = Path(r"C:\projects\drone_pursuit\drone_pursuit")
-FRAMES = ROOT / "data" / "bridge_check"
+FRAMES = ROOT / "data" / "arena_frames"
 BEAR_TOL = 0.05        # bearings must agree within 0.05 ("a few hundredths")
 SIZE_TOL = 0.20        # size must agree within 20 %
 
@@ -7186,7 +7101,7 @@ print(f"\nout-of-view check: {'PASS' if all_ok else 'FAIL'}")
 
 </details>
 
-#### Part D — Run the comparison and read the result
+#### Part B — Run the comparison and read the result
 
 <details>
 <summary>Expand Part D</summary>
@@ -7227,7 +7142,7 @@ You need at least 15 matching pictures, with distances in their file names rangi
 - **All three near +1.00:** both methods use the same camera. This is the result you want.
 - **A negative ratio:** that axis is flipped. Left and right, or up and down, are swapped between `_camera_readings()` and the converter.
 - **All three off by the same factor**, for example 0.70: the rendered camera's field of view (how wide the lens sees) differs from the one used in the calculation. Check that `TiledCameraCfg` uses `cam_focal_mm` and `cam_aperture_mm` (see Checkpoint item 2).
-- **Only the size off, bearings fine:** 0.13 is not the on-screen drone's real width. Repeat Part B with the `--fixed_span` value that brings the size ratio close to 1.00. Your real hardware settings do not change.
+- **Only the size off, bearings fine:** 0.13 is not the on-screen drone's real width. Repeat the 5.2 Step 2 capture with `--fixed_span` added, set to the value that brings the size ratio close to 1.00 (for example `--fixed_span 0.11`). Then run this script again. Your real hardware settings do not change.
 
 **Normal exceptions.** A few single mismatches are fine. They usually come from pictures closer than about 1 m, because the calculation measures from the drone's centre while the camera sits 4 cm in front of it. They can also come from a picture taken just as a chase restarted.
 
@@ -7242,13 +7157,13 @@ A "detector found nothing, skipped" line is a detector miss, already measured in
 <details>
 <summary>Expand Step 3</summary>
 
-> **Environment:** `env_drone` — no new command. This is Part 2 of the output you produced in Step 2 Part D.
+> **Environment:** `env_drone` — no new command. This is Part 2 of the output you produced in Step 2 Part B.
 
 Step 2 tested the converter while the attacker was visible. The policy also met the opposite case in training: whenever the attacker left the picture or looked too small, its last readings were held unchanged and the visible flag dropped to 0.
 
 **Why:** to confirm the converter does exactly the same when the detector finds nothing. If it reset the bearings to zero instead, that would mean "the attacker is straight ahead", so after losing sight the defender would fly straight on.
 
-Part 2 of `check_bridge.py` first gives the converter one fake sighting, right of and above the centre. Then it feeds it the pictures from Part B in which the attacker was truly outside the picture. For each one, the converter must report three things:
+Part 2 of `check_bridge.py` first gives the converter one fake sighting, right of and above the centre. Then it feeds it the pictures from 5.2 Step 2 in which the attacker was truly outside the picture. For each one, the converter must report three things:
 
 - **`visible = 0`**
 - **The same bearings and size as the fake sighting** ("bearings held")
@@ -7267,7 +7182,7 @@ out-of-view check: PASS
 
 **If a line ends with "← detector saw a drone that is not there",** the detector reported a box in a picture with no attacker in it, such as a false detection on the background. That is a detector problem (go back to 5.2), not a converter problem.
 
-**If it prints "no out-of-view frames were captured",** the policy kept the attacker in sight the whole time. The script then tests a simulated detector miss, which still checks the converter's logic. To also test real empty pictures, repeat Step 2 Part B with `--every 10` added. That spreads the 40 pictures over longer chases, which makes it likelier the attacker leaves the picture. Then run Part D again.
+**If it prints "no out-of-view frames were captured",** the policy kept the attacker in sight the whole time. The script then tests a simulated detector miss, which still checks the converter's logic. To also test real empty pictures, repeat the 5.2 Step 2 capture with `--every 10` added. That spreads the 40 pictures over longer chases, which makes it likelier the attacker leaves the picture. Then run Step 2 Part B again.
 
 </details>
 
