@@ -436,6 +436,11 @@ class QuadcopterEnv(DirectRLEnv):
     # ▲▲▲ END OF INSERT ▲▲▲
 
     # ▼▼▼ NEW!: Converts position coordinates in a physical space into image positions on a camera frame ▼▼▼
+    # The policy model is trained on 3D coordinates. But the drone will get camera input measured in a 2D plane.
+    # _camera_readings Converts the 3d coordinates from the 3d simulation into 2d coordinates that a camera would capture if it were 
+    # filming that scene. Then uses these 2D coordinates as input to the model so it learns based on the same 
+    # type of input that it will receive from a real camera (a 2D frame image). Later, in 6.1, these 2d coordinates 
+    # are compared to what the virtual camera generates during simulation, in 5.2
     def _camera_readings(self):
         """Project ground truth through the camera model → what the detector would report."""
         rel_b, _ = subtract_frame_transforms(
@@ -480,6 +485,7 @@ class QuadcopterEnv(DirectRLEnv):
         self._dist = torch.linalg.norm(
             self._attacker.data.root_pos_w - self._robot.data.root_pos_w, dim=1
         )
+
 
         bx, by, asz, vis = self._camera_readings()
 
