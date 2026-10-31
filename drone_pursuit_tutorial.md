@@ -6856,35 +6856,46 @@ Open the `predict` folder. A box should sit on the attacker, and nowhere else, i
 
 *File to CREATE (new, empty file):* `C:\projects\drone_pursuit\drone_pursuit\scripts\demo\score_arena_frames.py`
 
+-> in "MODEL", replace `drone_v1` by the name of your model
+
 ```python
 # ── FILE: C:\projects\drone_pursuit\drone_pursuit\scripts\demo\score_arena_frames.py
-# ── NEW file — the whole content.
-# ── Reads: data\arena_frames\frame_XXX_dDD.DDm.png (Step 2) and best.pt (5.1)
-
-import re
+# ── Scores the detector only on frames where the attacker is in view (v1),
+# ──   checks out-of-view frames (v0) for false alarms, and prints where each
+# ──   visible attacker was (off-centre?) and how big (pixels), to explain misses.
+import csv
 from pathlib import Path
 from ultralytics import YOLO
 
 FRAMES = Path(r"C:\projects\drone_pursuit\drone_pursuit\data\arena_frames")
 MODEL = r"C:\projects\drone_pursuit\drone_pursuit\runs\detect\drone_v1\weights\best.pt"
-CONF = 0.4                                   # same confidence threshold the converter uses in Chapter 6
+CONF = 0.4                                   # same threshold vision_bridge.py uses
 BANDS = [(0, 2), (2, 5), (5, 99)]            # distance ranges in metres
+W = 640                                      # camera image width in pixels
 
 model = YOLO(MODEL)
-rows = []
-for img in sorted(FRAMES.glob("frame_*.png")):
-    dist = float(re.search(r"_d([\d.]+)m", img.stem).group(1))   # distance from the file name
-    result = model.predict(str(img), conf=CONF, verbose=False)[0]
-    found = len(result.boxes) > 0
-    conf = float(result.boxes.conf.max()) if found else 0.0
-    rows.append((dist, found))
-    print(f"{img.name}: {'FOUND ' if found else 'missed'}  confidence {conf:.2f}")
+rows, false_alarms, out_of_view = [], 0, 0
+with open(FRAMES / "readings.csv", newline="") as f:
+    for r in csv.DictReader(f):
+        result = model.predict(str(FRAMES / r["name"]), conf=CONF, verbose=False)[0]
+        found = len(result.boxes) > 0
+        conf = float(result.boxes.conf.max()) if found else 0.0
+        if r["visible"] != "1":                              # attacker out of view: nothing to find
+            out_of_view += 1
+            false_alarms += found
+            continue
+        dist, bx, by = float(r["dist_m"]), float(r["bx"]), float(r["by"])
+        width_px = float(r["asz"]) * W                       # attacker width in the picture
+        rows.append((dist, found))
+        print(f"{r['name']}: {'FOUND ' if found else 'missed'} conf {conf:.2f}   "
+              f"off-centre x {bx:+.2f} y {by:+.2f}   ~{width_px:.0f} px wide")
 
-print("\ndistance     pictures   found   rate")
+print(f"\nout-of-view frames: {out_of_view}, false alarms in them: {false_alarms}")
+print("\ndistance   visible   found   rate")
 for lo, hi in BANDS:
     band = [found for d, found in rows if lo <= d < hi]
     if band:
-        print(f"{lo:>2}–{hi:<2} m     {len(band):>6}   {sum(band):>5}   {sum(band) / len(band):5.0%}")
+        print(f"{lo:>2}–{hi:<2} m   {len(band):>7}   {sum(band):>5}   {sum(band) / len(band):5.0%}")
 ```
 
 *Run from:* `any folder`
