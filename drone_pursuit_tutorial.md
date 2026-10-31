@@ -6462,6 +6462,140 @@ If mAP50 comes in below 0.8, the cause is almost always the data rather than the
 
 > ✅ **Checkpoint 5.1** — mAP50 ≥ 0.9 on val; `val_batch0_pred.jpg` shows tight, confident boxes.
 
+#### OBSERVED RESULTS
+
+**Input**:
+- Original batch: 6500 PNG images: 5000: drone, background and distractors + 1500: drone, background, distractors and birds
+- Dropped 971 (15%) (drone images were too small); kept = 5529
+- Train-test split: Training batch = 4700 (85%), Validation Batch = 829 (15%)
+- Run: `runs\detect\drone_v2` · YOLOv8n · 60 epochs (43 min) · 5,529 images (4,700 train / 829 val) · 1 class: `drone`
+
+**Results**: 
+
+| Metric | Target | Result |
+|---|---|---|
+| mAP50 | ≥ 0.9 | **0.972** ✅ |
+| mAP50-95 | ≥ 0.6 | **0.754** ✅ |
+| Precision / Recall | — | 0.975 / 0.957 |
+
+---
+
+**1. mAP50-95 (Mean Average Precision at 0.50 and 0.95 Intersection over Union)**
+
+**What they mean and measure**
+They are overall detector scores from 0 to 1. A box counts as correct when it overlaps the true box enough. In mAP50, "enough" means 50% overlap, so it asks "did it find the drone?". mAP50-95 averages ten stricter overlap levels, from 50% up to 95%, so it also asks "is the box drawn tightly?".
+
+**What a good result is, and why**
+mAP50 ≥ 0.9 and mAP50-95 ≥ 0.6. mAP50-95 is always lower, because a 95% overlap is very hard to hit, especially on boxes only a few pixels wide.
+
+**What was observed, and what it means**
+mAP50 = 0.972 and mAP50-95 = 0.754, both clearly above target. The detector finds almost every drone and draws reasonably tight boxes. The gap between the two numbers is expected: on small drones, a box that is off by a few pixels is a big percentage error. 
+
+<img width="1657" height="84" alt="image" src="https://github.com/user-attachments/assets/99026c68-8f3b-4253-8844-d4ab2a3b7d0e" />
+
+---
+
+**2. Loss curves**
+
+**What they mean and measure**
+A loss is the model's error score, and lower is better. There are three:
+
+- **box loss:** how far off the boxes are;
+- **cls loss:** how sure it is that an object is a drone;
+- **dfl loss:** how precise the box edges are.
+
+`train/` losses are measured on images the model learns from. `val/` losses are measured on images it never trains on.
+
+**What a good result is, and why**
+Both train and val losses should go down and flatten out, with val following train closely. If train keeps falling while val turns upward, the model is **overfitting**: memorising its training photos instead of learning what a drone looks like. Val losses are the honest ones, because they come from unseen images.
+
+**What was observed, and what it means**
+All six losses fall steadily:
+
+- cls loss 2.31 → 0.36;
+- box loss 1.40 → 0.79 (train) and 1.27 → 0.76 (val);
+- val follows train closely, with no upturn, so there is **no overfitting**.
+
+<img width="1400" height="563" alt="image" src="https://github.com/user-attachments/assets/3e1d790c-aed7-4f8c-8c10-b3974fb2ea78" />
+
+---
+
+**3. Confusion matrix**
+
+**What it means and measures**
+A table comparing what the model predicted (rows) with the truth (columns):
+
+- **drone/drone:** True positives: drones correctly found;
+- **background row:** False negatives: real drones it missed;
+- **background column:** False positives: false alarms, where it boxed something that wasn't a drone.
+(A detection model doesn't count true negatives)
+
+**What a good result is, and why**
+A big drone/drone count, and small numbers in the two error cells.  
+
+**What was observed, and what it means**
+Of 747 drones in the 829 validation images:
+
+- **722 found**: True positives (97%);
+- **25 missed**: False negatives (3%);
+- **30 false alarms.** False positives
+
+<img width="2040" height="1828" alt="image" src="https://github.com/user-attachments/assets/f8fa883d-7ecc-4ff7-867f-642632656ad8" />
+
+---
+
+**4. Precision-Recall curve**
+
+**What it means and measures**
+- **Precision:** of the boxes it drew, how many were real drones (True positives).
+- **Recall:** of the real drones, how many it found (To get a higher recall, you need to loosen up precision - accept having some false positives and vice-versa).
+
+The curve shows the trade-off between the two as the confidence threshold slides from strict to loose. mAP50 is the area under this curve.
+
+**What a good result is, and why**
+The ideal curve hugs the top-right corner: precision stays near 1.0 while recall climbs toward 1.0, then drops off as late as possible. A curve that sags early means the model can only find more drones by also making many mistakes. A square-shaped curve means you get high precision and high recall at the same time.
+
+**What was observed, and what it means**
+The curve is almost square:
+
+- precision stays above 0.97 up to about 95% recall;
+- it then falls steeply at about 98% recall;
+- area under the curve = **0.972** (mAP50).
+
+So **the detector finds 95% of drones with almost no false alarms**. The last 2–3% it can never find are probably the smallest or most hidden drones; no threshold setting recovers them.
+
+<img width="2136" height="1429" alt="image" src="https://github.com/user-attachments/assets/eb4606d7-add4-43bf-8681-b2fc91a167a8" />
+
+---
+
+**5. F1-Confidence curve**
+
+**What it means and measures**
+F1 combines precision and recall into one score, which is high only when both are high. The curve shows F1 at every confidence threshold (the minimum score a box needs before it's reported). Its peak marks the threshold that best balances catching drones against avoiding false alarms. The separate Precision and Recall curves show each side on its own.
+
+**What a good result is, and why**
+A high peak (≥ 0.9), on a wide, flat plateau. The flat part matters: it means the exact threshold chosen isn't critical, so small differences between training images and the real chase won't push the detector off a cliff. Ideally, the threshold used in the pipeline sits on that plateau, close to the peak.
+
+**What was observed, and what it means**
+F1 peaks at **0.96 at confidence 0.376**, and stays above about 0.93 across the whole range from 0.15 to 0.6.
+
+This pipeline uses **0.4**, both in `vision_bridge.py` and in `score_arena_frames.py`. That is practically at the peak, so no change is needed. At 0.4, recall is about 0.95 and precision about 0.97.
+
+Above 0.7, F1 collapses, because recall drops sharply. Never raise the threshold that high.
+
+<img width="2159" height="1454" alt="image" src="https://github.com/user-attachments/assets/78e73ca1-8581-438f-b51f-6236fd220369" />
+
+---
+
+**caveats**:
+
+- **Every training drone sits in the image centre** (see `labels.jpg`). These scores come from validation images taken from the same generator, so they share that bias.
+
+<img width="1123" height="1121" alt="image" src="https://github.com/user-attachments/assets/903f909a-b307-4883-8411-c204b0fcce30" />
+
+The real exam is **5.2 Step 3**: that produces frames with the drone off-centre, at real chase distances. 
+
+
 </details>
 
 ---
