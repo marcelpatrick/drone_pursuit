@@ -6142,6 +6142,11 @@ Expected output, for the 2500-frame production batch, is one line such as `kept 
 
 **Why `class_name()` instead of reading `["class"]` directly.** A downloaded drone or prop model can arrive with its own labels in a different format. Reading the entry defensively means such a model's boxes are skipped as "not a drone" instead of crashing the script.
 
+**Image clean up rules:**
+. we asked the script to generate images of the drone + background and distractors (trees, cubes etc)
+. it generated also some images where  only a small part of the drone is visible (looks empty but actually have a drone). These would teach the model that if we see part of a drone, this is not a drone - which we want to avoid. So we dropped these images. 
+. we also created images with birds. some bird images were deliberately free of a drone. We did these because birds are easily mistakable by drones so keeping both drone and no-drone bird images works better to train the model on differentiating the two. That is why we are keeping images with no drones but with birds. (only bird batch images can be empty of drones). And for these we deliverately excluded the drone (no risk of having part of a drone being classified as "no drone"). So its safe to keep those. 
+
 </details>
 
 ### Step 2 — Write the dataset descriptor
