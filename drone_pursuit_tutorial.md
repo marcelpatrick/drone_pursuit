@@ -7213,11 +7213,11 @@ Merge the new batch into `data\raw` (`merge_raw_batches.py`), re-run 4.3, train 
 
 Three rounds of training while writing this tutorial (5.1 OBSERVED RESULTS lists their training data):
 
-| Model | Test | 0–2 m | 2–5 m | False alarms | What the misses had in common |
-|---|---|---|---|---|---|
-| `drone_v2` | 40 pictures, first scorer | 67% (8/12) | 0% (0/4) | 0 | close drones low in the picture, against the grey floor; every far drone |
-| `drone_v3` | 200 pictures, first scorer | 93% (57/61) | 69% (37/54) | 0 of 85 | drones under 20 px wide, especially near the edges |
-| `drone_v4` | 200 pictures, current scorer | **95% (58/61)** | **82% (41/50)** | 1 of 85 | side-on slivers 4–5 px thick, mostly near the edges |
+| Model | What changed from the previous version | Test | 0–2 m | 2–5 m | False alarms | What the misses had in common |
+|---|---|---|---|---|---|---|
+| `drone_v2` | Added 1,500 bird photos (birds the detector must not box) to the partner's 5,000 standard photos; trained 60 epochs | 40 pictures, first scorer | 67% (8/12) | 0% (0/4) | 0 | close drones low in the picture, against the grey floor; every far drone |
+| `drone_v3` | Added 2,000 ground-view photos: camera above the drone looking down, grey floor textures behind it, drone off-centre in 80% of them; trained 100 epochs instead of 60 | 200 pictures, first scorer | 93% (57/61) | 69% (37/54) | 0 of 85 | drones under 20 px wide, especially near the edges |
+| `drone_v4` | Added 1,000 small-drone photos: drones 10–26 px wide (0.10–0.14 m, 2–3.5 m away), off-centre out to the picture's edges; 500 with ground behind, 500 with sky behind; trained 100 epochs. Test improved: restart frames skipped, quality rendering, only drones of at least 10 × 4 px graded, a hit counted only when the box sits on the attacker | 200 pictures, current scorer | **95% (58/61)** | **82% (41/50)** | 1 of 85 | side-on slivers 4–5 px thick, mostly near the edges |
 
 The tests differ slightly between rows: `drone_v2` had only 40 pictures, and the first scorer counted a box anywhere in the picture and graded specks too. The trend is still clear. Each targeted batch fixed the problem the previous test found:
 
