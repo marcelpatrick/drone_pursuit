@@ -70,6 +70,12 @@ tests/
 # Docker history
 .isaac-lab-docker-history
 data/raw/
+data/raw_s1/
+data/raw_s2/
+data/raw_birds/
+data/raw_birds_test/
+data/preview_birds/
+data/bg
 data/preview/
 data/yolo/
 runs/

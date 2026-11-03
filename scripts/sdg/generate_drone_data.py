@@ -4,6 +4,11 @@
 # ──   change before each photo (here: the camera position), rep.orchestrator.step()
 # ──   to capture, BasicWriter to save, rep.orchestrator.wait_until_complete() at the end.
 # ──   No randomisation of lights or objects yet: that is 4.2.
+# ── Extra batches (after 5.2): optional flags, all OFF by default, so the plain command
+# ──   still makes the standard 4.2 batch:
+# ──     --birds --no_drone_share 0.3   → bird batch (birds the detector must NOT box)
+# ──     --ground_view --off_centre 0.8 → ground batch (camera looks DOWN at the drone,
+# ──                                      grey floors behind it, drone anywhere in the photo)
 
 """Standalone SDG: labelled images of a Crazyflie for detector training."""
 import argparse
@@ -13,6 +18,10 @@ parser.add_argument("--num_frames", type=int, default=200)
 parser.add_argument("--out_dir", type=str, default=r"C:\projects\drone_pursuit\drone_pursuit\data\raw")
 parser.add_argument("--seed", type=int, default=0)
 parser.add_argument("--headless", action="store_true")
+parser.add_argument("--birds", action="store_true")               # ← NEW (bird batch): add 1–3 birds to every photo
+parser.add_argument("--no_drone_share", type=float, default=0.0)  # ← NEW (bird batch): share of photos with NO drone (0.3 = 30%)
+parser.add_argument("--ground_view", action="store_true")         # ← NEW (ground batch): camera above the drone, floor behind it
+parser.add_argument("--off_centre", type=float, default=0.0)      # ← NEW (ground batch): share of photos with the drone off-centre (0.8 = 80%)
 args = parser.parse_args()
 
 # ── SECTION 0 — start Isaac Sim ─────────────────────────────────────────────
@@ -110,24 +119,38 @@ target = Gf.Vec3d(*DRONE_POS)
 #     eye = Gf.Vec3d(rng.uniform(-3, 3), rng.uniform(-3, 3), rng.uniform(0.5, 3.0))
 #     ...
 # NEW!: AFTER:
+TAN_HALF_W = 20.955 / 2 / 12.0                     # ← NEW (ground batch): half the image width, as a slope (≈ 41°)
+TAN_HALF_H = (20.955 * 480 / 640) / 2 / 12.0        # ← NEW (ground batch): half the image height, as a slope (≈ 33°)
+
+
 def place_camera():
     """Put the camera 0.5–6 m from the drone, below or above it, turned to face it.
-    The distance is drawn first, so near and far views appear about equally often."""
+    The distance is drawn first, so near and far views appear about equally often.
+    --ground_view: the camera is ABOVE the drone looking down 10–50°, so the floor is behind it.
+    --off_centre:  the camera aims beside the drone, so it lands anywhere in the photo."""
     while True:
-        dist = rng.uniform(0.5, 6.0)                        # 1. how far: any distance, equally likely
-        up = rng.uniform(-1.0, 1.0)                         # 2. which direction: up = vertical share,
+        if args.ground_view:                                # ← NEW (ground batch)
+            dist = rng.uniform(0.8, 5.0)                    #    chase distances
+            up = math.sin(math.radians(rng.uniform(10.0, 50.0)))   # always above, looking down
+        else:
+            dist = rng.uniform(0.5, 6.0)                    # 1. how far: any distance, equally likely
+            up = rng.uniform(-1.0, 1.0)                     # 2. which direction: up = vertical share,
         turn = rng.uniform(0.0, 2.0 * math.pi)              #    turn = compass angle
         flat = math.sqrt(1.0 - up * up)
         eye = target + Gf.Vec3d(dist * flat * math.cos(turn), dist * flat * math.sin(turn), dist * up)
         if 0.2 <= eye[2] <= 4.0:                            # 3. keep the camera 0.2–4 m above the floor
             break
 
-    view = Gf.Matrix4d().SetLookAt(eye, target, Gf.Vec3d(0, 0, 1))   # z is "up"
-    cam_pose_op.Set(view.GetInverse())
+    aim = target
+    if rng.random() < args.off_centre:                      # ← NEW (ground batch): aim beside the drone
+        forward = (target - eye).GetNormalized()
+        right = Gf.Cross(forward, Gf.Vec3d(0, 0, 1)).GetNormalized()
+        cam_up = Gf.Cross(right, forward)
+        u = rng.uniform(-0.7, 0.7)                          # where the drone lands: -1 = left edge, +1 = right edge
+        v = rng.uniform(-0.7, 0.7)                          #                        -1 = bottom,    +1 = top
+        aim = target - dist * (u * TAN_HALF_W * right + v * TAN_HALF_H * cam_up)
 
-
-
-    view = Gf.Matrix4d().SetLookAt(eye, target, Gf.Vec3d(0, 0, 1))   # z is "up"
+    view = Gf.Matrix4d().SetLookAt(eye, aim, Gf.Vec3d(0, 0, 1))   # z is "up"
     cam_pose_op.Set(view.GetInverse())
 
 
@@ -244,6 +267,7 @@ def randomise_scene():
     randomise_distractors()        # ← EXISTING (4.2)
     randomise_background()         # ← NEW: sky, floor, buildings, walls, trees
     randomise_drone_look()         # ← NEW: replaces randomise_drone()
+    randomise_birds()              # ← NEW (bird batch): does nothing unless --birds was given
 # ▲▲▲ END OF INSERT ▲▲▲
 
 # ▼▼▼ INSERT HERE! ▼▼▼
@@ -305,6 +329,13 @@ FLOOR_TEX = keep_existing("floor textures", [
     f"{NVIDIA_NUCLEUS_DIR}/Materials/Base/Wood/Plywood/Plywood_BaseColor.png",
     f"{NVIDIA_NUCLEUS_DIR}/Materials/Base/Stone/Marble/Marble_BaseColor.png",
 ] + local_files("floor", [".jpg", ".jpeg", ".png"]))
+
+# ← NEW (ground batch): plain, low-contrast grey ground (concrete, asphalt, plain grey) from
+#   data\bg\floor_grey\, used for most --ground_view photos. Made by make_grey_floors.py.
+GREY_FLOOR_TEX = local_files("floor_grey", [".jpg", ".jpeg", ".png"])
+print(f"[bg] grey floor textures: {len(GREY_FLOOR_TEX)} found in data\\bg\\floor_grey", flush=True)
+if args.ground_view and not GREY_FLOOR_TEX:
+    print("[bg] WARNING: --ground_view but no grey floors found; using the normal floor textures", flush=True)
 
 WALL_TEX = keep_existing("wall textures", [
     f"{ISAAC_NUCLEUS_DIR}/Materials/Textures/Patterns/nv_brick_grey.jpg",
@@ -498,8 +529,11 @@ def randomise_background():
     set_transform_attributes(dome, rotation=Gf.Vec3f(0.0, 0.0, rand.uniform(0, 360)))
 
     # floor: new picture at a new angle; hidden 1 photo in 5, so the sky photo's own ground shows
-    set_texture(FLOOR_SHADER, rand.choice(FLOOR_TEX), rand.uniform(0, 360))
-    show(floor, rand.random() < 0.8)
+    if args.ground_view and GREY_FLOOR_TEX and rand.random() < 0.7:   # ← NEW (ground batch): mostly grey ground
+        set_texture(FLOOR_SHADER, rand.choice(GREY_FLOOR_TEX), rand.uniform(0, 360))
+    else:
+        set_texture(FLOOR_SHADER, rand.choice(FLOOR_TEX), rand.uniform(0, 360))
+    show(floor, args.ground_view or rand.random() < 0.8)              # ← EDITED: always shown in the ground batch
 
     # buildings and walls: stand on the floor (centre at half height) in their strip, any heading
     for group, strip_set in ((BUILDINGS, BUILDING_STRIPS), (WALLS, WALL_STRIPS)):
@@ -535,6 +569,10 @@ def randomise_drone_look():
     """Exactly one drone per photo: hide the previous look, show a new one at DRONE_POS."""
     if _last_look[0] is not None:
         show(_last_look[0]["prim"], False)
+    if rand.random() < args.no_drone_share:      # ← NEW (bird batch): a birds-only photo
+        _last_look[0] = None
+        SHOWN["(no drone)"] += 1
+        return
     d = rand.choices(DRONE_LOOKS, weights=[x["weight"] for x in DRONE_LOOKS])[0]
     s = d["unit"] * rand.uniform(*DRONE_SIZE_M)
     set_transform_attributes(d["prim"],
@@ -550,17 +588,61 @@ def randomise_drone_look():
 
 def preload_assets():
     """Show every sky and texture once, so downloads finish before the first photo, not during it."""
-    print(f"preloading {len(SKIES)} skies and {len(set(FLOOR_TEX + WALL_TEX))} textures...", flush=True)
+    print(f"preloading {len(SKIES)} skies and {len(set(FLOOR_TEX + WALL_TEX + GREY_FLOOR_TEX))} textures...", flush=True)
     show(floor, True)
     for sky in SKIES:
         UsdLux.DomeLight(dome).GetTextureFileAttr().Set(Sdf.AssetPath(sky))
         for _ in range(5):
             simulation_app.update()
-    for tex in sorted(set(FLOOR_TEX + WALL_TEX)):
+    for tex in sorted(set(FLOOR_TEX + WALL_TEX + GREY_FLOOR_TEX)):   # ← EDITED: grey floors preloaded too
         set_texture(FLOOR_SHADER, tex)
         for _ in range(3):
             simulation_app.update()
 # ▲▲▲ END OF INSERT ▲▲▲
+
+# ▼▼▼ NEW (bird batch) ▼▼▼
+# ── SECTION 2E — birds: look-alikes the detector must NOT box ───────────────
+BIRD_SIZE_M = (0.2, 1.0)     # real size per photo: sparrow ~0.2 m ... gull ~1 m wingspan
+BIRD_TILT_X = 0.0            # set to 90.0 only if birds load lying on their side
+
+bird_files = local_files("birds", [".usd", ".usda", ".usdc", ".usdz"])   # data\bg\birds\
+print(f"[bird] {len(bird_files)} bird model files found in data\\bg\\birds", flush=True)
+
+BIRDS = []                   # (holder prim, scale that makes its largest side 1 m)
+for i in range(6 if (args.birds and bird_files) else 0):    # 6 bird slots, re-used every photo
+    usd = bird_files[i % len(bird_files)]
+    path = f"/World/Birds/Bird_{i:02d}"
+    try:
+        holder = load_model(path, usd)
+        add_labels(holder, labels=["bird"], instance_name="class")   # NOT "drone" → 4.3 ignores it
+        largest, size = measure(holder)
+    except Exception as e:
+        print(f"[bird] {path}: FAILED to load {usd} -> {e}; skipped")
+        continue
+    show(holder, False)
+    if largest > 0:
+        BIRDS.append((holder, 1.0 / largest))
+print(f"[bird] {len(BIRDS)} bird slots ready", flush=True)
+
+
+def randomise_birds():
+    """Show 1–3 birds near the drone's spot, so most of them land inside the photo."""
+    if not BIRDS:
+        return
+    shown = set(rand.sample(range(len(BIRDS)), rand.randint(1, min(3, len(BIRDS)))))
+    for i, (holder, unit) in enumerate(BIRDS):
+        show(holder, i in shown)
+        if i not in shown:
+            continue
+        s = unit * rand.uniform(*BIRD_SIZE_M)
+        set_transform_attributes(
+            holder,
+            location=Gf.Vec3d(DRONE_POS[0] + rand.uniform(-2.5, 2.5),
+                              DRONE_POS[1] + rand.uniform(-2.5, 2.5),
+                              max(0.3, DRONE_POS[2] + rand.uniform(-1.2, 2.0))),
+            rotation=Gf.Vec3f(BIRD_TILT_X + rand.uniform(-30, 30), rand.uniform(-30, 30), rand.uniform(0, 360)),
+            scale=Gf.Vec3f(s, s, s))
+# ▲▲▲ END OF NEW (bird batch) ▲▲▲
 
 # ── SECTION 3 — the capture loop ────────────────────────────────────────────
 def drone_and_distractor_boxes():
@@ -589,7 +671,7 @@ for i in range(args.num_frames):
     rep.orchestrator.step(rt_subframes=RT_SUBFRAMES)        # 3. render; the writer saves 4 files
     drone_boxes, n_other = drone_and_distractor_boxes()     # 4. print a check
     sizes = " ".join(f"{int(b['x_max'] - b['x_min'])}x{int(b['y_max'] - b['y_min'])}px" for b in drone_boxes)
-    look = _last_look[0]["path"].rsplit("/", 1)[-1]
+    look = _last_look[0]["path"].rsplit("/", 1)[-1] if _last_look[0] else "NO DRONE"   # ← EDITED (bird batch)
     print(f"frame {i + 1}/{args.num_frames}  drone={len(drone_boxes)} {sizes}  other={n_other}  {look}", flush=True)
 
 # release resources, then wait until every file is on disk

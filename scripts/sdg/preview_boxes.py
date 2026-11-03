@@ -10,11 +10,11 @@ import os
 import numpy as np
 from PIL import Image, ImageDraw
 
-RAW = r"C:\projects\drone_pursuit\drone_pursuit\data\raw"
-OUT = r"C:\projects\drone_pursuit\drone_pursuit\data\preview"
+RAW = r"C:\projects\drone_pursuit\drone_pursuit\data\raw_ground_test"
+OUT = r"C:\projects\drone_pursuit\drone_pursuit\data\preview_ground"
 os.makedirs(OUT, exist_ok=True)
 
-for png in sorted(glob.glob(os.path.join(RAW, "rgb_*.png"))):
+for png in sorted(glob.glob(os.path.join(RAW, "rgb_*.png"))):   # every 100th frame
     idx = os.path.basename(png)[4:8]                                  # "0000" from rgb_0000.png
     boxes = np.load(os.path.join(RAW, f"bounding_box_2d_tight_{idx}.npy"))
     with open(os.path.join(RAW, f"bounding_box_2d_tight_labels_{idx}.json")) as f:

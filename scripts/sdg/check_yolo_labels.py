@@ -11,7 +11,8 @@ OUT = YOLO.parent / "yolo_check"
 OUT.mkdir(exist_ok=True)
 
 images = sorted((YOLO / "images" / "train").glob("*.png"))
-random.seed(0)
+random.seed()
+
 for img_path in random.sample(images, min(10, len(images))):
     label = YOLO / "labels" / "train" / f"{img_path.stem}.txt"
     img = Image.open(img_path).convert("RGB")
