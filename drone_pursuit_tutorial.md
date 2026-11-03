@@ -6540,8 +6540,8 @@ Two details in the curves are normal:
 - **The spike at epochs 2–5** (val box loss briefly up to 1.87, mAP50 briefly down to 0.50). During the first 3 epochs, YOLO "warms up": it raises its learning speed step by step, and the first large steps overshoot before settling. It recovers within a few epochs.
 - **The sudden drop in the three train losses near epoch 90.** For the last 10 epochs, Ultralytics switches off **mosaic** (training on four photos pasted into one), so the training photos become easier. The val losses don't jump, because they never use mosaic. mAP50-95 peaks at epoch 90 (0.754); that epoch is the one saved as `best.pt`.
 
-<!-- IMAGE: runs\detect\drone_v4\results.png — upload to GitHub and replace the src below -->
-<img width="1400" height="700" alt="drone_v4 results.png: loss and metric curves" src="REPLACE_WITH_UPLOADED_results.png" />
+<img width="2353" height="1156" alt="image" src="https://github.com/user-attachments/assets/5837cec1-6c42-42f5-8e5d-2ae55f29a554" />
+
 
 ---
 
@@ -6567,13 +6567,7 @@ Of 1,140 drones in the 1,210 validation images:
 
 The found and missed shares match `drone_v3`'s (97% and 3%), although the validation set now holds many more tiny drones. The 55 false alarms are spread over 1,210 images that include birds and busy ground. In the arena test (5.2 Step 3), which is what matters, `drone_v4` made 1 false alarm in 85 frames without a drone.
 
-<!-- IMAGE: runs\detect\drone_v4\confusion_matrix.png — upload to GitHub and replace the src below -->
-<img width="2040" height="1530" alt="drone_v4 confusion matrix" src="REPLACE_WITH_UPLOADED_confusion_matrix.png" />
-
-**The normalized version** (`confusion_matrix_normalized.png`) shows each column as shares. The drone column reads 0.97 found and 0.03 missed. The background column reads **1.00**, which looks alarming but isn't: that column holds only the 55 false alarms, and all 55 were labelled `drone`, because `drone` is the only class there is. So 1.00 says nothing about how many false alarms there are; the plain matrix above gives the count.
-
-<!-- IMAGE: runs\detect\drone_v4\confusion_matrix_normalized.png — upload to GitHub and replace the src below -->
-<img width="2040" height="1530" alt="drone_v4 normalized confusion matrix" src="REPLACE_WITH_UPLOADED_confusion_matrix_normalized.png" />
+<img width="2007" height="1806" alt="image" src="https://github.com/user-attachments/assets/3608ea31-9be9-48dc-9fca-aa7f9b822e2c" />
 
 ---
 
@@ -6597,8 +6591,8 @@ The curve is almost square:
 
 So **the detector finds 95% of drones with almost no false alarms**. The last 2–3% it can never find are the smallest or most hidden drones; no threshold setting recovers them.
 
-<!-- IMAGE: runs\detect\drone_v4\BoxPR_curve.png — upload to GitHub and replace the src below -->
-<img width="2136" height="1429" alt="drone_v4 precision-recall curve" src="REPLACE_WITH_UPLOADED_BoxPR_curve.png" />
+<img width="2173" height="1443" alt="image" src="https://github.com/user-attachments/assets/51411200-411d-42ad-8c43-c2768d10c19a" />
+
 
 ---
 
@@ -6622,14 +6616,8 @@ This pipeline uses **0.4**, both in `vision_bridge.py` and in `score_arena_frame
 
 Above about 0.7, F1 collapses, because recall drops sharply. Never raise the threshold that high.
 
-<!-- IMAGE: runs\detect\drone_v4\BoxF1_curve.png — upload to GitHub and replace the src below -->
-<img width="2159" height="1454" alt="drone_v4 F1-confidence curve" src="REPLACE_WITH_UPLOADED_BoxF1_curve.png" />
+<img width="2166" height="1435" alt="image" src="https://github.com/user-attachments/assets/b6a922f0-a340-4199-8748-37c1759dc259" />
 
-<!-- IMAGE: runs\detect\drone_v4\BoxP_curve.png — upload to GitHub and replace the src below -->
-<img width="2159" height="1454" alt="drone_v4 precision-confidence curve" src="REPLACE_WITH_UPLOADED_BoxP_curve.png" />
-
-<!-- IMAGE: runs\detect\drone_v4\BoxR_curve.png — upload to GitHub and replace the src below -->
-<img width="2159" height="1454" alt="drone_v4 recall-confidence curve" src="REPLACE_WITH_UPLOADED_BoxR_curve.png" />
 
 ---
 
