@@ -6437,7 +6437,7 @@ yolo detect train data=C:\projects\drone_pursuit\drone_pursuit\data\yolo\drone.y
 - **Train** (learning/fine-tuning): Uses images from `C:\projects\drone_pursuit\drone_pursuit\data\yolo\images\train` and labels from `C:\projects\drone_pursuit\drone_pursuit\data\yolo\labels\train`
 - **Test** (during training): Uses images from `C:\projects\drone_pursuit\drone_pursuit\data\yolo\images\val` and labels from `C:\projects\drone_pursuit\drone_pursuit\data\yolo\labels`
 
-About 1.5 hours for 100 epochs on roughly 7,000–8,000 images (RTX 4090 Laptop GPU). While it runs, open the output folder.
+About 1.5–2 hours for 100 epochs on roughly 7,000–8,000 images (`drone_v4`: 107 min on an RTX 4090 Laptop GPU). While it runs, open the output folder.
 
 **Every retraining gets a new name.** 5.2 Step 3 may send you back here after adding images. Train again with the next name (`name=drone_v2`, `drone_v3`, …), so earlier results are never overwritten and you can compare runs.
 
@@ -6477,23 +6477,24 @@ The detector was trained several times while writing this tutorial. Each run add
 |---|---|---|---|---|---|
 | `drone_v2` | 6,500 | partner's 5,000 standard frames + 1,500 bird frames | 60 | 0.972 | 0.754 |
 | `drone_v3` | 8,500 | + 2,000 ground-view frames (camera above the drone, grey floor behind it) | 100 | 0.975 | 0.761 |
-| `drone_v4` | 9,500 | + 1,000 small-drone frames (10–26 px wide, near the edges, ground and sky behind) | 100 | *add from `drone_v4\results.csv`* | *add* |
+| `drone_v4` | 9,500 | + 1,000 small-drone frames (10–26 px wide, near the edges, ground and sky behind) | 100 | **0.979** | **0.754** |
 
-The detailed results below are from `drone_v3`. `drone_v4` was trained with the same command; its scores are expected to land in the same range, because only 1,000 frames were added.
+The detailed results below are from `drone_v4`, the detector used from 5.2 Step 4 onward.
 
-**Input** (`drone_v3`):
-- 8,500 raw frames: 5,000 standard + 1,500 with birds + 2,000 ground-view
-- About 15% dropped in 4.3 (drones too small to label); about 7,230 kept
-- Train-test split: about 6,140 training images (85%), 1,084 validation images (15%)
-- Run: `runs\detect\drone_v3` · YOLOv8n · 100 epochs (95 min) · 1 class: `drone`
+**Input** (`drone_v4`):
+- 9,500 raw frames: 5,000 standard + 1,500 with birds + 2,000 ground-view + 500 small drones against the ground + 500 small drones against the sky
+- Dropped 1,431 (15%) in 4.3: drones too small or too thin to label, and frames from one drone model that produces broken boxes
+- Kept 8,069: 7,523 with a drone + 546 background images (no drone, to teach the detector what isn't a drone)
+- Train-test split: 6,859 training images (85%), 1,210 validation images (15%)
+- Run: `runs\detect\drone_v4` · YOLOv8n · 100 epochs (107 min) · 1 class: `drone`
 
-**Results** (`best.pt`, the best epoch, 90):
+**Results** (`best.pt`, from the best epoch, 90):
 
 | Metric | Target | Result |
 |---|---|---|
-| mAP50 | ≥ 0.9 | **0.975** ✅ |
-| mAP50-95 | ≥ 0.6 | **0.761** ✅ |
-| Precision / Recall | — | 0.972 / 0.960 |
+| mAP50 | ≥ 0.9 | **0.979** ✅ |
+| mAP50-95 | ≥ 0.6 | **0.754** ✅ |
+| Precision / Recall | — | 0.979 / 0.953 |
 
 ---
 
@@ -6506,14 +6507,9 @@ They are overall detector scores from 0 to 1. A box counts as correct when it ov
 mAP50 ≥ 0.9 and mAP50-95 ≥ 0.6. mAP50-95 is always lower, because a 95% overlap is very hard to hit, especially on boxes only a few pixels wide.
 
 **What was observed, and what it means**
-mAP50 = 0.975 and mAP50-95 = 0.761, both clearly above target and slightly better than `drone_v2` (0.972 and 0.754), although the validation set now also contains harder ground-view images. The detector finds almost every drone and draws reasonably tight boxes. The gap between the two numbers is expected: on small drones, a box that is off by a few pixels is a big percentage error.
+mAP50 = 0.979 and mAP50-95 = 0.754, both clearly above target. The detector finds almost every drone and draws reasonably tight boxes.
 
-The terminal summary at the end of training shows the same numbers:
-
-```
-                 Class     Images  Instances      Box(P          R      mAP50  mAP50-95)
-                   all       1084        991      0.972       0.96      0.975      0.761
-```
+Compared with `drone_v3`, mAP50 went up (0.975 → 0.979) and mAP50-95 went slightly down (0.761 → 0.754). Both make sense: the validation set now contains many more 10–26 px drones. The detector finds them (mAP50 up), but on a drone 12 px wide, a box off by 2 px already misses the stricter overlap levels (mAP50-95 down a little). The gap between the two numbers is expected for the same reason.
 
 ---
 
@@ -6532,17 +6528,20 @@ A loss is the model's error score, and lower is better. There are three:
 Both train and val losses should go down and flatten out, with val following train closely. If train keeps falling while val turns upward, the model is **overfitting**: memorising its training photos instead of learning what a drone looks like. Val losses are the honest ones, because they come from unseen images.
 
 **What was observed, and what it means**
-All six losses fall steadily:
+All six losses fall and flatten:
 
-- cls loss 2.09 → 0.34 (train) and 1.45 → 0.35 (val);
-- box loss 1.37 → 0.75 (train) and 1.36 → 0.76 (val);
-- dfl loss 0.99 → 0.82 (train) and 1.03 → 0.83 (val);
+- cls loss 2.03 → 0.36 (train) and 1.13 → 0.37 (val);
+- box loss 1.38 → 0.78 (train) and 1.25 → 0.80 (val);
+- dfl loss 0.98 → 0.82 (train) and 0.93 → 0.82 (val);
 - the val losses flatten from about epoch 85 and never turn upward, so there is **no overfitting**.
 
-The sudden drop in the three train losses near epoch 90 is expected. For the last 10 epochs, Ultralytics switches off **mosaic** (training on four photos pasted into one), so the training photos become easier. The val losses don't jump, because they never use mosaic. mAP50-95 peaks at epoch 90 (0.761); that epoch is the one saved as `best.pt`.
+Two details in the curves are normal:
 
-<!-- IMAGE: runs\detect\drone_v3\results.png — upload to GitHub and replace the src below -->
-<img width="1400" height="700" alt="drone_v3 results.png: loss and metric curves" src="REPLACE_WITH_UPLOADED_results.png" />
+- **The spike at epochs 2–5** (val box loss briefly up to 1.87, mAP50 briefly down to 0.50). During the first 3 epochs, YOLO "warms up": it raises its learning speed step by step, and the first large steps overshoot before settling. It recovers within a few epochs.
+- **The sudden drop in the three train losses near epoch 90.** For the last 10 epochs, Ultralytics switches off **mosaic** (training on four photos pasted into one), so the training photos become easier. The val losses don't jump, because they never use mosaic. mAP50-95 peaks at epoch 90 (0.754); that epoch is the one saved as `best.pt`.
+
+<!-- IMAGE: runs\detect\drone_v4\results.png — upload to GitHub and replace the src below -->
+<img width="1400" height="700" alt="drone_v4 results.png: loss and metric curves" src="REPLACE_WITH_UPLOADED_results.png" />
 
 ---
 
@@ -6560,16 +6559,21 @@ A table comparing what the model predicted (rows) with the truth (columns):
 A big drone/drone count, and small numbers in the two error cells.
 
 **What was observed, and what it means**
-Of 991 drones in the 1,084 validation images:
+Of 1,140 drones in the 1,210 validation images:
 
-- **964 found**: True positives (97%);
-- **27 missed**: False negatives (3%);
-- **47 false alarms**: False positives.
+- **1,111 found**: True positives (97%);
+- **29 missed**: False negatives (3%);
+- **55 false alarms**: False positives.
 
-The found and missed shares are the same as `drone_v2`'s (97% and 3%), on a larger and harder validation set. The false alarms rose from 30 to 47, partly because the validation set now holds more images with birds and busy ground. In the arena test (5.2 Step 3), which is what matters, `drone_v3` made no false alarm at all in 85 frames without a drone.
+The found and missed shares match `drone_v3`'s (97% and 3%), although the validation set now holds many more tiny drones. The 55 false alarms are spread over 1,210 images that include birds and busy ground. In the arena test (5.2 Step 3), which is what matters, `drone_v4` made 1 false alarm in 85 frames without a drone.
 
-<!-- IMAGE: runs\detect\drone_v3\confusion_matrix.png — upload to GitHub and replace the src below -->
-<img width="2040" height="1530" alt="drone_v3 confusion matrix" src="REPLACE_WITH_UPLOADED_confusion_matrix.png" />
+<!-- IMAGE: runs\detect\drone_v4\confusion_matrix.png — upload to GitHub and replace the src below -->
+<img width="2040" height="1530" alt="drone_v4 confusion matrix" src="REPLACE_WITH_UPLOADED_confusion_matrix.png" />
+
+**The normalized version** (`confusion_matrix_normalized.png`) shows each column as shares. The drone column reads 0.97 found and 0.03 missed. The background column reads **1.00**, which looks alarming but isn't: that column holds only the 55 false alarms, and all 55 were labelled `drone`, because `drone` is the only class there is. So 1.00 says nothing about how many false alarms there are; the plain matrix above gives the count.
+
+<!-- IMAGE: runs\detect\drone_v4\confusion_matrix_normalized.png — upload to GitHub and replace the src below -->
+<img width="2040" height="1530" alt="drone_v4 normalized confusion matrix" src="REPLACE_WITH_UPLOADED_confusion_matrix_normalized.png" />
 
 ---
 
@@ -6587,18 +6591,18 @@ The ideal curve hugs the top-right corner: precision stays near 1.0 while recall
 **What was observed, and what it means**
 The curve is almost square:
 
-- precision stays at about 0.99 up to about 95% recall;
+- precision stays at about 1.0 up to about 85% recall, and above 0.98 up to about 95%;
 - it then falls steeply at about 97–98% recall;
-- area under the curve = **0.975** (mAP50).
+- area under the curve = **0.979** (mAP50).
 
-So **the detector finds 95% of drones with almost no false alarms**. The last 2–3% it can never find are probably the smallest or most hidden drones; no threshold setting recovers them.
+So **the detector finds 95% of drones with almost no false alarms**. The last 2–3% it can never find are the smallest or most hidden drones; no threshold setting recovers them.
 
-<!-- IMAGE: runs\detect\drone_v3\BoxPR_curve.png — upload to GitHub and replace the src below -->
-<img width="2136" height="1429" alt="drone_v3 precision-recall curve" src="REPLACE_WITH_UPLOADED_BoxPR_curve.png" />
+<!-- IMAGE: runs\detect\drone_v4\BoxPR_curve.png — upload to GitHub and replace the src below -->
+<img width="2136" height="1429" alt="drone_v4 precision-recall curve" src="REPLACE_WITH_UPLOADED_BoxPR_curve.png" />
 
 ---
 
-**5. F1-Confidence curve**
+**5. F1-Confidence curve, with the Precision and Recall curves**
 
 **What it means and measures**
 F1 combines precision and recall into one score, which is high only when both are high. The curve shows F1 at every confidence threshold (the minimum score a box needs before it's reported). Its peak marks the threshold that best balances catching drones against avoiding false alarms. The separate Precision and Recall curves show each side on its own.
@@ -6607,14 +6611,25 @@ F1 combines precision and recall into one score, which is high only when both ar
 A high peak (≥ 0.9), on a wide, flat plateau. The flat part matters: it means the exact threshold chosen isn't critical, so small differences between training images and the real chase won't push the detector off a cliff. Ideally, the threshold used in the pipeline sits on that plateau, close to the peak.
 
 **What was observed, and what it means**
-F1 peaks at **0.97 at confidence 0.392**, and stays above about 0.93 across the whole range from 0.1 to 0.6.
+F1 peaks at **0.97 at confidence 0.471**, and stays above about 0.93 across the whole range from 0.1 to 0.65.
 
-This pipeline uses **0.4**, both in `vision_bridge.py` and in `score_arena_frames.py`. That is practically at the peak, so no change is needed. At 0.4, recall is about 0.96 and precision about 0.97.
+The two side curves show what happens on each side of the peak:
+
+- **Precision** (`BoxP_curve.png`) rises with the threshold: about 0.97 at 0.4, and 1.00 from 0.84. A strict threshold almost never boxes something that isn't a drone.
+- **Recall** (`BoxR_curve.png`) falls with the threshold: 0.98 at the loosest setting, about 0.96 at 0.4, then dropping fast above 0.55. A strict threshold misses more drones.
+
+This pipeline uses **0.4**, both in `vision_bridge.py` and in `score_arena_frames.py`. The peak moved from 0.39 (`drone_v3`) to 0.47, but 0.4 is still on the flat top, where F1 differs from the peak by less than 0.01. So no change is needed. Keeping 0.4 also slightly favours recall, which suits the chase: a missed attacker costs more than an occasional false box.
 
 Above about 0.7, F1 collapses, because recall drops sharply. Never raise the threshold that high.
 
-<!-- IMAGE: runs\detect\drone_v3\BoxF1_curve.png — upload to GitHub and replace the src below -->
-<img width="2159" height="1454" alt="drone_v3 F1-confidence curve" src="REPLACE_WITH_UPLOADED_BoxF1_curve.png" />
+<!-- IMAGE: runs\detect\drone_v4\BoxF1_curve.png — upload to GitHub and replace the src below -->
+<img width="2159" height="1454" alt="drone_v4 F1-confidence curve" src="REPLACE_WITH_UPLOADED_BoxF1_curve.png" />
+
+<!-- IMAGE: runs\detect\drone_v4\BoxP_curve.png — upload to GitHub and replace the src below -->
+<img width="2159" height="1454" alt="drone_v4 precision-confidence curve" src="REPLACE_WITH_UPLOADED_BoxP_curve.png" />
+
+<!-- IMAGE: runs\detect\drone_v4\BoxR_curve.png — upload to GitHub and replace the src below -->
+<img width="2159" height="1454" alt="drone_v4 recall-confidence curve" src="REPLACE_WITH_UPLOADED_BoxR_curve.png" />
 
 ---
 
@@ -6624,12 +6639,12 @@ Above about 0.7, F1 collapses, because recall drops sharply. Never raise the thr
 Four summaries of every training box: how many there are (top left), their sizes overlaid on one another (top right), where their centres sit in the picture (bottom left), and their width against their height (bottom right).
 
 **What was observed, and what it means**
-- **5,692 drone boxes**, all class `drone`.
+- **6,383 drone boxes**, all class `drone`: about 690 more than `drone_v3`'s 5,692, from the small-drone batches.
 - **Most boxes are tiny.** The width-height plot is darkest at about 2–5% of the picture's size, which is 13–32 px at 640 px wide: the far drones the chase depends on.
-- **The centre plot still shows one bright dot in the middle.** The standard and bird batches always put the drone in the centre of the photo. The ground batch places most of its drones anywhere in the picture, but they are spread so thinly that each spot gets only a few, and they barely show next to the thousands at the centre.
+- **The centre plot still shows one bright dot in the middle.** The standard and bird batches always put the drone in the centre of the photo. The ground-view and small-drone batches place most of their drones anywhere in the picture, but they are spread so thinly that each spot gets only a few, and they barely show next to the thousands at the centre.
 
-<!-- IMAGE: runs\detect\drone_v3\labels.jpg — upload to GitHub and replace the src below -->
-<img width="1600" height="1600" alt="drone_v3 labels.jpg" src="REPLACE_WITH_UPLOADED_labels.jpg" />
+<!-- IMAGE: runs\detect\drone_v4\labels.jpg — upload to GitHub and replace the src below -->
+<img width="1600" height="1600" alt="drone_v4 labels.jpg" src="REPLACE_WITH_UPLOADED_labels.jpg" />
 
 ---
 
@@ -7320,6 +7335,7 @@ drone_detector.onnx runs inside env_drone
 - **`ModuleNotFoundError: onnxruntime`:** you are in `drone_vision`, not `env_drone`. Run `conda activate env_drone` first.
 
 </details>
+
 
 > ✅ **Checkpoint 5.2 — MILESTONE: Problem 2 (perception) SOLVED for the MVP**
 > 1. `data\arena_frames\` holds 200 defender-camera pictures, spanning far to close distances, plus `readings.csv` (201 lines, ending with a `gradeable` column)
