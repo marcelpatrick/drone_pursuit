@@ -1,8 +1,13 @@
 # ── FILE: C:\projects\drone_pursuit\drone_pursuit\scripts\sdg\preview_boxes.py
+# ── The whole content (replaces the earlier version).
 # ── Draws each frame's saved boxes onto a COPY of its photo (drone red,
 # ──   distractors yellow), plus an enlarged copy of the area around the drone.
-# ──   The originals in data\raw are never changed.
+# ──   The originals are never changed.
+# ── EDITED: the folders and how many photos to preview are now chosen on the command line,
+# ──   instead of being typed into the script, e.g.
+# ──   python preview_boxes.py --raw data\raw_small_ground --out data\preview_small_ground --every 50
 
+import argparse
 import glob
 import json
 import os
@@ -10,12 +15,21 @@ import os
 import numpy as np
 from PIL import Image, ImageDraw
 
-RAW = r"C:\projects\drone_pursuit\drone_pursuit\data\raw_ground_test"
-OUT = r"C:\projects\drone_pursuit\drone_pursuit\data\preview_ground"
+BASE = r"C:\projects\drone_pursuit\drone_pursuit"
+parser = argparse.ArgumentParser()
+parser.add_argument("--raw", type=str, required=True)       # ← NEW: batch folder to check, e.g. data\raw_small_ground
+parser.add_argument("--out", type=str, required=True)       # ← NEW: where the previews go, e.g. data\preview_small_ground
+parser.add_argument("--every", type=int, default=50)        # ← NEW: 1 photo in 50 → 10 previews from a 500-photo batch
+args = parser.parse_args()
+RAW = os.path.join(BASE, args.raw)                          # relative paths are read from the project folder
+OUT = os.path.join(BASE, args.out)
 os.makedirs(OUT, exist_ok=True)
 
-for png in sorted(glob.glob(os.path.join(RAW, "rgb_*.png"))):   # every 100th frame
-    idx = os.path.basename(png)[4:8]                                  # "0000" from rgb_0000.png
+pngs = sorted(glob.glob(os.path.join(RAW, "rgb_*.png")))
+if not pngs:
+    raise SystemExit(f"STOP: no rgb_*.png photos in {RAW}")
+for png in pngs[::args.every]:                              # ← EDITED: only every Nth photo
+    idx = os.path.basename(png)[4:8]                        # "0000" from rgb_0000.png
     boxes = np.load(os.path.join(RAW, f"bounding_box_2d_tight_{idx}.npy"))
     with open(os.path.join(RAW, f"bounding_box_2d_tight_labels_{idx}.json")) as f:
         labels = json.load(f)
@@ -45,6 +59,7 @@ for png in sorted(glob.glob(os.path.join(RAW, "rgb_*.png"))):   # every 100th fr
                      outline=(255, 0, 0), width=1)
         crop.save(os.path.join(OUT, f"zoom_{idx}.png"))
 
-    print(f"{idx}: drone={len(drone_boxes)}  distractors={len(boxes) - len(drone_boxes)}")
+    w = int(drone_boxes[0]["x_max"] - drone_boxes[0]["x_min"]) if drone_boxes else 0
+    print(f"{idx}: drone={len(drone_boxes)}  distractors={len(boxes) - len(drone_boxes)}  drone width {w} px")
 
 print(f"done — open {OUT}")

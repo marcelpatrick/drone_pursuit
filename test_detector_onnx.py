@@ -1,3 +1,8 @@
+# ── FILE: C:\projects\drone_pursuit\drone_pursuit\test_detector_onnx.py
+# ── NEW file — the whole content, nothing to insert into.
+# ── Environment: env_drone
+# ── Checks that models\drone_detector.onnx loads and runs with onnxruntime alone
+# ──   (no Ultralytics, no torch), with the camera's frame size, 480 x 640.
 import numpy as np, onnxruntime as ort
 
 sess = ort.InferenceSession(

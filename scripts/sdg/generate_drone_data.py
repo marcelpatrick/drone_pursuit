@@ -9,6 +9,13 @@
 # ──     --birds --no_drone_share 0.3   → bird batch (birds the detector must NOT box)
 # ──     --ground_view --off_centre 0.8 → ground batch (camera looks DOWN at the drone,
 # ──                                      grey floors behind it, drone anywhere in the photo)
+# ──     --dist_range 2.0 3.5 --size_range 0.10 0.14 --edge_reach 0.95
+# ──                                    → small-drone batch (after drone_v3's 5.2 test): drones
+# ──                                      about 10–26 px wide, the sizes drone_v3 misses, allowed
+# ──                                      out to the picture's edges, where it missed most
+# ──     --sky_view                     → camera BELOW the drone looking up 5–35°, so the sky is
+# ──                                      behind it (the mirror of --ground_view; use it for the
+# ──                                      sky half of the small-drone batch)
 
 """Standalone SDG: labelled images of a Crazyflie for detector training."""
 import argparse
@@ -22,7 +29,16 @@ parser.add_argument("--birds", action="store_true")               # ← NEW (bir
 parser.add_argument("--no_drone_share", type=float, default=0.0)  # ← NEW (bird batch): share of photos with NO drone (0.3 = 30%)
 parser.add_argument("--ground_view", action="store_true")         # ← NEW (ground batch): camera above the drone, floor behind it
 parser.add_argument("--off_centre", type=float, default=0.0)      # ← NEW (ground batch): share of photos with the drone off-centre (0.8 = 80%)
+parser.add_argument("--dist_range", type=float, nargs=2, default=None)  # ← NEW (small-drone batch): camera-to-drone distance in metres,
+                                                                         #   e.g. 2.0 4.0. Default: 0.8–5 (ground) or 0.5–6 (standard)
+parser.add_argument("--size_range", type=float, nargs=2, default=None)  # ← NEW (small-drone batch): drone's largest side in metres,
+                                                                         #   e.g. 0.10 0.14 (a Crazyflie is ~0.13). Default: DRONE_SIZE_M
+parser.add_argument("--sky_view", action="store_true")            # ← NEW (small-drone batch): camera below the drone, sky behind it
+parser.add_argument("--edge_reach", type=float, default=0.7)      # ← NEW (small-drone batch): how far toward the edge an off-centre
+                                                                  #   drone may land (0.7 = 70% of the way, 0.95 = almost touching it)
 args = parser.parse_args()
+if args.ground_view and args.sky_view:                              # ← NEW: the two views exclude each other
+    raise SystemExit("STOP: use --ground_view or --sky_view, not both")
 
 # ── SECTION 0 — start Isaac Sim ─────────────────────────────────────────────
 from isaacsim import SimulationApp
@@ -127,14 +143,20 @@ def place_camera():
     """Put the camera 0.5–6 m from the drone, below or above it, turned to face it.
     The distance is drawn first, so near and far views appear about equally often.
     --ground_view: the camera is ABOVE the drone looking down 10–50°, so the floor is behind it.
+    --sky_view:    the camera is BELOW the drone looking up 5–35°, so the sky is behind it.
     --off_centre:  the camera aims beside the drone, so it lands anywhere in the photo."""
     while True:
         if args.ground_view:                                # ← NEW (ground batch)
             dist = rng.uniform(0.8, 5.0)                    #    chase distances
             up = math.sin(math.radians(rng.uniform(10.0, 50.0)))   # always above, looking down
+        elif args.sky_view:                                 # ← NEW (small-drone batch): always below, looking up,
+            dist = rng.uniform(0.8, 5.0)                    #    so the line from camera to drone ends in the sky
+            up = -math.sin(math.radians(rng.uniform(5.0, 35.0)))   # 5–35° upward, like the defender looking up
         else:
             dist = rng.uniform(0.5, 6.0)                    # 1. how far: any distance, equally likely
             up = rng.uniform(-1.0, 1.0)                     # 2. which direction: up = vertical share,
+        if args.dist_range:                                 # ← NEW (small-drone batch): replaces the distance above
+            dist = rng.uniform(*args.dist_range)
         turn = rng.uniform(0.0, 2.0 * math.pi)              #    turn = compass angle
         flat = math.sqrt(1.0 - up * up)
         eye = target + Gf.Vec3d(dist * flat * math.cos(turn), dist * flat * math.sin(turn), dist * up)
@@ -146,8 +168,8 @@ def place_camera():
         forward = (target - eye).GetNormalized()
         right = Gf.Cross(forward, Gf.Vec3d(0, 0, 1)).GetNormalized()
         cam_up = Gf.Cross(right, forward)
-        u = rng.uniform(-0.7, 0.7)                          # where the drone lands: -1 = left edge, +1 = right edge
-        v = rng.uniform(-0.7, 0.7)                          #                        -1 = bottom,    +1 = top
+        u = rng.uniform(-args.edge_reach, args.edge_reach)  # ← EDITED: where the drone lands: -1 = left edge, +1 = right edge
+        v = rng.uniform(-args.edge_reach, args.edge_reach)  # ← EDITED:                        -1 = bottom,    +1 = top
         aim = target - dist * (u * TAN_HALF_W * right + v * TAN_HALF_H * cam_up)
 
     view = Gf.Matrix4d().SetLookAt(eye, aim, Gf.Vec3d(0, 0, 1))   # z is "up"
@@ -574,7 +596,7 @@ def randomise_drone_look():
         SHOWN["(no drone)"] += 1
         return
     d = rand.choices(DRONE_LOOKS, weights=[x["weight"] for x in DRONE_LOOKS])[0]
-    s = d["unit"] * rand.uniform(*DRONE_SIZE_M)
+    s = d["unit"] * rand.uniform(*(args.size_range or DRONE_SIZE_M))   # ← EDITED: --size_range replaces the default sizes
     set_transform_attributes(d["prim"],
                              location=Gf.Vec3d(*DRONE_POS),
                              rotation=Gf.Vec3f(rand.uniform(-20, 20), rand.uniform(-20, 20), rand.uniform(0, 360)),
