@@ -6425,19 +6425,21 @@ YOLOv8 comes in five sizes, from n (nano: smallest and fastest) to x (largest an
 
 > **Environment:** `drone_vision`
 
-This step starts the training. The command gives YOLO three things: the `drone.yaml` from 4.3 (where the images are), the starting model `yolov8n.pt` (downloaded automatically the first time), and how long to train (`epochs=60`: 60 full passes through all training images). Everything YOLO produces goes into a new folder, `runs\detect\drone_v1\`.
+This step starts the training. The command gives YOLO three things: the `drone.yaml` from 4.3 (where the images are), the starting model `yolov8n.pt` (downloaded automatically the first time), and how long to train (`epochs=100`: 100 full passes through all training images). Everything YOLO produces goes into a new folder named after `name=`, here `runs\detect\drone_v1\`.
 
 *Run from:* `C:\projects\drone_pursuit\drone_pursuit` — *output lands in:* `C:\projects\drone_pursuit\drone_pursuit\runs\detect\drone_v1\`
 ```bat
 conda activate drone_vision
 cd C:\projects\drone_pursuit\drone_pursuit
-yolo detect train data=C:\projects\drone_pursuit\drone_pursuit\data\yolo\drone.yaml model=yolov8n.pt epochs=60 imgsz=640 batch=16 name=drone_v1
+yolo detect train data=C:\projects\drone_pursuit\drone_pursuit\data\yolo\drone.yaml model=yolov8n.pt epochs=100 imgsz=640 batch=16 name=drone_v1
 ```
 -> This command trains the drone detector: it starts from YOLOv8n and fine-tunes it on your images saved in `C:\projects\drone_pursuit\drone_pursuit\data\yolo\`
 - **Train** (learning/fine-tuning): Uses images from `C:\projects\drone_pursuit\drone_pursuit\data\yolo\images\train` and labels from `C:\projects\drone_pursuit\drone_pursuit\data\yolo\labels\train`
 - **Test** (during training): Uses images from `C:\projects\drone_pursuit\drone_pursuit\data\yolo\images\val` and labels from `C:\projects\drone_pursuit\drone_pursuit\data\yolo\labels`
 
-20–40 min typically. While it runs, open the output folder.
+About 1.5 hours for 100 epochs on roughly 7,000–8,000 images (RTX 4090 Laptop GPU). While it runs, open the output folder.
+
+**Every retraining gets a new name.** 5.2 Step 3 may send you back here after adding images. Train again with the next name (`name=drone_v2`, `drone_v3`, …), so earlier results are never overwritten and you can compare runs.
 
 </details>
 
@@ -6450,7 +6452,7 @@ yolo detect train data=C:\projects\drone_pursuit\drone_pursuit\data\yolo\drone.y
 
 Training ends with a folder of scores. This step tells you which numbers to read and which values mean the detector is good enough to move on. The question they answer: does the detector find the drone on the validation images, the 15% it never trained on?
 
-*Folder to open:* `C:\projects\drone_pursuit\drone_pursuit\runs\detect\drone_v1\`
+*Folder to open:* `C:\projects\drone_pursuit\drone_pursuit\runs\detect\drone_v1\` (or the name of your latest run)
 
 - **mAP50** | `drone_v1\results.csv`, last row, `metrics/mAP50(B)` | how often the predicted box overlaps the true box by at least 50% | ≥ 0.9
 - **mAP50-95** | `drone_v1\results.csv`, last row, `metrics/mAP50-95(B)` | the same, averaged over stricter overlaps up to 95% | ≥ 0.6
@@ -6469,19 +6471,29 @@ If mAP50 comes in below 0.8, the cause is almost always the data rather than the
 
 #### OBSERVED RESULTS
 
-**Input**:
-- Original batch: 6500 PNG images: 5000: drone, background and distractors + 1500: drone, background, distractors and birds
-- Dropped 971 (15%) (drone images were too small); kept = 5529
-- Train-test split: Training batch = 4700 (85%), Validation Batch = 829 (15%)
-- Run: `runs\detect\drone_v2` · YOLOv8n · 60 epochs (43 min) · 5,529 images (4,700 train / 829 val) · 1 class: `drone`
+The detector was trained several times while writing this tutorial. Each run added the images that the previous run's arena test (5.2 Step 3) showed were missing:
 
-**Results**: 
+| Run | Raw frames | What was added | Epochs | mAP50 | mAP50-95 |
+|---|---|---|---|---|---|
+| `drone_v2` | 6,500 | partner's 5,000 standard frames + 1,500 bird frames | 60 | 0.972 | 0.754 |
+| `drone_v3` | 8,500 | + 2,000 ground-view frames (camera above the drone, grey floor behind it) | 100 | 0.975 | 0.761 |
+| `drone_v4` | 9,500 | + 1,000 small-drone frames (10–26 px wide, near the edges, ground and sky behind) | 100 | *add from `drone_v4\results.csv`* | *add* |
+
+The detailed results below are from `drone_v3`. `drone_v4` was trained with the same command; its scores are expected to land in the same range, because only 1,000 frames were added.
+
+**Input** (`drone_v3`):
+- 8,500 raw frames: 5,000 standard + 1,500 with birds + 2,000 ground-view
+- About 15% dropped in 4.3 (drones too small to label); about 7,230 kept
+- Train-test split: about 6,140 training images (85%), 1,084 validation images (15%)
+- Run: `runs\detect\drone_v3` · YOLOv8n · 100 epochs (95 min) · 1 class: `drone`
+
+**Results** (`best.pt`, the best epoch, 90):
 
 | Metric | Target | Result |
 |---|---|---|
-| mAP50 | ≥ 0.9 | **0.972** ✅ |
-| mAP50-95 | ≥ 0.6 | **0.754** ✅ |
-| Precision / Recall | — | 0.975 / 0.957 |
+| mAP50 | ≥ 0.9 | **0.975** ✅ |
+| mAP50-95 | ≥ 0.6 | **0.761** ✅ |
+| Precision / Recall | — | 0.972 / 0.960 |
 
 ---
 
@@ -6494,9 +6506,14 @@ They are overall detector scores from 0 to 1. A box counts as correct when it ov
 mAP50 ≥ 0.9 and mAP50-95 ≥ 0.6. mAP50-95 is always lower, because a 95% overlap is very hard to hit, especially on boxes only a few pixels wide.
 
 **What was observed, and what it means**
-mAP50 = 0.972 and mAP50-95 = 0.754, both clearly above target. The detector finds almost every drone and draws reasonably tight boxes. The gap between the two numbers is expected: on small drones, a box that is off by a few pixels is a big percentage error. 
+mAP50 = 0.975 and mAP50-95 = 0.761, both clearly above target and slightly better than `drone_v2` (0.972 and 0.754), although the validation set now also contains harder ground-view images. The detector finds almost every drone and draws reasonably tight boxes. The gap between the two numbers is expected: on small drones, a box that is off by a few pixels is a big percentage error.
 
-<img width="1657" height="84" alt="image" src="https://github.com/user-attachments/assets/99026c68-8f3b-4253-8844-d4ab2a3b7d0e" />
+The terminal summary at the end of training shows the same numbers:
+
+```
+                 Class     Images  Instances      Box(P          R      mAP50  mAP50-95)
+                   all       1084        991      0.972       0.96      0.975      0.761
+```
 
 ---
 
@@ -6517,11 +6534,15 @@ Both train and val losses should go down and flatten out, with val following tra
 **What was observed, and what it means**
 All six losses fall steadily:
 
-- cls loss 2.31 → 0.36;
-- box loss 1.40 → 0.79 (train) and 1.27 → 0.76 (val);
-- val follows train closely, with no upturn, so there is **no overfitting**.
+- cls loss 2.09 → 0.34 (train) and 1.45 → 0.35 (val);
+- box loss 1.37 → 0.75 (train) and 1.36 → 0.76 (val);
+- dfl loss 0.99 → 0.82 (train) and 1.03 → 0.83 (val);
+- the val losses flatten from about epoch 85 and never turn upward, so there is **no overfitting**.
 
-<img width="1400" height="563" alt="image" src="https://github.com/user-attachments/assets/3e1d790c-aed7-4f8c-8c10-b3974fb2ea78" />
+The sudden drop in the three train losses near epoch 90 is expected. For the last 10 epochs, Ultralytics switches off **mosaic** (training on four photos pasted into one), so the training photos become easier. The val losses don't jump, because they never use mosaic. mAP50-95 peaks at epoch 90 (0.761); that epoch is the one saved as `best.pt`.
+
+<!-- IMAGE: runs\detect\drone_v3\results.png — upload to GitHub and replace the src below -->
+<img width="1400" height="700" alt="drone_v3 results.png: loss and metric curves" src="REPLACE_WITH_UPLOADED_results.png" />
 
 ---
 
@@ -6536,16 +6557,19 @@ A table comparing what the model predicted (rows) with the truth (columns):
 (A detection model doesn't count true negatives)
 
 **What a good result is, and why**
-A big drone/drone count, and small numbers in the two error cells.  
+A big drone/drone count, and small numbers in the two error cells.
 
 **What was observed, and what it means**
-Of 747 drones in the 829 validation images:
+Of 991 drones in the 1,084 validation images:
 
-- **722 found**: True positives (97%);
-- **25 missed**: False negatives (3%);
-- **30 false alarms.** False positives
+- **964 found**: True positives (97%);
+- **27 missed**: False negatives (3%);
+- **47 false alarms**: False positives.
 
-<img width="2040" height="1828" alt="image" src="https://github.com/user-attachments/assets/f8fa883d-7ecc-4ff7-867f-642632656ad8" />
+The found and missed shares are the same as `drone_v2`'s (97% and 3%), on a larger and harder validation set. The false alarms rose from 30 to 47, partly because the validation set now holds more images with birds and busy ground. In the arena test (5.2 Step 3), which is what matters, `drone_v3` made no false alarm at all in 85 frames without a drone.
+
+<!-- IMAGE: runs\detect\drone_v3\confusion_matrix.png — upload to GitHub and replace the src below -->
+<img width="2040" height="1530" alt="drone_v3 confusion matrix" src="REPLACE_WITH_UPLOADED_confusion_matrix.png" />
 
 ---
 
@@ -6563,13 +6587,14 @@ The ideal curve hugs the top-right corner: precision stays near 1.0 while recall
 **What was observed, and what it means**
 The curve is almost square:
 
-- precision stays above 0.97 up to about 95% recall;
-- it then falls steeply at about 98% recall;
-- area under the curve = **0.972** (mAP50).
+- precision stays at about 0.99 up to about 95% recall;
+- it then falls steeply at about 97–98% recall;
+- area under the curve = **0.975** (mAP50).
 
 So **the detector finds 95% of drones with almost no false alarms**. The last 2–3% it can never find are probably the smallest or most hidden drones; no threshold setting recovers them.
 
-<img width="2136" height="1429" alt="image" src="https://github.com/user-attachments/assets/eb4606d7-add4-43bf-8681-b2fc91a167a8" />
+<!-- IMAGE: runs\detect\drone_v3\BoxPR_curve.png — upload to GitHub and replace the src below -->
+<img width="2136" height="1429" alt="drone_v3 precision-recall curve" src="REPLACE_WITH_UPLOADED_BoxPR_curve.png" />
 
 ---
 
@@ -6582,24 +6607,37 @@ F1 combines precision and recall into one score, which is high only when both ar
 A high peak (≥ 0.9), on a wide, flat plateau. The flat part matters: it means the exact threshold chosen isn't critical, so small differences between training images and the real chase won't push the detector off a cliff. Ideally, the threshold used in the pipeline sits on that plateau, close to the peak.
 
 **What was observed, and what it means**
-F1 peaks at **0.96 at confidence 0.376**, and stays above about 0.93 across the whole range from 0.15 to 0.6.
+F1 peaks at **0.97 at confidence 0.392**, and stays above about 0.93 across the whole range from 0.1 to 0.6.
 
-This pipeline uses **0.4**, both in `vision_bridge.py` and in `score_arena_frames.py`. That is practically at the peak, so no change is needed. At 0.4, recall is about 0.95 and precision about 0.97.
+This pipeline uses **0.4**, both in `vision_bridge.py` and in `score_arena_frames.py`. That is practically at the peak, so no change is needed. At 0.4, recall is about 0.96 and precision about 0.97.
 
-Above 0.7, F1 collapses, because recall drops sharply. Never raise the threshold that high.
+Above about 0.7, F1 collapses, because recall drops sharply. Never raise the threshold that high.
 
-<img width="2159" height="1454" alt="image" src="https://github.com/user-attachments/assets/78e73ca1-8581-438f-b51f-6236fd220369" />
+<!-- IMAGE: runs\detect\drone_v3\BoxF1_curve.png — upload to GitHub and replace the src below -->
+<img width="2159" height="1454" alt="drone_v3 F1-confidence curve" src="REPLACE_WITH_UPLOADED_BoxF1_curve.png" />
+
+---
+
+**6. Training labels (`labels.jpg`)**
+
+**What it shows**
+Four summaries of every training box: how many there are (top left), their sizes overlaid on one another (top right), where their centres sit in the picture (bottom left), and their width against their height (bottom right).
+
+**What was observed, and what it means**
+- **5,692 drone boxes**, all class `drone`.
+- **Most boxes are tiny.** The width-height plot is darkest at about 2–5% of the picture's size, which is 13–32 px at 640 px wide: the far drones the chase depends on.
+- **The centre plot still shows one bright dot in the middle.** The standard and bird batches always put the drone in the centre of the photo. The ground batch places most of its drones anywhere in the picture, but they are spread so thinly that each spot gets only a few, and they barely show next to the thousands at the centre.
+
+<!-- IMAGE: runs\detect\drone_v3\labels.jpg — upload to GitHub and replace the src below -->
+<img width="1600" height="1600" alt="drone_v3 labels.jpg" src="REPLACE_WITH_UPLOADED_labels.jpg" />
 
 ---
 
 **caveats**:
 
-- **Every training drone sits in the image centre** (see `labels.jpg`). These scores come from validation images taken from the same generator, so they share that bias.
+- **These scores come from validation images made by the same generator** as the training images, so they share its habits: mostly centred drones, the same backgrounds, the same drone models. A detector can score well here and still miss the attacker in the pursuit arena.
 
-<img width="1123" height="1121" alt="image" src="https://github.com/user-attachments/assets/903f909a-b307-4883-8411-c204b0fcce30" />
-
-The real exam is **5.2 Step 3**: that produces frames with the drone off-centre, at real chase distances. 
-
+The real exam is **5.2 Step 3**: it uses frames from the defender's own camera, with the attacker off-centre, at real chase distances, against the arena's floor and sky.
 
 </details>
 
@@ -6610,7 +6648,7 @@ The real exam is **5.2 Step 3**: that produces frames with the drone off-centre,
 <details>
 <summary>Expand 5.2</summary>
 
-> **What this subchapter does:** 5.1 scored the detector on images from the same generator it trained on. The pursuit arena from Chapters 2–3 looks different: other lighting, other backgrounds, and the attacker usually far away and small. A detector can score well in 5.1 and still miss the attacker there. So Step 1 records about 20 frames from a camera on the defender during a simulated chase, Step 2 runs the detector on them to see where it fails, and Step 3 converts it into `drone_detector.onnx` so Chapter 6 can run it inside `env_drone`.
+> **What this subchapter does:** 5.1 scored the detector on images from the same generator it trained on. The pursuit arena from Chapters 2–3 looks different: other lighting, other backgrounds, and the attacker usually far away and small. A detector can score well in 5.1 and still miss the attacker there. So Step 1 attaches a camera to the defender, Step 2 records 200 frames from it during simulated chases, Step 3 runs the detector on them to see where it fails, and Step 4 converts it into `drone_detector.onnx` so Chapter 6 can run it inside `env_drone`. If Step 3 shows gaps, you go back to 4.2 for a targeted batch of images, retrain in 5.1, and test again.
 
 ### Step 1 — Attach a camera to the defender and capture chase frames
 
@@ -6687,11 +6725,21 @@ from isaaclab.sensors import TiledCamera, TiledCameraCfg
 
 > **Environment:** `env_drone` — this runs Isaac Lab.
 
-Step 1 gave the defender a camera, but nothing saves what it sees yet. This step creates a short script, `capture_arena_frames.py`, that runs one chase with your trained policy and saves a picture from the defender's camera every quarter of a second, until it has 40. Each file name records the attacker's true distance and whether it was in view, for example `frame_012_d03.45m_v1.png` means 3.45 m away and in view (`v0` = out of view). Step 3 uses those tags to show at which range the detector starts missing.
+Step 1 gave the defender a camera, but nothing saves what it sees yet. This step creates a script, `capture_arena_frames.py`, that runs chases with your trained policy and saves a picture from the defender's camera every quarter of a second, until it has 200. Each file name records the attacker's true distance and whether it was in view, for example `frame_012_d03.45m_v1.png` means 3.45 m away and in view (`v0` = out of view). Step 3 uses those tags to show at which range the detector starts missing.
 
-The script also writes a small table, `readings.csv`, next to the pictures. For each picture it stores the readings the simulator *calculated* for that moment: where the attacker should appear in the picture and how big. Chapter 6.1 compares those calculated readings with readings measured from the pictures, so these same 40 pictures serve both chapters.
+**Why 200 pictures.** Step 3 reports a found rate per distance range. With 40 pictures, the 2–5 m range held only 4 of them, so a single miss moved its rate by 25 points. With 200, it holds about 50, and each picture moves the rate by about 2 points.
 
-For that comparison to be fair, the calculation must use the width of the drone actually drawn on screen. Since 3.2B, training pretends the attacker has a random width every episode, while the 3D model is always the same Crazyflie. So during this capture only, the script locks that width to the Crazyflie's, 0.13 m. This changes nothing in your training settings.
+The script also writes a small table, `readings.csv`, next to the pictures. For each picture it stores two kinds of information:
+
+- **What the simulator *calculated* for that moment:** where the attacker should appear in the picture and how big (`bx`, `by`, `asz`, `visible`). Chapter 6.1 compares these with readings measured from the pictures, so the same pictures serve both chapters.
+- **What the picture *really* contains:** how many pixels the attacker covers and the tight box around them (`drone_px`, `box_x`, `box_y`, `box_w`, `box_h`). The camera learns this from a second output, `instance_id_segmentation_fast`, which labels every pixel with the object it shows. From that box the script decides whether the attacker is big enough to grade (`gradeable` = 1). It uses the same limit 4.3 uses for training labels: at least 10 px long and 4 px thick. A smaller drone is a speck that no detector can be expected to find, so Step 3 leaves it out of the score.
+
+For the calculated readings to match the picture, the calculation must use the width of the drone actually drawn on screen. Since 3.2B, training pretends the attacker has a random width every episode, while the 3D model is always the same Crazyflie. So during this capture only, the script locks that width to the Crazyflie's, 0.13 m. Likewise, the extra camera output is switched on inside this script only. Neither changes your training settings.
+
+**Two problems the script prevents.**
+
+- **Pictures from a restart step.** When a chase ends, Isaac Lab restarts it within the same step. The camera picture of that step is taken *before* the restart, but the readings are calculated *after* it. Such a picture shows the end of the old chase while its readings describe the start of the new one. NVIDIA's documentation confirms that by default no render step is performed after a reset, so sensor data collected after a reset is stale. The script therefore skips every step in which a chase ended.
+- **Smeared pictures.** By default, Isaac Lab renders cameras with DLSS, which builds each picture from a lower-resolution image plus previous frames. When the defender turns quickly, parts of the previous frame show through: doubled floor lines, blurred drone edges. Running with `--rendering_mode quality` removes most of this. That option is added to every Isaac Lab script by `AppLauncher.add_app_launcher_args(parser)`, so the script needs no code for it.
 
 *Run from:* `any folder`
 ```bat
@@ -6705,16 +6753,24 @@ mkdir C:\projects\drone_pursuit\drone_pursuit\scripts\demo
 # ── NEW file — the whole content, nothing to insert into.
 # ── Loads : your Ch.3 checkpoint, passed on the command line
 # ── Writes: data\arena_frames\frame_XXX_dDD.DDm_vN.png        (clean, for the detector test in 5.2)
-# ──         data\arena_frames\readings.csv                     (the calculated readings, for 6.1 Step 2)
-# ──         data\arena_frames_check\frame_XXX_dDD.DDm_vN.png  (red box where the attacker should be)
+# ──         data\arena_frames\readings.csv                     (the calculated readings, for 6.1 Step 2,
+# ──                                                              plus the drone's real pixels, for 5.2 Step 3)
+# ──         data\arena_frames_check\frame_XXX_dDD.DDm_vN.png  (red box = where the attacker should be,
+# ──                                                              green box = the pixels the attacker really covers)
 # ──   v1 = attacker in the camera's view right now, v0 = out of view (or too small to detect)
+# ── EDITED after drone_v3's 5.2 test:
+# ──   1. skips the picture of any step in which a chase ended (the picture showed the old chase,
+# ──      the readings the new one)
+# ──   2. the camera also records which object each pixel shows, so every row says how many pixels
+# ──      the attacker really covers and whether it is big enough to grade (same 10 x 4 px rule as
+# ──      convert_to_yolo.py uses for training labels)
 
 import argparse, os, csv
 from isaaclab.app import AppLauncher
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--checkpoint", type=str, required=True)   # your Ch.3 best_agent.pt
-parser.add_argument("--num_frames", type=int, default=40)      # how many pictures to save
+parser.add_argument("--num_frames", type=int, default=200)     # ← EDITED: 200 (was 40), so each distance row has enough frames
 parser.add_argument("--every", type=int, default=5)            # 1 picture every 5 control steps = 0.25 s at 20 Hz
 parser.add_argument("--out", type=str,
                     default=r"C:\projects\drone_pursuit\drone_pursuit\data\arena_frames")
@@ -6737,10 +6793,16 @@ from isaaclab_tasks.utils import load_cfg_from_registry
 import drone_pursuit.tasks  # noqa: F401  (registers your task)
 
 TASK = "Template-Drone-Pursuit-Direct-v0"
+SEG = "instance_id_segmentation_fast"                          # ← NEW: per pixel, the ID of the object it shows
+MIN_LONG, MIN_THIN = 10, 4                                     # ← NEW: same limits as convert_to_yolo.py
+
 env_cfg = load_cfg_from_registry(TASK, "env_cfg_entry_point")
 env_cfg.scene.num_envs = 1                                     # one chase is enough
 if args.fixed_span > 0:                                        # lock the width: same in the calculation as on screen
     env_cfg.attacker_span_range = (args.fixed_span, args.fixed_span)
+# ← NEW: for this capture only, the camera also outputs object IDs (training settings unchanged)
+env_cfg.tiled_camera.data_types = ["rgb", SEG]
+env_cfg.tiled_camera.colorize_instance_id_segmentation = False # plain ID numbers, not colours
 env = gym.make(TASK, cfg=env_cfg, render_mode=None)
 raw_env = env.unwrapped                                        # to reach the camera and the true distance
 env = SkrlVecEnvWrapper(env)
@@ -6755,10 +6817,29 @@ check_dir = args.out + "_check"
 os.makedirs(args.out, exist_ok=True)
 os.makedirs(check_dir, exist_ok=True)
 
-# the answer key for 6.1 Step 2: one row per saved picture
+
+def attacker_pixels():
+    """← NEW: the attacker's real footprint in this picture: pixel count and tight box (or None)."""
+    seg = raw_env._camera.data.output[SEG][0, ..., 0]           # (480, 640) object ID per pixel
+    info = raw_env._camera.data.info[SEG]
+    if isinstance(info, list):                                  # some versions keep one dict per camera
+        info = info[0]
+    ids = [int(k) for k, path in info["idToLabels"].items() if "/Attacker" in str(path)]
+    if not ids:
+        return 0, None
+    mask = torch.isin(seg, torch.tensor(ids, device=seg.device, dtype=seg.dtype)).cpu().numpy()
+    count = int(mask.sum())
+    if count == 0:
+        return 0, None
+    ys, xs = np.nonzero(mask)
+    return count, (int(xs.min()), int(ys.min()), int(xs.max()) + 1, int(ys.max()) + 1)
+
+
+# the answer key for 6.1 Step 2 and 5.2 Step 3: one row per saved picture
 csv_file = open(os.path.join(args.out, "readings.csv"), "w", newline="")
 writer = csv.writer(csv_file)
-writer.writerow(["name", "dist_m", "bx", "by", "asz", "visible"])
+writer.writerow(["name", "dist_m", "bx", "by", "asz", "visible",
+                 "drone_px", "box_x", "box_y", "box_w", "box_h", "gradeable"])   # ← NEW columns
 
 obs, _ = env.reset()
 step, saved = 0, 0
@@ -6766,8 +6847,11 @@ while app.is_running() and saved < args.num_frames:
     with torch.no_grad():
         outputs = runner.agent.act(obs, timestep=0, timesteps=0)
         actions = outputs[-1].get("mean_actions", outputs[0])  # best guess, no random variation
-    obs, _, _, _, _ = env.step(actions)
+    obs, _, terminated, truncated, _ = env.step(actions)       # ← EDITED: keep the two "chase ended" flags
     step += 1
+    if (terminated | truncated).any():                         # ← NEW: a chase ended and a new one began in this step.
+        continue                                               #   The picture was taken before the restart,
+                                                               #   the readings after it, so the two would not match.
     if step % args.every:                                      # not a saving step: keep flying
         continue
 
@@ -6779,23 +6863,38 @@ while app.is_running() and saved < args.num_frames:
     # where the attacker is in the frame RIGHT NOW (no delay, no noise), from 3.1 Part F
     bx_t, by_t, asz_t, vis_t = raw_env._camera_readings()
     bx, by, asz, visible = bx_t[0].item(), by_t[0].item(), asz_t[0].item(), vis_t[0].item()
+    v = int(visible > 0.5)
 
-    name = f"frame_{saved:03d}_d{dist:05.2f}m_v{int(visible > 0.5)}.png"
+    # ← NEW: what the picture really contains
+    drone_px, box = attacker_pixels()
+    if box:
+        x0, y0, x1, y1 = box
+        bw, bh = x1 - x0, y1 - y0
+        box_x, box_y = (x0 + x1) / 2, (y0 + y1) / 2
+    else:
+        bw = bh = 0
+        box_x = box_y = -1
+    gradeable = int(v == 1 and max(bw, bh) >= MIN_LONG and min(bw, bh) >= MIN_THIN)
+
+    name = f"frame_{saved:03d}_d{dist:05.2f}m_v{v}.png"
     img = Image.fromarray(rgb[..., :3])
     img.save(os.path.join(args.out, name))                     # clean copy: for the detector test
-    writer.writerow([name, f"{dist:.3f}", f"{bx:.4f}", f"{by:.4f}", f"{asz:.4f}",
-                     int(visible > 0.5)])                      # the calculated readings for this picture
+    writer.writerow([name, f"{dist:.3f}", f"{bx:.4f}", f"{by:.4f}", f"{asz:.4f}", v,
+                     drone_px, f"{box_x:.1f}", f"{box_y:.1f}", bw, bh, gradeable])
 
     check = img.copy()                                         # marked copy: for you to look at
-    if visible > 0.5:
+    draw = ImageDraw.Draw(check)
+    if v:
         W, H = img.size
         xc, yc = W / 2 + bx * W / 2, H / 2 + by * H / 2        # bearing → pixel position
         half = max(asz * W / 2, 6)                             # at least 12 px wide, so you can see it
-        ImageDraw.Draw(check).rectangle([xc - half, yc - half, xc + half, yc + half],
-                                        outline=(255, 0, 0), width=2)
+        draw.rectangle([xc - half, yc - half, xc + half, yc + half], outline=(255, 0, 0), width=2)
+    if box:                                                    # ← NEW: the attacker's real pixels
+        draw.rectangle([x0 - 2, y0 - 2, x1 + 1, y1 + 1], outline=(0, 200, 0), width=1)
     check.save(os.path.join(check_dir, name))
 
-    print(f"saved {name}  bx={bx:+.2f} by={by:+.2f} size={asz:.3f}", flush=True)
+    print(f"saved {name}  bx={bx:+.2f} by={by:+.2f} size={asz:.3f}  "
+          f"drone {drone_px} px, box {bw}x{bh}, gradeable {gradeable}", flush=True)
     saved += 1
 
 csv_file.close()
@@ -6810,30 +6909,164 @@ Use the best checkpoint from Chapter 3.3 Step 3, whose path you recorded in `pro
 
 ```bat
 conda activate env_drone
-python C:\projects\drone_pursuit\drone_pursuit\scripts\demo\capture_arena_frames.py --checkpoint C:\projects\drone_pursuit\drone_pursuit\logs\skrl\quadcopter_direct\<run-folder>\checkpoints\best_agent.pt
+python C:\projects\drone_pursuit\drone_pursuit\scripts\demo\capture_arena_frames.py --checkpoint C:\projects\drone_pursuit\drone_pursuit\logs\skrl\quadcopter_direct\<run-folder>\checkpoints\best_agent.pt --num_frames 200 --headless --rendering_mode quality
 ```
 
 For example, with the run used while writing this tutorial:
 
 ```bat
-python C:\projects\drone_pursuit\drone_pursuit\scripts\demo\capture_arena_frames.py --checkpoint C:\projects\drone_pursuit\drone_pursuit\logs\skrl\quadcopter_direct\2026-09-30_13-27-20_ppo_torch\checkpoints\best_agent.pt
+python C:\projects\drone_pursuit\drone_pursuit\scripts\demo\capture_arena_frames.py --checkpoint C:\projects\drone_pursuit\drone_pursuit\logs\skrl\quadcopter_direct\2026-09-30_13-27-20_ppo_torch\checkpoints\best_agent.pt --num_frames 200 --headless --rendering_mode quality
 ```
 
-The width lock (`--fixed_span`) is on by default at 0.13 m, so the command needs no extra option.
+The width lock (`--fixed_span`) is on by default at 0.13 m, so the command needs no extra option for it. If `--rendering_mode` is rejected, your Isaac Lab version doesn't have it: run `capture_arena_frames.py --help` to check, and leave the option out.
 
-The script stops by itself after 40 pictures. Because it saves at regular intervals across several chases, the pictures cover the whole approach: far, mid-range and close.
+**Before capturing again** (for example after retraining the detector), rename or delete the old folders. Otherwise, files with old names stay mixed in with the new ones:
+
+```bat
+ren C:\projects\drone_pursuit\drone_pursuit\data\arena_frames arena_frames_old
+ren C:\projects\drone_pursuit\drone_pursuit\data\arena_frames_check arena_frames_check_old
+```
+
+The script stops by itself after 200 pictures. Because it saves at regular intervals across several chases, the pictures cover the whole approach: far, mid-range and close. The same policy flies the same way every run, so a new capture repeats the same chases. That makes before/after comparisons between two detectors fair.
 
 Open `data\arena_frames\` and check three things:
 
 - **Distances range from several metres down to under one.** If every distance is tiny, the chases are too short: raise `--every` to 10 and run again.
 - **Many pictures are tagged `v1`.** About half is normal. At the start of each chase the attacker is often beside or behind the defender, so those pictures are tagged `v0`.
-- **`readings.csv` is there**, with 41 lines: one header line, then one line per picture.
+- **`readings.csv` is there**, with 201 lines: one header line, then one line per picture. Its header ends with `gradeable`.
 
-Then open `data\arena_frames_check\`. In the `v1` pictures, the red box should sit on the attacker.
+Then open `data\arena_frames_check\`. Each `v1` picture shows two boxes:
+
+- **Red box:** where the *calculated* readings put the attacker. It is drawn at least 12 px wide so you can always see it, so it is often looser than the drone.
+- **Green box:** the attacker's *real* pixels in the picture. It hugs the drone.
+
+The two boxes should overlap on the attacker. A red box far from its green box, or a `v1` picture with no green box, would mean picture and readings disagree.
 
 In the terminal output, out-of-view pictures can show very large readings, such as `bx=-53.29`. That is expected: when the attacker is beside or behind the defender, the calculation divides by a tiny forward distance. Those pictures are tagged `v0`, so no later step treats them as sightings.
 
-⚠️ If the script fails at `runner.agent.act(...)` or at loading the checkpoint, the cause is usually the skrl version. Compare those lines with your own `scripts\skrl\play.py`, which loads the same checkpoint successfully, and copy its version of them.
+⚠️ If the script fails at `runner.agent.act(...)` or at loading the checkpoint, the cause is usually the skrl version. Compare those lines with your own `scripts\skrl\play.py`, which loads the same checkpoint successfully, and copy its version of them. If it fails in `attacker_pixels()`, the segmentation output is laid out differently in your Isaac Lab version; the error message shows which line.
+
+**Check the capture automatically.** A short script tests every picture against its readings, and compares sharpness with an earlier capture if you kept one.
+
+> **Environment:** `drone_vision`
+
+*File to CREATE (new, empty file):* `C:\projects\drone_pursuit\drone_pursuit\scripts\demo\check_capture.py`
+
+```python
+# ── FILE: C:\projects\drone_pursuit\drone_pursuit\scripts\demo\check_capture.py
+# ── NEW file — the whole content, nothing to insert into.
+# ── Environment: drone_vision
+# ── Checks the arena frames made by the new capture_arena_frames.py:
+# ──   1. RESTART BUG: does every picture agree with its readings?
+# ──      - no two rows with identical readings (the old bug repeated the chase's start position)
+# ──      - in view (v1): the drone's real pixels (green box) sit where the readings say (red box)
+# ──      - in view (v1): the picture really contains the drone
+# ──   2. PICTURE QUALITY: average sharpness of the new pictures, and of an old folder if given.
+# ──      Sharper = higher number. Smeared, doubled grid lines lower it.
+# ── Usage:
+# ──   python check_capture.py                                   (restart check + new sharpness)
+# ──   python check_capture.py --old data\arena_frames_old       (also compares with the old pictures)
+import argparse
+import csv
+from collections import Counter
+from pathlib import Path
+
+import numpy as np
+from PIL import Image
+
+BASE = Path(r"C:\projects\drone_pursuit\drone_pursuit")
+parser = argparse.ArgumentParser()
+parser.add_argument("--new", type=str, default=r"data\arena_frames")
+parser.add_argument("--old", type=str, default=None)      # optional: the earlier capture, for the sharpness comparison
+args = parser.parse_args()
+NEW = BASE / args.new
+W, H = 640, 480
+
+with open(NEW / "readings.csv", newline="") as f:
+    rows = list(csv.DictReader(f))
+if "gradeable" not in rows[0]:
+    raise SystemExit("STOP: readings.csv has no 'gradeable' column, so these frames came from the OLD capture script")
+
+# ── 1a. identical readings ────────────────────────────────────────────────────
+print("1. RESTART BUG")
+keys = Counter((r["dist_m"], r["bx"], r["by"]) for r in rows)
+repeats = [k for k, n in keys.items() if n > 1]
+print(f"   identical readings repeated: {len(repeats)}   (want 0)")
+for k in repeats:
+    names = [r["name"] for r in rows if (r["dist_m"], r["bx"], r["by"]) == k]
+    print(f"      {', '.join(names)}")
+
+# ── 1b/1c. picture vs readings ────────────────────────────────────────────────
+far_apart, missing = [], []
+for r in rows:
+    if r["visible"] != "1":
+        continue
+    if int(r["drone_px"]) == 0:                            # readings say "in view", picture has no drone
+        missing.append(r["name"])
+        continue
+    xc = W / 2 + float(r["bx"]) * W / 2                    # red box centre: where the readings put the drone
+    yc = H / 2 + float(r["by"]) * H / 2
+    gx, gy = float(r["box_x"]), float(r["box_y"])          # green box centre: where its pixels really are
+    gap = max(abs(gx - xc), abs(gy - yc))
+    if gap > max(20.0, float(r["box_w"]), float(r["box_h"])):
+        far_apart.append((r["name"], gap))
+n_v1 = sum(r["visible"] == "1" for r in rows)
+print(f"   in-view frames: {n_v1}")
+print(f"   red and green boxes far apart: {len(far_apart)}   (want 0)")
+for name, gap in far_apart:
+    print(f"      {name}: {gap:.0f} px apart")
+print(f"   readings say in view, but no drone in the picture: {len(missing)}   (want 0)")
+for name in missing:
+    print(f"      {name}")
+print(f"   gradeable (at least 10 x 4 px): {sum(r['gradeable'] == '1' for r in rows)} of {n_v1}")
+
+
+# ── 2. sharpness ──────────────────────────────────────────────────────────────
+def sharpness(folder):
+    """Average detail per picture: how strongly brightness changes between neighbouring pixels."""
+    scores = []
+    for png in sorted(folder.glob("frame_*.png")):
+        g = np.asarray(Image.open(png).convert("L"), dtype=np.float32)
+        lap = 4 * g[1:-1, 1:-1] - g[:-2, 1:-1] - g[2:, 1:-1] - g[1:-1, :-2] - g[1:-1, 2:]
+        scores.append(lap.var())
+    return (float(np.mean(scores)), len(scores)) if scores else (0.0, 0)
+
+
+print("\n2. PICTURE QUALITY (sharpness, higher = sharper)")
+s_new, n_new = sharpness(NEW)
+print(f"   new: {s_new:8.1f}   ({n_new} pictures)")
+if args.old:
+    s_old, n_old = sharpness(BASE / args.old)
+    print(f"   old: {s_old:8.1f}   ({n_old} pictures)")
+    if s_old:
+        print(f"   change: {100 * (s_new - s_old) / s_old:+.0f}%   (want clearly positive)")
+```
+
+*Run from:* `any folder`
+```bat
+conda activate drone_vision
+python C:\projects\drone_pursuit\drone_pursuit\scripts\demo\check_capture.py --old data\arena_frames_old
+```
+
+Leave out `--old data\arena_frames_old` if you have no earlier capture.
+
+**Expected output:** all three restart-bug counts at 0, and, with `--old`, a positive sharpness change. The run used while writing this tutorial:
+
+```
+1. RESTART BUG
+   identical readings repeated: 0   (want 0)
+   in-view frames: 115
+   red and green boxes far apart: 0   (want 0)
+   readings say in view, but no drone in the picture: 0   (want 0)
+   gradeable (at least 10 x 4 px): 111 of 115
+
+2. PICTURE QUALITY (sharpness, higher = sharper)
+   new:     68.4   (200 pictures)
+   old:     59.3   (40 pictures)
+   change: +15%   (want clearly positive)
+```
+
+Before the restart fix, 3 of 115 in-view pictures failed this test. All three had identical readings (4.12 m, the start position of a chase), but showed the previous chase: in two, no drone was in the picture at all.
 
 </details>
 
@@ -6844,63 +7077,107 @@ In the terminal output, out-of-view pictures can show very large readings, such 
 
 > **Environment:** `drone_vision`
 
-Step 2 produced 40 pictures from the defender's point of view, each labelled with the attacker's true distance. This step answers the question 5.2 exists for: does the detector trained in 5.1 still find the attacker in these pictures, and up to what distance? It does this in two ways. First, YOLO draws its boxes on copies of the pictures, so you can see the hits and misses. Second, a small new script, `score_arena_frames.py`, counts how often the detector found the attacker at each range.
+Step 2 produced 200 pictures from the defender's point of view, each labelled with the attacker's true distance and its real pixels. This step answers the question 5.2 exists for: does the detector trained in 5.1 still find the attacker in these pictures, and up to what distance? It does this in two ways. First, YOLO draws its boxes on copies of the pictures, so you can see the hits and misses. Second, a script, `score_arena_frames.py`, grades the detector against the attacker's real pixels.
 
 **1 — See the hits and misses.**
 
-*Run from:* `C:\projects\drone_pursuit\drone_pursuit` — *pictures with boxes are saved under:* `C:\projects\drone_pursuit\drone_pursuit\runs\detect\predict\`
+`yolo predict` runs the detector on all 200 pictures and draws a box wherever it is at least 40% sure it sees a drone, labelled with that confidence. It doesn't know where the attacker really is, so it can't say whether a box is right. It is for looking, not for scoring.
+
+*Run from:* `C:\projects\drone_pursuit\drone_pursuit` — *pictures with boxes are saved under:* `C:\projects\drone_pursuit\drone_pursuit\runs\detect\arena_v1\`
 ```bat
 conda activate drone_vision
 cd C:\projects\drone_pursuit\drone_pursuit
-yolo predict model=C:\projects\drone_pursuit\drone_pursuit\runs\detect\drone_v1\weights\best.pt source=C:\projects\drone_pursuit\drone_pursuit\data\arena_frames save=True conf=0.4
+yolo predict model=C:\projects\drone_pursuit\drone_pursuit\runs\detect\drone_v1\weights\best.pt source=C:\projects\drone_pursuit\drone_pursuit\data\arena_frames save=True conf=0.4 name=arena_v1
 ```
 
-Open the `predict` folder. A box should sit on the attacker, and nowhere else, in most pictures.
+`name=arena_v1` keeps each model's pictures in their own folder. Without it, YOLO numbers the folders `predict`, `predict-2`, … and you can't tell which model drew them. For a later model, change both names together: `drone_v4` in `model=` and `arena_v4` in `name=`.
 
-**2 — Count them by distance.**
+Open the `arena_v1` folder. A box should sit on the attacker, and nowhere else, in most pictures. To check a picture, compare it with the same frame in `data\arena_frames_check\`, which shows where the attacker really is.
+
+**2 — Grade them by distance.**
+
+The scorer runs the detector itself, so it doesn't need the `yolo predict` output. For each picture it:
+
+- **grades only fair pictures:** the attacker must be in view *and* `gradeable` (at least 10 × 4 px). Smaller ones are counted separately as "too small to grade";
+- **counts a hit only if a box sits on the attacker's real pixels.** A box elsewhere in the picture doesn't count;
+- **checks out-of-view pictures (`v0`) for false alarms;**
+- **shows the real confidence of every miss** (below the 0.4 threshold, down to 0.05), and what lower thresholds would give.
 
 *File to CREATE (new, empty file):* `C:\projects\drone_pursuit\drone_pursuit\scripts\demo\score_arena_frames.py`
 
--> in "MODEL", replace `drone_v1` by the name of your model
+-> in `MODEL`, put the name of the model you are testing
 
 ```python
 # ── FILE: C:\projects\drone_pursuit\drone_pursuit\scripts\demo\score_arena_frames.py
-# ── Scores the detector only on frames where the attacker is in view (v1),
-# ──   checks out-of-view frames (v0) for false alarms, and prints where each
-# ──   visible attacker was (off-centre?) and how big (pixels), to explain misses.
+# ── The whole content (replaces the earlier version; diagnose_arena_misses.py is no longer needed).
+# ── Environment: drone_vision
+# ── Reads: data\arena_frames\*.png and readings.csv (from the new capture_arena_frames.py), best.pt (5.1)
+# ── What it does:
+# ──   - grades only frames where the attacker is in view AND covers at least 10 x 4 px
+# ──     ("gradeable", the same limit convert_to_yolo.py uses for training labels)
+# ──   - counts a frame as FOUND only if a box sits on the attacker's real pixels
+# ──   - checks out-of-view frames (v0) for false alarms
+# ──   - shows what lower thresholds would give, and the real confidence of every miss
 import csv
 from pathlib import Path
 from ultralytics import YOLO
 
 FRAMES = Path(r"C:\projects\drone_pursuit\drone_pursuit\data\arena_frames")
-MODEL = r"C:\projects\drone_pursuit\drone_pursuit\runs\detect\drone_v1\weights\best.pt"
-CONF = 0.4                                   # same threshold vision_bridge.py uses
-BANDS = [(0, 2), (2, 5), (5, 99)]            # distance ranges in metres
-W = 640                                      # camera image width in pixels
+MODEL = r"C:\projects\drone_pursuit\drone_pursuit\runs\detect\drone_v4\weights\best.pt"   # ← your model
+CONF = 0.4                                    # the threshold vision_bridge.py uses
+THRESHOLDS = [0.4, 0.3, 0.25, 0.2]
+BANDS = [(0, 2), (2, 5), (5, 99)]             # distance ranges in metres
+LOW = 0.05                                    # keep almost every box, to read real confidences
 
 model = YOLO(MODEL)
-rows, false_alarms, out_of_view = [], 0, 0
+graded, empty, too_small = [], [], 0
 with open(FRAMES / "readings.csv", newline="") as f:
     for r in csv.DictReader(f):
-        result = model.predict(str(FRAMES / r["name"]), conf=CONF, verbose=False)[0]
-        found = len(result.boxes) > 0
-        conf = float(result.boxes.conf.max()) if found else 0.0
-        if r["visible"] != "1":                              # attacker out of view: nothing to find
-            out_of_view += 1
-            false_alarms += found
+        res = model.predict(str(FRAMES / r["name"]), conf=LOW, verbose=False)[0]
+        boxes = res.boxes.xywh.cpu().numpy()          # centre x, centre y, width, height (pixels)
+        confs = res.boxes.conf.cpu().numpy()
+        if r["visible"] != "1":                       # attacker out of view: any box is a false alarm
+            empty.append(float(confs.max()) if len(confs) else 0.0)
             continue
-        dist, bx, by = float(r["dist_m"]), float(r["bx"]), float(r["by"])
-        width_px = float(r["asz"]) * W                       # attacker width in the picture
-        rows.append((dist, found))
-        print(f"{r['name']}: {'FOUND ' if found else 'missed'} conf {conf:.2f}   "
-              f"off-centre x {bx:+.2f} y {by:+.2f}   ~{width_px:.0f} px wide")
+        if r["gradeable"] != "1":                     # in view, but too few pixels for any detector
+            too_small += 1
+            continue
+        cx, cy = float(r["box_x"]), float(r["box_y"])
+        tol = max(15.0, float(r["box_w"]), float(r["box_h"]))
+        on, off = 0.0, 0.0                            # best confidence ON the attacker / ELSEWHERE
+        for (x, y, _, _), c in zip(boxes, confs):
+            if abs(x - cx) <= tol and abs(y - cy) <= tol:
+                on = max(on, float(c))
+            else:
+                off = max(off, float(c))
+        graded.append(dict(name=r["name"], dist=float(r["dist_m"]), w=int(r["box_w"]), h=int(r["box_h"]),
+                           bx=float(r["bx"]), by=float(r["by"]), on=on, off=off))
 
-print(f"\nout-of-view frames: {out_of_view}, false alarms in them: {false_alarms}")
-print("\ndistance   visible   found   rate")
+print(f"MISSED AT {CONF} (best confidence on the attacker / elsewhere)")
+for g in graded:
+    if g["on"] < CONF:
+        note = "   <- box in the WRONG place" if g["off"] >= CONF else ""
+        print(f"  {g['name']}: on {g['on']:.2f}  elsewhere {g['off']:.2f}   drone {g['w']}x{g['h']} px   "
+              f"x {g['bx']:+.2f} y {g['by']:+.2f}{note}")
+
+print(f"\nin view but too small to grade (under 10 x 4 px): {too_small}")
+print(f"out-of-view frames: {len(empty)}, false alarms at {CONF}: {sum(c >= CONF for c in empty)}")
+
+print(f"\nAT {CONF}:   distance   graded   found   rate")
 for lo, hi in BANDS:
-    band = [found for d, found in rows if lo <= d < hi]
+    band = [g for g in graded if lo <= g["dist"] < hi]
     if band:
-        print(f"{lo:>2}–{hi:<2} m   {len(band):>7}   {sum(band):>5}   {sum(band) / len(band):5.0%}")
+        hit = sum(g["on"] >= CONF for g in band)
+        print(f"            {lo:>2}–{hi:<2} m   {len(band):>6}   {hit:>5}   {hit / len(band):4.0%}")
+
+print("\nthreshold   0–2 m found     2–5 m found     false alarms (v0)")
+for t in THRESHOLDS:
+    cells = []
+    for lo, hi in BANDS[:2]:
+        band = [g for g in graded if lo <= g["dist"] < hi]
+        hit = sum(g["on"] >= t for g in band)
+        cells.append(f"{hit:>3}/{len(band):<3} {hit / max(len(band), 1):4.0%}")
+    print(f"   {t:.2f}     " + "    ".join(cells) + f"     {sum(c >= t for c in empty):>3} of {len(empty)}")
 ```
 
 *Run from:* `any folder`
@@ -6908,18 +7185,50 @@ for lo, hi in BANDS:
 python C:\projects\drone_pursuit\drone_pursuit\scripts\demo\score_arena_frames.py
 ```
 
-Expected output ends with a small table, for example:
+**How to read it.** The output has four parts:
 
-```
-distance     pictures   found   rate
- 0–2  m           14      14    100%
- 2–5  m           17      16     94%
- 5–99 m            9       4     44%
-```
+- **MISSED AT 0.4:** one line per missed attacker. `on` is the detector's best confidence on the attacker: 0.3 means it saw something but wasn't sure; 0.00 means it saw nothing. `elsewhere` above 0.4 means it boxed the wrong spot. `drone W×H px` and `x`, `y` show how big the attacker was and where (−1 to +1, with ±1 at the picture's edges).
+- **Too small to grade / false alarms:** specks left out of the score, and boxes drawn in pictures with no attacker in view.
+- **AT 0.4:** the found rate per distance range. What matters is the 0–2 m and 2–5 m rows, because the chase is decided at those distances. Target: about 90% or higher in both, with no false alarms. Beyond 5 m the attacker is only a few pixels wide; a low rate there is normal.
+- **threshold table:** the same rates at lower thresholds. If a lower threshold gains many hits without adding false alarms, the detector sees the attacker but isn't confident enough. If it gains little, the detector truly doesn't see those attackers, and only more training images help.
 
-**How to read it.** What matters is the 0–2 m and 2–5 m rows, because the chase is decided at those distances. Both should be at about 90% or higher. A low rate beyond 5 m is normal: there the attacker is only a few pixels wide.
+**A rate is only as precise as its picture count.** With about 50 pictures in the 2–5 m row, 82% and 90% differ by only 4 pictures; the true rate behind a measured 82% could lie anywhere between about 70% and 90%. Use `--num_frames 800` in Step 2 when you need a firmer number: about 200 pictures in that row narrows it to about ±5 points.
 
-**If the 2–5 m row is low,** the detector has not seen enough small, distant drones. Go back to 4.2 and widen the camera distance range in `place_camera()`, generate another batch, re-run 4.3, and train again in 5.1 with a new `name=` (for example `drone_v2`). Then repeat this step with the new `best.pt`.
+**If a row is low, find out what the misses have in common before adding images.** Open the missed pictures in `data\arena_frames_check\` and look at their sizes, positions and backgrounds in the MISSED lines. Then go back to 4.2 and generate a batch that covers exactly that case. The optional flags of `generate_drone_data.py` exist for this:
+
+| What the misses have in common | Batch to add (4.2 extra batches) |
+|---|---|
+| Drone against the floor, seen from above | `--ground_view --off_centre 0.8` |
+| Small drones (about 10–26 px wide), often near the edges | `--dist_range 2.0 3.5 --size_range 0.10 0.14 --edge_reach 0.95 --off_centre 0.9`, once with `--ground_view` and once with `--sky_view` |
+| Boxes on birds | `--birds --no_drone_share 0.3` |
+
+Merge the new batch into `data\raw` (`merge_raw_batches.py`), re-run 4.3, train again in 5.1 with the next `name=`, re-capture (Step 2) and grade again.
+
+**Don't chase every miss.** Some misses can't be fixed with more images: an attacker seen exactly side-on is a line 4–5 px thick with no drone shape, and an attacker cut off by the picture's edge shows only part of itself. Training on such specks would teach the detector to box any dark line, birds included. The real test of whether the detector is good enough is 6.2: does the defender still catch the attacker?
+
+#### OBSERVED RESULTS
+
+Three rounds of training while writing this tutorial (5.1 OBSERVED RESULTS lists their training data):
+
+| Model | Test | 0–2 m | 2–5 m | False alarms | What the misses had in common |
+|---|---|---|---|---|---|
+| `drone_v2` | 40 pictures, first scorer | 67% (8/12) | 0% (0/4) | 0 | close drones low in the picture, against the grey floor; every far drone |
+| `drone_v3` | 200 pictures, first scorer | 93% (57/61) | 69% (37/54) | 0 of 85 | drones under 20 px wide, especially near the edges |
+| `drone_v4` | 200 pictures, current scorer | **95% (58/61)** | **82% (41/50)** | 1 of 85 | side-on slivers 4–5 px thick, mostly near the edges |
+
+The tests differ slightly between rows: `drone_v2` had only 40 pictures, and the first scorer counted a box anywhere in the picture and graded specks too. The trend is still clear. Each targeted batch fixed the problem the previous test found:
+
+- **The ground-view batch fixed the floor problem.** The four close drones `drone_v2` missed against the grey floor, 36–48 px wide, were all found by `drone_v3`, with confidence 0.69–0.85.
+- **The small-drone batch raised the 2–5 m row** from 69% to 82%.
+
+**`drone_v4` in detail:**
+
+- **The 9 misses at 2–5 m:** seven are only 4–5 px thick (for example 14×4 px or 24×5 px): drones seen side-on, which look like slivers rather than drones. Six of the nine sit near an edge of the picture.
+- **The 3 misses at 0–2 m:** two clear drones near a corner (33×12 px at 1.18 m, and 128×56 px at 0.46 m), plus one at 0.40 confidence, just below the threshold.
+- **The 1 false alarm:** a small box on the corner of a floor tile, in one of 85 pictures without an attacker.
+- **A lower threshold doesn't help much:** at 0.3 each row gains one picture; at 0.25 a second false alarm appears.
+
+`drone_v4` was accepted as the detector for the MVP. Close range, where the catch happens, is above target. Most far misses are slivers that more images wouldn't fix. A one-picture false alarm steers the defender wrong for a twentieth of a second. 6.2 tests whether these limits matter in a full chase; if they do, come back here.
 
 </details>
 
@@ -6932,15 +7241,34 @@ distance     pictures   found   rate
 
 This step converts `best.pt` into `drone_detector.onnx` and copies it into `models\`. `best.pt` opens only with the Ultralytics library, which lives in `drone_vision`. The `.onnx` file runs in `env_drone` through onnxruntime, a small library that runs ONNX files without torch. It is the same conversion you tested in 1.3 with the stock model.
 
+Use the model that passed Step 3. While writing this tutorial, that was `drone_v4`.
+
 *Run from:* `C:\projects\drone_pursuit\drone_pursuit` — *the finished model belongs in:* `C:\projects\drone_pursuit\drone_pursuit\models\`
 ```bat
-yolo export model=C:\projects\drone_pursuit\drone_pursuit\runs\detect\drone_v1\weights\best.pt format=onnx imgsz=480,640
-copy C:\projects\drone_pursuit\drone_pursuit\runs\detect\drone_v1\weights\best.onnx C:\projects\drone_pursuit\drone_pursuit\models\drone_detector.onnx
+yolo export model=C:\projects\drone_pursuit\drone_pursuit\runs\detect\drone_v4\weights\best.pt format=onnx imgsz=480,640
+copy /y C:\projects\drone_pursuit\drone_pursuit\runs\detect\drone_v4\weights\best.onnx C:\projects\drone_pursuit\drone_pursuit\models\drone_detector.onnx
 ```
+`/y` replaces an earlier `drone_detector.onnx` without asking.
 
 **Why `imgsz=480,640` and not plain `640`.** Training letterboxes images internally, which is harmless. At flight time you want the detector's input to be exactly the frame shape you feed it — 640 wide by 480 high — so the rectangle it returns is already in that coordinate space. Exporting square would mean padding every frame and subtracting the padding back out of every box, which is arithmetic with no benefit and one more place for a sign error.
 
-Re-run the 1.3 onnxruntime smoke test in `env_drone` against this file. The input shape should now read `[1, 3, 480, 640]` and the output `(1, 5, 6300)` — four box numbers plus one class score for each of 6300 candidate boxes.
+Test the exported file in env_drone with test_detector_onnx.py below; it is 1.3’s smoke test pointed at your detector. The input shape should now read `[1, 3, 480, 640]` and the output `(1, 5, 6300)` — four box numbers plus one class score for each of 6300 candidate boxes.
+
+```py
+conda activate env_drone
+python C:\projects\drone_pursuit\drone_pursuit\test_detector_onnx.py
+```
+
+The expected output is:
+
+input: images [1, 3, 480, 640]
+output: (1, 5, 6300)
+drone_detector.onnx runs inside env_drone
+
+What these lines mean:
+
+[1, 3, 480, 640]: the detector takes one colour frame of 640 × 480, the defender camera’s size.
+(1, 5, 6300): for each frame it proposes 6,300 candidate boxes, each described by 5 numbers (4 for the box, 1 for confidence).
 
 **Test the exported detector inside `env_drone`.** The 1.3 test used the stock model at 640×640. For your detector you need a copy of that test pointing at `drone_detector.onnx`, with a 480×640 input.
 
@@ -6991,10 +7319,24 @@ If the input reads `[1, 3, 640, 640]`, Step 4's export command was run without `
 
 </details>
 
-> ✅ **Checkpoint 5.2 — MILESTONE: Problem 2 (perception) SOLVED**
-> 1. `data\arena_frames\` holds about 40 defender-camera pictures, spanning far to close distances, plus `readings.csv` (one line per picture)
-> 2. `score_arena_frames.py` reports about 90% or more found in both the 0–2 m and 2–5 m rows
-> 3. `drone_detector.onnx` loads and runs inside `env_drone`, input `[1, 3, 480, 640]`, output `(1, 5, 6300)`
+> ✅ **Checkpoint 5.2 — MILESTONE: Problem 2 (perception) SOLVED for the MVP**
+> 1. `data\arena_frames\` holds 200 defender-camera pictures, spanning far to close distances, plus `readings.csv` (201 lines, ending with a `gradeable` column)
+> 2. `check_capture.py` reports 0 repeated readings, 0 far-apart red/green boxes and 0 in-view pictures without a drone
+> 3. `score_arena_frames.py` reports about 90% or more found in the 0–2 m row, and as close to 90% as the pictures allow in the 2–5 m row, with no more than an occasional false alarm
+> 4. `drone_detector.onnx` loads and runs inside `env_drone`, input `[1, 3, 480, 640]`, output `(1, 5, 6300)`
+>
+> **Result while writing this tutorial (`drone_v4`):**
+>
+> | Check | Target | Result |
+> |---|---|---|
+> | 0–2 m found | ≥ 90% | **95%** (58/61) ✅ |
+> | 2–5 m found | ≈ 90% | **82%** (41/50) — accepted for the MVP |
+> | False alarms | 0 | **1 of 85** (a floor-tile corner) — accepted for the MVP |
+> | Gradeable in-view pictures | — | 111 of 115 |
+> | Capture check | 0 / 0 / 0 | 0 / 0 / 0 ✅ |
+> | ONNX shapes | `[1, 3, 480, 640]`, `(1, 5, 6300)` | as expected ✅ |
+>
+> **Known limitations, carried into Chapter 6:** side-on slivers 4–5 px thick at 2–5 m, drones near the picture's edges, and a rare false alarm on floor-tile corners. If 6.2 shows the defender losing the attacker at 2–5 m, or swerving toward the floor, come back to Step 3.
 
 </details>
 
