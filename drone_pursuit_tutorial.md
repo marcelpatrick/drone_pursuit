@@ -6631,8 +6631,8 @@ Four summaries of every training box: how many there are (top left), their sizes
 - **Most boxes are tiny.** The width-height plot is darkest at about 2–5% of the picture's size, which is 13–32 px at 640 px wide: the far drones the chase depends on.
 - **The centre plot still shows one bright dot in the middle.** The standard and bird batches always put the drone in the centre of the photo. The ground-view and small-drone batches place most of their drones anywhere in the picture, but they are spread so thinly that each spot gets only a few, and they barely show next to the thousands at the centre.
 
-<!-- IMAGE: runs\detect\drone_v4\labels.jpg — upload to GitHub and replace the src below -->
-<img width="1600" height="1600" alt="drone_v4 labels.jpg" src="REPLACE_WITH_UPLOADED_labels.jpg" />
+<img width="1506" height="1552" alt="image" src="https://github.com/user-attachments/assets/cdf54c3f-7e3c-4d3a-bdf8-c66609bbc544" />
+
 
 ---
 
