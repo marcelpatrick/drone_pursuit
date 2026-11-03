@@ -7237,42 +7237,32 @@ The tests differ slightly between rows: `drone_v2` had only 40 pictures, and the
 <details>
 <summary>Expand Step 4</summary>
 
-> **Environment:** `drone_vision`
+> **Environment:** `drone_vision` for the export, `env_drone` for the test
 
-This step converts `best.pt` into `drone_detector.onnx` and copies it into `models\`. `best.pt` opens only with the Ultralytics library, which lives in `drone_vision`. The `.onnx` file runs in `env_drone` through onnxruntime, a small library that runs ONNX files without torch. It is the same conversion you tested in 1.3 with the stock model.
+This step converts `best.pt` into `drone_detector.onnx` and copies it into `models\`. `best.pt` opens only with the Ultralytics library, which lives in `drone_vision`. The chase loop in Chapter 6 runs in `env_drone`, which has no Ultralytics. There, the `.onnx` file runs through onnxruntime, a small library that runs ONNX files without torch. It is the same conversion you tested in 1.3 with the stock model, now applied to your own detector.
 
 Use the model that passed Step 3. While writing this tutorial, that was `drone_v4`.
 
+**1 — Export and copy.**
+
 *Run from:* `C:\projects\drone_pursuit\drone_pursuit` — *the finished model belongs in:* `C:\projects\drone_pursuit\drone_pursuit\models\`
 ```bat
+conda activate drone_vision
+cd C:\projects\drone_pursuit\drone_pursuit
 yolo export model=C:\projects\drone_pursuit\drone_pursuit\runs\detect\drone_v4\weights\best.pt format=onnx imgsz=480,640
 copy /y C:\projects\drone_pursuit\drone_pursuit\runs\detect\drone_v4\weights\best.onnx C:\projects\drone_pursuit\drone_pursuit\models\drone_detector.onnx
 ```
-`/y` replaces an earlier `drone_detector.onnx` without asking.
+- `yolo export` writes `best.onnx` next to `best.pt`, in the same `weights\` folder.
+- `copy /y` puts it in `models\` under the name Chapter 6 expects, replacing an earlier `drone_detector.onnx` without asking.
+- For a different model, change `drone_v4` in **both** lines.
 
 **Why `imgsz=480,640` and not plain `640`.** Training letterboxes images internally, which is harmless. At flight time you want the detector's input to be exactly the frame shape you feed it — 640 wide by 480 high — so the rectangle it returns is already in that coordinate space. Exporting square would mean padding every frame and subtracting the padding back out of every box, which is arithmetic with no benefit and one more place for a sign error.
 
-Test the exported file in env_drone with test_detector_onnx.py below; it is 1.3’s smoke test pointed at your detector. The input shape should now read `[1, 3, 480, 640]` and the output `(1, 5, 6300)` — four box numbers plus one class score for each of 6300 candidate boxes.
+**2 — Test the exported detector inside `env_drone`.**
 
-```py
-conda activate env_drone
-python C:\projects\drone_pursuit\drone_pursuit\test_detector_onnx.py
-```
+This is 1.3's smoke test, pointed at your detector. The 1.3 file, `test_onnx.py`, checks the stock `yolov8n.onnx` at 640×640, so it says nothing about `drone_detector.onnx`. This copy, `test_detector_onnx.py`, loads your detector and feeds it one frame of the camera's size, 480×640.
 
-The expected output is:
-
-input: images [1, 3, 480, 640]
-output: (1, 5, 6300)
-drone_detector.onnx runs inside env_drone
-
-What these lines mean:
-
-[1, 3, 480, 640]: the detector takes one colour frame of 640 × 480, the defender camera’s size.
-(1, 5, 6300): for each frame it proposes 6,300 candidate boxes, each described by 5 numbers (4 for the box, 1 for confidence).
-
-**Test the exported detector inside `env_drone`.** The 1.3 test used the stock model at 640×640. For your detector you need a copy of that test pointing at `drone_detector.onnx`, with a 480×640 input.
-
-**1 — Create the test file** (no environment needed):
+*Create the test file* (no environment needed). Skip this if `test_detector_onnx.py` already exists from an earlier export: the same file tests every new export.
 
 ```bat
 cd C:\projects\drone_pursuit\drone_pursuit
@@ -7282,6 +7272,11 @@ notepad test_detector_onnx.py
 Notepad offers to create the file; click **Yes**. Paste this in, save with Ctrl+S, and close:
 
 ```python
+# ── FILE: C:\projects\drone_pursuit\drone_pursuit\test_detector_onnx.py
+# ── NEW file — the whole content, nothing to insert into.
+# ── Environment: env_drone
+# ── Checks that models\drone_detector.onnx loads and runs with onnxruntime alone
+# ──   (no Ultralytics, no torch), with the camera's frame size, 480 x 640.
 import numpy as np, onnxruntime as ort
 
 sess = ort.InferenceSession(
@@ -7297,7 +7292,7 @@ print("output:", out[0].shape)
 print("drone_detector.onnx runs inside env_drone")
 ```
 
-**2 — Run it in `env_drone`:**
+*Run it in `env_drone`:*
 
 ```bat
 conda activate env_drone
@@ -7315,7 +7310,14 @@ drone_detector.onnx runs inside env_drone
 - **`[1, 3, 480, 640]`:** the detector accepts one 640×480 colour frame, the same size the defender's camera produces.
 - **`(1, 5, 6300)`:** the detector proposes 6,300 candidate boxes per frame. Each is described by 5 numbers: 4 for the box position and size, and 1 for how sure it is that the box contains a drone.
 
-If the input reads `[1, 3, 640, 640]`, Step 4's export command was run without `imgsz=480,640`. If the output reads `(1, 84, ...)`, the stock `yolov8n.onnx` was copied instead of your `best.onnx`.
+**3 — Confirm it's the new model.** Open `C:\projects\drone_pursuit\drone_pursuit\models\` and check that `drone_detector.onnx` has today's date. An older date means the `copy` line didn't run, and Chapter 6 would still use the previous detector.
+
+**If something is off:**
+
+- **Input reads `[1, 3, 640, 640]`:** the export ran without `imgsz=480,640`. Run step 1 again.
+- **Output reads `(1, 84, ...)`:** the stock `yolov8n.onnx` was copied instead of your `best.onnx`. YOLOv8n knows 80 object types, so its output has 84 numbers per box (4 + 80) instead of 5 (4 + 1). Check the path in the `copy` line.
+- **`No such file` or `NO_SUCHFILE`:** `drone_detector.onnx` isn't in `models\`. Check that the `copy` line ran without an error.
+- **`ModuleNotFoundError: onnxruntime`:** you are in `drone_vision`, not `env_drone`. Run `conda activate env_drone` first.
 
 </details>
 
