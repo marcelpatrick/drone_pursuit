@@ -7837,8 +7837,12 @@ This step runs the demo. If it misbehaves, you first run it without the camera r
 *Run from:* `any folder` — *the script lives in:* `C:\projects\drone_pursuit\drone_pursuit\scripts\demo\` — *checkpoints live in:* `C:\projects\drone_pursuit\drone_pursuit\logs\skrl\<run-folder>\checkpoints\`
 ```bat
 conda activate env_drone
+
 python C:\projects\drone_pursuit\drone_pursuit\scripts\demo\vision_pursuit_demo.py --checkpoint C:\projects\drone_pursuit\drone_pursuit\logs\skrl\<run-folder>\checkpoints\best_agent.pt --enable_cameras
 ```
+
+In this example, run folder = `quadcopter_direct\2026-09-30_13-27-20_ppo_torch`
+`python C:\projects\drone_pursuit\drone_pursuit\scripts\demo\vision_pursuit_demo.py --checkpoint C:\projects\drone_pursuit\drone_pursuit\logs\skrl\quadcopter_direct\2026-09-30_13-27-20_ppo_torch\checkpoints\best_agent.pt --enable_cameras`
 
 ⚠️ The failures here are usually small and mechanical: the exact wrapper import path for your Isaac Lab minor version, the camera attribute name, or the details of loading the agent.
 
