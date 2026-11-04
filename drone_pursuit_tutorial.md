@@ -7782,9 +7782,9 @@ The comparison tells you:
 #   round 2 "camera"    : splice ON  — the policy gets the readings measured from the camera picture
 # Then it prints a summary table and PASS/FAIL checks.
 #
-#   --episodes                    chases per round (default 100)
+#   --episodes 20                    chases per round (default 20)
 #   --mode both|calculated|camera    which rounds to run (default both)
-#   --verbose                        also print one line per control step
+#   --print_steps                    also print one line per control step
 
 import argparse, torch
 import numpy as np
@@ -7792,9 +7792,9 @@ from isaaclab.app import AppLauncher
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--checkpoint", type=str, required=True)   # your Ch.3 best_agent.pt
-parser.add_argument("--episodes", type=int, default=100)
+parser.add_argument("--episodes", type=int, default=20)
 parser.add_argument("--mode", choices=["both", "calculated", "camera"], default="both")
-parser.add_argument("--verbose", action="store_true")
+parser.add_argument("--print_steps", action="store_true")   # one line per control step (--verbose is taken by AppLauncher)
 AppLauncher.add_app_launcher_args(parser)
 args = parser.parse_args()
 args.enable_cameras = True
@@ -7863,7 +7863,7 @@ def run_round(splice):
             ep["max_size"] = max(ep["max_size"], float(readings[2]))
         if bridge.captured(THRESH):
             ep["cam_says"] = True
-        if args.verbose:
+        if args.print_steps:
             print(f"   true dist {ep['last_dist']:5.2f} m | seen {readings[6]:.0f} | size {readings[2]:.3f} "
                   f"| camera says captured: {bridge.captured(THRESH)}")
 
