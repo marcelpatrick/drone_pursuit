@@ -7722,6 +7722,7 @@ out-of-view check: PASS
 </details>
 
 > ✅ **Checkpoint 6.1**
+
 > 1. `check_bridge.py` reports **15 or more matching frames**, with distances in the file names ranging from far to close.
 > 2. **Field of view identical** on both sides. The ratio line shows all three values near +1.00, and the camera reads the 3.1 values rather than typed numbers. To confirm the second part, run:
 >    ```bat
@@ -7730,6 +7731,18 @@ out-of-view check: PASS
 >    The lines found must show `cam_focal_mm`, `cam_aperture_mm`, `cam_width` and `cam_height`, not numbers.
 > 3. **Out-of-view check: PASS.** Pictures without the attacker produce `visible = 0`, held readings and zero rates of change.
 
+**RESULTS**:
+
+<img width="1627" height="568" alt="image" src="https://github.com/user-attachments/assets/4bd54dd9-6de8-44ca-8e02-02a5f51e29e8" />
+
+<img width="1123" height="271" alt="image" src="https://github.com/user-attachments/assets/ca8df70d-9eaa-45fc-b878-7eaa20f07fa7" />
+
+What this shows: the defender catches the attacker almost as well with its camera as with perfect readings. The full loop (see → detect → convert → decide → act) works in simulation. That is the Block F milestone.
+
+1. “Camera confirmed” is about 50%, and that is expected. The 0.24 s threshold is the median of the camera’s estimate at capture, and by definition about half of the captures sit below the median and half above. So at the exact moment the simulator says “captured,” the camera agrees only about half the time. In the other half it would agree a step or two later, slightly closer, but the simulator had already ended the chase. This is one more reason to use a larger threshold, such as 0.5 s, for the real flight, so the camera’s stop reliably comes before 0.35 m.
+
+2. The camera saw the attacker in only about 50% of steps, yet the defender still caught it 98% of the time. The policy copes well with losing sight: it holds the last reading and finds the attacker again. That’s encouraging for the real world, where the detector will miss more often.
+   
 </details>
 
 ---
