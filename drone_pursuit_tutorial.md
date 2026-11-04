@@ -7712,7 +7712,20 @@ out-of-view check: PASS
 <details>
 <summary>Expand 6.2</summary>
 
-> **What this subchapter does:** runs the complete chase with the camera in charge. A new script, `vision_pursuit_demo.py`, loads your Chapter 3 policy and the detector and runs one environment. On every control step it replaces the seven attacker readings (positions 6 to 12 of the 17-number observation) with values measured from the rendered camera frame. The defender's own speed and tilt still come from the simulator, just as they will come from the Tello's own sensors in Chapter 7. If the defender still catches the attacker, the full see-decide-act loop works and only the hardware remains.
+> **Why this subchapter is needed:** The project's goal is a real Tello that catches an attacker using only what its camera sees. So far you have built and tested each piece on its own. The policy learned to chase using perfect readings from the simulator. The detector learned to find drones in pictures. In 6.1, the converter proved it turns a box into the right seven readings, but only on saved pictures, one at a time.
+
+> A real chase is different, because the pieces feed each other in a circle. The defender moves, the next picture changes, the detector draws a new box, and the policy reacts to it. Small errors that looked harmless in 6.1 can add up inside that circle. A box that is a few pixels off, or a missed detection at 3 m, can make the defender turn the wrong way, lose sight, and never find the attacker again. This subchapter answers one question: **does the defender still catch the attacker when its only source of information is the camera?**
+
+```
+Training (Ch. 3):  simulator's exact positions → perfect 7 readings → policy → flies
+Demo (6.2):        camera picture → detector → converter → imperfect 7 readings → policy → flies
+```
+
+The question 6.2 answers is: can a pilot trained on perfect readings still catch the attacker when it gets imperfect ones from the camera? The camera’s readings are imperfect in three ways:
+
+- Slightly off. The boxes miss by a few pixels, as you saw in the 6.1 mismatches.
+- Sometimes missing. The detector finds nothing in some pictures, like the “detector found nothing” lines.
+- Feeding back on themselves. Each move changes the next picture.
 
 ### The demo architecture
 
