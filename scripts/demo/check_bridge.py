@@ -1,6 +1,6 @@
 # ── FILE: C:\projects\drone_pursuit\drone_pursuit\scripts\demo\check_bridge.py
 # ── NEW file — the whole content, nothing to insert into.
-# ── Reads  : data\arena_frames\frame_*.png and data\arena_frames\readings.csv (5.2 Step 2)
+# ── Reads  : data\arena_frames\frame_*.png and data\arena_frames\readings.csv (6.1 Step 2 Part B)
 # ── Imports: vision_bridge.py, in this SAME folder (scripts\demo\)
 # ── NOTE   : no Isaac Lab here — it only reads saved files
 
@@ -14,6 +14,7 @@ ROOT = Path(r"C:\projects\drone_pursuit\drone_pursuit")
 FRAMES = ROOT / "data" / "arena_frames"
 BEAR_TOL = 0.05        # bearings must agree within 0.05 ("a few hundredths")
 SIZE_TOL = 0.20        # size must agree within 20 %
+FAKE_BOX = np.array([400.0, 200.0, 32.0, 24.0])   # a fake last sighting: right of and above centre
 
 detector = DroneDetector(str(ROOT / "models" / "drone_detector.onnx"))
 with open(FRAMES / "readings.csv", newline="") as f:
@@ -61,10 +62,8 @@ print("   only size off        → --fixed_span differs from the rendered drone'
 
 # ── PART 2 (Step 3): attacker out of view — the bridge must hold its last values ─
 print("\nSTEP 3 — out-of-view behaviour\n")
-bridge = CameraReadingBridge()
-last = bridge.update(np.array([400.0, 200.0, 32.0, 24.0]))   # a last sighting: right of and above centre
 out_frames = [r for r in rows if r["visible"] == "0"
-              and (abs(float(r["bx"])) >= 1 or abs(float(r["by"])) >= 1)]   # truly outside the picture
+              and (abs(float(r["bx"])) >= 1 or abs(float(r["by"])) >= 1)]   # centre outside the picture
 if out_frames:
     inputs = [(r["name"], detector.detect(load(r["name"]))) for r in out_frames]
 else:
@@ -72,13 +71,25 @@ else:
     inputs = [("simulated miss", None)]
 
 all_ok = True
+n_tested = 0
 for name, box in inputs:
+    if box is not None:
+        # The attacker's centre is outside the picture, but the detector still found a box
+        # (part of the drone at the edge, or a false detection). Not a bridge test.
+        print(f"{name}: detector found a box, skipped (a 5.2 issue, not a bridge issue)")
+        continue
+    bridge = CameraReadingBridge()                   # fresh bridge for every picture,
+    last = bridge.update(FAKE_BOX)                   # so one picture cannot affect the next
     out = bridge.update(box)
-    frozen = np.allclose(out[:3], last[:3])
-    zero_d = np.allclose(out[3:6], 0.0)
-    ok = out[6] == 0.0 and frozen and zero_d
+    frozen = np.allclose(out[:3], last[:3])          # bx, by, size held unchanged
+    zero_d = np.allclose(out[3:6], 0.0)              # the three rates of change are zero
+    ok = out[6] == 0.0 and frozen and zero_d         # visible flag is 0
     all_ok &= ok
-    note = "" if box is None else "   ← detector saw a drone that is not there"
+    n_tested += 1
     print(f"{name}: visible={out[6]:.0f}  bearings held={frozen}  rates zero={zero_d}  "
-          f"{'OK' if ok else 'FAIL'}{note}")
-print(f"\nout-of-view check: {'PASS' if all_ok else 'FAIL'}")
+          f"{'OK' if ok else 'FAIL'}")
+
+if n_tested == 0:
+    all_ok = False
+    print("no frames left to test — every out-of-view picture had a detection")
+print(f"\nout-of-view check: {'PASS' if all_ok else 'FAIL'}   ({n_tested} frames tested)")
