@@ -7505,6 +7505,8 @@ class CameraReadingBridge:
         return self.time_to_contact(dt) < ttc_threshold_s
 ```
 
+> Why time-to-contact needs no attacker width. A drone twice as wide looks twice as big and grows twice as fast as it approaches, so "size ÷ growth per second" cancels the width and leaves only distance ÷ closing speed: the seconds left until contact. Growth is measured only between consecutive sightings, because the jump from "nothing seen" to a first box is not growth. It is averaged over the last 4 pictures to smooth the detector's jitter, and the result is corrected so it stays on the same one-picture-behind scale as the 0.24 s measured in 3.3 Step 4.
+
 </details>
 
 ### Step 2 — Compare the converter's output against the training-time projection
@@ -7518,7 +7520,7 @@ Step 1 wrote the converter, but nothing has proved it gives the policy the same 
 
 **Why:** to confirm that, for the same moment, the calculated readings and the readings measured from the picture match.
 
-This step uses the 200 pictures you captured during the chase in Part B, and the calculated readings saved next to them in readings.csv. A new script measures the same readings from each picture, using your detector and the converter, and compares the two.
+This step uses the 200 pictures you captured during the chase in Part B, and the calculated readings saved next to them in readings.csv. A new script measures the same readings from each picture, using your detector and the converter, and compares the two..
 
 *Folders involved:* pictures and readings in `C:\projects\drone_pursuit\drone_pursuit\data\arena_frames\` (from 5.2 Step 2), converter in `C:\projects\drone_pursuit\drone_pursuit\scripts\demo\vision_bridge.py`
 
@@ -7730,18 +7732,6 @@ out-of-view check: PASS
 >    ```
 >    The lines found must show `cam_focal_mm`, `cam_aperture_mm`, `cam_width` and `cam_height`, not numbers.
 > 3. **Out-of-view check: PASS.** Pictures without the attacker produce `visible = 0`, held readings and zero rates of change.
-
-**RESULTS**:
-
-<img width="1627" height="568" alt="image" src="https://github.com/user-attachments/assets/4bd54dd9-6de8-44ca-8e02-02a5f51e29e8" />
-
-<img width="1123" height="271" alt="image" src="https://github.com/user-attachments/assets/ca8df70d-9eaa-45fc-b878-7eaa20f07fa7" />
-
-What this shows: the defender catches the attacker almost as well with its camera as with perfect readings. The full loop (see → detect → convert → decide → act) works in simulation. That is the Block F milestone.
-
-1. “Camera confirmed” is about 50%, and that is expected. The 0.24 s threshold is the median of the camera’s estimate at capture, and by definition about half of the captures sit below the median and half above. So at the exact moment the simulator says “captured,” the camera agrees only about half the time. In the other half it would agree a step or two later, slightly closer, but the simulator had already ended the chase. This is one more reason to use a larger threshold, such as 0.5 s, for the real flight, so the camera’s stop reliably comes before 0.35 m.
-
-2. The camera saw the attacker in only about 50% of steps, yet the defender still caught it 98% of the time. The policy copes well with losing sight: it holds the last reading and finds the attacker again. That’s encouraging for the real world, where the detector will miss more often.
    
 </details>
 
@@ -7752,7 +7742,9 @@ What this shows: the defender catches the attacker almost as well with its camer
 <details>
 <summary>Expand 6.2</summary>
 
-> **Why this subchapter is needed:** The project's goal is a real Tello that catches an attacker using only what its camera sees. So far you have built and tested each piece on its own. The policy learned to chase using perfect readings from the simulator. The detector learned to find drones in pictures. In 6.1, the converter proved it turns a box into the right seven readings, but only on saved pictures, one at a time.
+>Why this subchapter is needed: So far each piece has been tested on its own. The policy learned to chase with perfect readings calculated by the simulator. The detector learned to find drones in pictures. In 6.1 the converter turned saved pictures into the right seven readings, one at a time. In a real chase the pieces feed each other in a circle: the defender moves, the next picture changes, the detector draws a new box, and the policy reacts. Small errors, such as a box a few pixels off or a missed detection, can add up inside that circle. If you skipped this test, the first full chase would happen on the real Tello, where a failure could come from any piece and could cost a crash.
+
+>What this subchapter does: In this step you create a new script, vision_pursuit_demo.py, that runs the same chases twice. In the calculated round the policy gets its seven readings from the simulator's math, as in training. In the camera round the readings come from the rendered camera picture, through the detector and the converter. Everything else is the same. Comparing the two rounds tells you how much catching ability the camera costs. The defender's own speed and tilt come from the simulator in both rounds, as they will come from the Tello's own sensors in Chapter 7.
 
 > A real chase is different, because the pieces feed each other in a circle. The defender moves, the next picture changes, the detector draws a new box, and the policy reacts to it. Small errors that looked harmless in 6.1 can add up inside that circle. A box that is a few pixels off, or a missed detection at 3 m, can make the defender turn the wrong way, lose sight, and never find the attacker again. This subchapter answers one question: **does the defender still catch the attacker when its only source of information is the camera?**
 
@@ -7822,9 +7814,13 @@ The comparison tells you:
 #   round 2 "camera"    : splice ON  — the policy gets the readings measured from the camera picture
 # Then it prints a summary table and PASS/FAIL checks.
 #
-#   --episodes                    chases per round 
+#   --episodes 20                    chases per round (default 20)
 #   --mode both|calculated|camera    which rounds to run (default both)
 #   --print_steps                    also print one line per control step
+#   --attacker_scale 2.5             render the attacker this many times its normal size (6.3)
+#   --light_random                   new random light brightness and tint at every chase (6.3)
+#   --show_view                      live window: the defender's camera, the detector's box, distances (6.3)
+#   --record view.mp4                save that same view as a video file (6.3)
 
 import argparse, torch
 import numpy as np
@@ -7832,8 +7828,12 @@ from isaaclab.app import AppLauncher
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--checkpoint", type=str, required=True)   # your Ch.3 best_agent.pt
-parser.add_argument("--episodes", type=int, default=100)
+parser.add_argument("--episodes", type=int, default=20)
 parser.add_argument("--mode", choices=["both", "calculated", "camera"], default="both")
+parser.add_argument("--attacker_scale", type=float, default=1.0)   # 6.3: 0.6 ≈ 8 cm, 2.5 ≈ 33 cm
+parser.add_argument("--light_random", action="store_true")          # 6.3: random brightness + tint per chase
+parser.add_argument("--show_view", action="store_true")             # 6.3: live window of the defender's camera
+parser.add_argument("--record", type=str, default="")               # 6.3: save the view as an .mp4 file
 parser.add_argument("--print_steps", action="store_true")   # one line per control step (--verbose is taken by AppLauncher)
 AppLauncher.add_app_launcher_args(parser)
 args = parser.parse_args()
@@ -7857,6 +7857,41 @@ NEAR_FACTOR = 1.25      # camera "nearly confirms" a capture if its lowest time-
 TASK = "Template-Drone-Pursuit-Direct-v0"
 env_cfg = load_cfg_from_registry(TASK, "env_cfg_entry_point")
 env_cfg.scene.num_envs = 1
+
+
+# ── 6.3: make the RENDERED attacker bigger or smaller ─────────────────────────
+# Finds the attacker's config (any config whose name or prim path contains "attacker")
+# and multiplies its spawn scale BEFORE the scene is built. Only the picture changes:
+# the simulator's true distance and capture radius stay exactly the same.
+def scale_attacker(cfg, s):
+    scaled = []
+    for holder in (cfg, getattr(cfg, "scene", None)):
+        if holder is None:
+            continue
+        for name in dir(holder):
+            if name.startswith("_"):
+                continue
+            try:
+                v = getattr(holder, name)
+            except Exception:
+                continue
+            path = getattr(v, "prim_path", None)
+            spawn = getattr(v, "spawn", None)
+            if isinstance(path, str) and "attacker" in (name + path).lower() and spawn is not None \
+                    and hasattr(spawn, "scale"):
+                base = spawn.scale if spawn.scale is not None else (1.0, 1.0, 1.0)
+                spawn.scale = tuple(b * s for b in base)
+                scaled.append(f"{name} ({path}) scale {base} -> {spawn.scale}")
+    if not scaled:
+        raise RuntimeError("--attacker_scale: no attacker config with a spawn scale was found. "
+                           "Run: findstr /n \"attacker\" quadcopter_env.py and paste the config lines.")
+    for line in scaled:
+        print(f"[6.3] attacker rendered x{s}: {line}")
+
+
+if args.attacker_scale != 1.0:
+    scale_attacker(env_cfg, args.attacker_scale)
+
 env = gym.make(TASK, cfg=env_cfg, render_mode=None)
 raw_env = env.unwrapped                      # to reach the camera and the ground truth
 env = SkrlVecEnvWrapper(env)
@@ -7870,7 +7905,85 @@ runner.agent.set_running_mode("eval")
 detector = DroneDetector(r"C:\projects\drone_pursuit\drone_pursuit\models\drone_detector.onnx")
 TTC = raw_env.cfg.capture_ttc_s           # camera capture threshold in seconds, measured in Chapter 3.3 Step 4
 DT = raw_env.step_dt                      # seconds between control steps
+
+# ── 6.3: random lighting at every chase ───────────────────────────────────────
+# Collects every light in the scene once, remembers its original brightness, then at each
+# reset sets a new brightness (30–150 % of the original) and a slight colour tint.
+lights = []
+if args.light_random:
+    import omni.usd
+    from pxr import Gf
+    stage = omni.usd.get_context().get_stage()
+    for prim in stage.Traverse():
+        if prim.HasAttribute("inputs:intensity"):
+            lights.append((prim, prim.GetAttribute("inputs:intensity").Get()))
+    print(f"[6.3] random lighting on {len(lights)} light(s): {[str(p.GetPath()) for p, _ in lights]}")
+
+
+def randomize_lights():
+    for prim, base in lights:
+        prim.GetAttribute("inputs:intensity").Set(float(base) * float(np.random.uniform(0.3, 1.5)))
+        if prim.HasAttribute("inputs:color"):
+            prim.GetAttribute("inputs:color").Set(Gf.Vec3f(*np.random.uniform(0.75, 1.0, 3).tolist()))
 RADIUS = raw_env.cfg.capture_radius       # simulator capture distance in metres, set in Chapter 2.1
+
+# ── 6.3: live view of what the defender sees ──────────────────────────────────
+# Draws on each camera picture: the detector's box, the image centre, the TRUE distance
+# (from the simulator), the camera's ESTIMATED distance and the time-to-contact.
+# The estimated distance needs the attacker's real width, which a camera alone cannot
+# know. Here we use the rendered drone's width (0.13 m × --attacker_scale), so the number
+# shows how well the camera COULD judge distance if the width were known. The capture
+# decision does not use it: that is time-to-contact, which needs no width.
+VIEW = args.show_view or bool(args.record)
+if VIEW:
+    import cv2
+    LENS = raw_env.cfg.cam_focal_mm / raw_env.cfg.cam_aperture_mm           # 3.1 Part E
+    SPAN = getattr(raw_env.cfg, "attacker_span_m", 0.13) * args.attacker_scale
+    view_state = {"window": args.show_view, "writer": None}
+
+
+def put(img, text, y, color):
+    cv2.putText(img, text, (10, y), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 0, 0), 3, cv2.LINE_AA)   # outline
+    cv2.putText(img, text, (10, y), cv2.FONT_HERSHEY_SIMPLEX, 0.55, color, 1, cv2.LINE_AA)
+
+
+def show_view(rgb, box, readings, true_dist, ttc, cam_captured, label, warming_up):
+    if not VIEW or rgb is None:
+        return
+    img = cv2.cvtColor(np.ascontiguousarray(rgb[..., :3]).astype(np.uint8), cv2.COLOR_RGB2BGR)
+    h, w = img.shape[:2]
+    cv2.drawMarker(img, (w // 2, h // 2), (200, 200, 200), cv2.MARKER_CROSS, 20, 1)   # "dead ahead"
+    if box is not None:
+        xc, yc, bw, bh = [float(v) for v in box]
+        p1, p2 = (int(xc - bw / 2), int(yc - bh / 2)), (int(xc + bw / 2), int(yc + bh / 2))
+        cv2.rectangle(img, p1, p2, (0, 0, 255) if cam_captured else (0, 255, 0), 2)
+        cv2.line(img, (w // 2, h // 2), (int(xc), int(yc)), (0, 255, 255), 1)          # bearing
+    green, gray, white, red = (0, 255, 0), (170, 170, 170), (255, 255, 255), (0, 0, 255)
+    put(img, label, 20, white)
+    put(img, f"true distance (simulator): {true_dist:.2f} m", 44, white)
+    if warming_up:
+        put(img, "first frames after reset: ignored", 68, gray)
+    elif readings[6] == 1.0 and readings[2] > 0:
+        put(img, f"camera estimate: {LENS * SPAN / readings[2]:.2f} m  (assumes {SPAN * 100:.0f} cm width)", 68, green)
+    else:
+        put(img, "attacker NOT seen - holding last reading", 68, gray)
+    put(img, f"time-to-contact: {ttc:.2f} s   (capture below {TTC:.2f} s)" if ttc != float("inf")
+        else "time-to-contact: --  (needs 3 sightings in a row)", 92, white)
+    if cam_captured:
+        put(img, "CAMERA SAYS: CAPTURED", 120, red)
+    if args.record:
+        if view_state["writer"] is None:
+            view_state["writer"] = cv2.VideoWriter(args.record, cv2.VideoWriter_fourcc(*"mp4v"),
+                                                   int(round(1 / DT)), (w, h))
+        view_state["writer"].write(img)
+    if view_state["window"]:
+        try:
+            cv2.imshow("Defender camera", img)
+            cv2.waitKey(1)
+        except cv2.error:
+            view_state["window"] = False
+            print("[6.3] cannot open a window (opencv-python-headless is installed). "
+                  "Use --record view.mp4 instead, or: pip install opencv-python")
 
 
 def run_round(splice):
@@ -7882,6 +7995,7 @@ def run_round(splice):
            "steps": 0, "seen": 0, "jitter": []}
     obs, _ = env.reset()
     raw_env.episode_length_buf.zero_()                      # full time for every chase (see note below)
+    randomize_lights()                                      # 6.3, does nothing without --light_random
     bridge = CameraReadingBridge()
     ep = {"steps": 0, "seen": 0, "min_ttc": float("inf"), "last_dist": 0.0,
           "cam_says": False, "jitter": []}
@@ -7892,11 +8006,10 @@ def run_round(splice):
         # 1) SEE — this step's rendered frame, (1, H, W, 3) uint8 → numpy HWC
         # The first pictures after a reset are rendered before the scene moved, so they still
         # show the end of the previous chase. Treat them as "nothing seen".
-        if ep["steps"] < SKIP_FRAMES:
-            readings = bridge.update(None)
-        else:
-            rgb = raw_env._camera.data.output["rgb"][0].cpu().numpy()
-            readings = bridge.update(detector.detect(rgb))     # 7 numbers
+        rgb = raw_env._camera.data.output["rgb"][0].cpu().numpy()
+        warming_up = ep["steps"] < SKIP_FRAMES
+        box = None if warming_up else detector.detect(rgb)
+        readings = bridge.update(box)                           # 7 numbers
 
         # 2) SPLICE — the camera replaces exactly the slots it owns
         if splice:
@@ -7911,6 +8024,8 @@ def run_round(splice):
         ep["min_ttc"] = min(ep["min_ttc"], ttc)
         if bridge.captured_ttc(TTC, DT):
             ep["cam_says"] = True
+        show_view(rgb, box, readings, ep["last_dist"], ttc, bridge.captured_ttc(TTC, DT),
+                  f"{name} round | chase {done_eps + 1}/{args.episodes} | step {ep['steps']}", warming_up)
         if args.print_steps:
             print(f"   true dist {ep['last_dist']:5.2f} m | seen {readings[6]:.0f} | size {readings[2]:.3f} "
                   f"| time-to-contact {ttc:5.2f} s | camera says captured: {bridge.captured_ttc(TTC, DT)}")
@@ -7955,6 +8070,7 @@ def run_round(splice):
             # template then gives each chase a RANDOM amount of time left (to spread resets out
             # in training). Give every chase its full time instead.
             raw_env.episode_length_buf.zero_()
+            randomize_lights()                               # 6.3, does nothing without --light_random
             ep = {"steps": 0, "seen": 0, "min_ttc": float("inf"), "last_dist": 0.0,
                   "cam_says": False, "jitter": []}
             prev_action = None
@@ -7978,7 +8094,8 @@ cols = list(rounds)
 def row(label, fn):
     print(f"{label:<34}" + "".join(f"{fn(rounds[c]):>14}" for c in cols))
 
-print("\n================ 6.2 SUMMARY ================")
+CONDITION = f"attacker x{args.attacker_scale:g}" + (", random light" if args.light_random else "")
+print(f"\n================ 6.2 SUMMARY ({CONDITION}) ================")
 print(f"{'':<34}" + "".join(f"{c:>14}" for c in cols))
 row("chases run", lambda r: f"{r['episodes']}")
 row("capture rate", lambda r: f"{100 * r['rate']:.0f}%")
@@ -8016,66 +8133,243 @@ if len(rounds) == 2:
 
 all_ok = all(ok for ok, _ in checks)
 print(f"\nRESULT: {'PASS' if all_ok else 'FAIL'}")
+if "camera" in rounds:
+    c = rounds["camera"]
+    print("\nCopy this line into project_notes.txt (6.3 robustness table):")
+    print(f"6.3 [{CONDITION}] ({args.episodes} chases): camera capture {100*c['rate']:.0f}% | "
+          f"crashes {c['crashes']} | camera saw {100*c['seen_share']:.0f}% | "
+          f"confirmed {c['confirmed']}/{c['captures']} | nearly {c['near']}/{c['captures']} | "
+          f"jitter {c['jitter_mean']:.3f}")
 if len(rounds) == 2:
     print("\nCopy this line into project_notes.txt:")
     print(f"6.2 capture rate ({args.episodes} chases): calculated {100*rounds['calculated']['rate']:.0f}% | "
           f"camera {100*rounds['camera']['rate']:.0f}% | gap "
           f"{100*(rounds['calculated']['rate'] - rounds['camera']['rate']):.0f} points")
 
+if VIEW:
+    if view_state["writer"] is not None:
+        view_state["writer"].release()
+        print(f"[6.3] video saved: {args.record}")
+    if args.show_view:
+        cv2.destroyAllWindows()
 env.close()
 app.close()
 ```
 
 </details>
 
-### Step 2 — Run it, and debug in two halves if it misbehaves
-
+### Step 2 — Run both rounds and read the summary
+ 
 <details>
 <summary>Expand Step 2</summary>
-
 > **Environment:** `env_drone`
-
-This step runs the demo. If it misbehaves, you first run it without the camera readings, which tells you whether the problem is in loading the policy or in the vision path.
-
-*Run from:* `any folder` — *the script lives in:* `C:\projects\drone_pursuit\drone_pursuit\scripts\demo\` — *checkpoints live in:* `C:\projects\drone_pursuit\drone_pursuit\logs\skrl\<run-folder>\checkpoints\`
+ 
+*Run from:* `any folder`
 ```bat
 conda activate env_drone
-
-python C:\projects\drone_pursuit\drone_pursuit\scripts\demo\vision_pursuit_demo.py --checkpoint C:\projects\drone_pursuit\drone_pursuit\logs\skrl\<run-folder>\checkpoints\best_agent.pt --enable_cameras
+python C:\projects\drone_pursuit\drone_pursuit\scripts\demo\vision_pursuit_demo.py --checkpoint C:\projects\drone_pursuit\drone_pursuit\logs\skrl\quadcopter_direct\YOUR-RUN-FOLDER\checkpoints\best_agent.pt --enable_cameras --episodes 100
 ```
-
-In this example, run folder = `quadcopter_direct\2026-09-30_13-27-20_ppo_torch`
+ 
+Replace `YOUR-RUN-FOLDER` with the run folder of your best Chapter 3 checkpoint, for example `2026-09-30_13-27-20_ppo_torch`. To list all saved checkpoints, run `dir /s /b C:\projects\drone_pursuit\drone_pursuit\logs\skrl\best_agent.pt`. Never type the `< >` of a placeholder: Windows reads `<` as a special symbol.
+ 
+The run takes about 20 minutes and stops by itself. Useful options:
+ 
+- `--mode calculated` or `--mode camera` runs only one round.
+- `--episodes 20` gives a quicker, rougher result.
+- `--print_steps` prints one line per control step, for debugging.
+**One line per chase.** For example:
+ 
 ```
-python C:\projects\drone_pursuit\drone_pursuit\scripts\demo\vision_pursuit_demo.py --checkpoint C:\projects\drone_pursuit\drone_pursuit\logs\skrl\quadcopter_direct\2026-09-30_13-27-20_ppo_torch\checkpoints\best_agent.pt --enable_cameras
+chase 12: CAPTURE  | last true dist 0.39 m | camera saw it  31/ 37 steps | min time-to-contact 0.22 s / threshold 0.24 s | camera says captured: True | jitter 0.630
 ```
-
-⚠️ The failures here are usually small and mechanical: the exact wrapper import path for your Isaac Lab minor version, the camera attribute name, or the details of loading the agent.
-
-**Debug method — comment out one line first:**
-
-```python
-# ── FILE: ...\scripts\demo\vision_pursuit_demo.py, inside the while loop ────
-
-    # 2) SPLICE — TEMPORARILY DISABLE this line for the first debug pass:
-    # obs[:, 6:13] = torch.tensor(readings, device=obs.device)
-```
-
-With that line commented out the policy runs on the training-time projected readings, which must reproduce Chapter 3 behaviour exactly. That separates a checkpoint-loading problem from a vision-path problem. Re-enable the splice only after that passes.
-
-**What success looks like.** The chase is less smooth than in Chapter 3. The detector's rectangle shifts by a few pixels between frames, the bearings shift with it, and the defender corrects more often. It still closes and captures. The gap between its capture rate on calculated readings and on measured readings is the number worth writing in `project_notes.txt`, because Chapter 7 will produce a third value for the same measurement on hardware.
-
-**What to watch at the end of a chase:** `true dist` drops below your capture radius, and within a frame or two `camera says captured` flips to True. Two independent measurements of the same event agreeing within a frame or two means the `capture_ang_size` you calibrated in 3.3 is correct.
+ 
+- **CAPTURE / CRASH / TIME OUT:** how the chase ended, decided by the simulator.
+- **last true dist:** the true distance on the last step; about 0.35–0.45 m for a capture.
+- **camera saw it:** on how many steps the detector found a box.
+- **min time-to-contact:** the camera's lowest estimate in the chase, against the 0.24 s threshold.
+- **camera says captured:** whether the camera alone reached the threshold before the chase ended.
+- **jitter:** how much the policy's command changed from step to step, on average.
 
 </details>
 
 > ✅ **Checkpoint 6.2 — MILESTONE: Problem 3 (integration) SOLVED**
-> The defender captures the attacker with everything it knows about the attacker coming from its camera and your detector — no assumed dimensions, no positions from the simulator, no camera geometry in the converter. Record a video.
+> 1. The summary ends with `RESULT: PASS`: calculated capture rate ≥ 80%, camera capture rate ≥ 60%, gap ≤ 25 points.
+> 2. "Camera nearly confirmed" is clearly above "confirmed" (the camera reaches the threshold a step or two after the simulator's capture).
+> 3. The summary line is saved in `project_notes.txt`.
+> 4. A video of a camera-round chase is recorded. The option for it, `--record`, is added in 6.3 Step 2.
+
+| Check | Pass | If it fails |
+|---|---|---|
+| Calculated capture rate | ≥ 80% | The checkpoint is the problem, not the camera. Use the best Chapter 3 run. |
+| Camera capture rate | ≥ 60% | The vision side loses too much information. Look at "camera saw it" and at crashes. |
+| Gap between the two | ≤ 25 points | Same as above. |
+
+**RESULTS**:
+
+<img width="1627" height="568" alt="image" src="https://github.com/user-attachments/assets/4bd54dd9-6de8-44ca-8e02-02a5f51e29e8" />
+
+<img width="1123" height="271" alt="image" src="https://github.com/user-attachments/assets/ca8df70d-9eaa-45fc-b878-7eaa20f07fa7" />
+
+What this shows: the defender catches the attacker almost as well with its camera as with perfect readings. The full loop (see → detect → convert → decide → act) works in simulation. That is the Block F milestone.
+
+1. “Camera confirmed” is about 50%, and that is expected. The 0.24 s threshold is the median of the camera’s estimate at capture, and by definition about half of the captures sit below the median and half above. So at the exact moment the simulator says “captured,” the camera agrees only about half the time. In the other half it would agree a step or two later, slightly closer, but the simulator had already ended the chase. This is one more reason to use a larger threshold, such as 0.5 s, for the real flight, so the camera’s stop reliably comes before 0.35 m.
+
+2. The camera saw the attacker in only about 50% of steps, yet the defender still caught it 98% of the time. The policy copes well with losing sight: it holds the last reading and finds the attacker again. That’s encouraging for the real world, where the detector will miss more often.
 
 </details>
 
 ---
 
-## 6.3 Review What Is Complete and Choose the Next Extension
+## 6.3 Test the Camera Loop with Different Attacker Sizes and Lighting (≤1h)
+ 
+<details>
+<summary>Expand 6.3</summary>
+> **Why this subchapter is needed:** In 6.2 the defender caught the attacker almost every time using only its camera. But every one of those chases used the same 13 cm Crazyflie under the same light. In training (3.2B) the attacker's width varied from 8 to 35 cm, and the capture rule from 3.3 Step 4, time-to-contact, was chosen precisely because it should work for any size. Until now that rule has only been checked with calculated readings, never with rendered pictures of different-sized drones. If the detector or the capture rule breaks for another size or lighting, finding out here costs a few minutes of simulation. On the Tello it would cost a crash.
+>
+> **What this subchapter does:** You first watch the chase through the defender's own camera, with the detector's box drawn on each picture. Then you run the camera round under three conditions (a small attacker, a large attacker, and changing light) and compare each with your 6.2 result. All of this uses options already built into the 6.2 script, so there is no new code to write.
+ 
+### What changes and what stays the same
+ 
+Only the **picture** changes. The attacker is drawn bigger or smaller, or the scene gets brighter, darker or tinted. The simulator's true distance, the 0.35 m capture radius, the policy and the detector stay exactly the same. So any drop in results comes from what the camera sees.
+ 
+| Option | What it does | What it tests |
+|---|---|---|
+| `--attacker_scale 0.6` | draws the attacker at about 8 cm | Can the detector still find a small drone far away? |
+| `--attacker_scale 2.5` | draws the attacker at about 33 cm | Does a big drone still give the same time-to-contact verdict? Does its box get cut off up close? |
+| `--light_random` | new brightness (30–150%) and a slight colour tint at every chase | Does the detector cope with lighting it has not seen in the arena? |
+ 
+The calculated round is not repeated. Its policy ignores the picture, so it would give the same result as in 6.2.
+ 
+**How the size option works.** Before the scene is built, the script finds the attacker's settings (any setting whose name or path contains "attacker") and multiplies its drawing scale. Only the drawing changes; the attacker's motion and the capture distance do not.
+ 
+**How the lighting option works.** The script collects every light in the scene once, remembers its original brightness, and sets a new brightness and tint at every reset. The first two pictures after a reset are already ignored (6.2), so the new light is in place before the detector looks.
+ 
+### Step 1 — Watch the chase through the defender's camera
+ 
+<details>
+<summary>Expand Step 1</summary>
+> **Environment:** `env_drone`
+ 
+So far you have judged the chase from numbers printed after each chase, and from the Isaac Sim window, which shows the scene from outside. Neither shows what the defender is actually working with: one camera picture at a time, and the detector's box on it.
+ 
+**Why:** to see failures as they happen. When a chase goes wrong in Step 2, the live view shows whether the detector lost the attacker, drew its box on something else, or drew a box cut off at the picture's edge. It also records the video for Checkpoint 6.2.
+ 
+The script's `--show_view` option opens a second window, **Defender camera**. On every picture it draws:
+ 
+- **The detector's box** around the attacker: green while chasing, red once the camera declares capture.
+- **A cross at the picture's centre** ("dead ahead") and a yellow line from it to the box. The line is the bearing the policy steers by.
+- **The true distance**, from the simulator.
+- **The camera's estimated distance**, worked out from the box's size.
+- **The time-to-contact** and the capture threshold.
+The `--record` option saves the same view as a video file.
+ 
+**About the estimated distance.** A camera alone can't measure distance: a small drone nearby and a big drone far away draw the same box. To turn box size into metres, the view assumes the attacker's real width, which here is the rendered drone's width (13 cm × `--attacker_scale`). So this number shows how well the camera *could* judge distance if the width were known. The capture decision never uses it. It uses time-to-contact, which needs no width. On the real Tello the width is unknown, so this line would be a guess.
+ 
+**1. Check that OpenCV is installed** (it draws the window):
+ 
+*Run from:* `any folder`
+```bat
+conda activate env_drone
+python -c "import cv2; print(cv2.__version__)"
+```
+ 
+If it prints a version number, continue. If it says `No module named 'cv2'`, install it with `pip install opencv-python`.
+ 
+**2. Run three camera chases with the view open, recording a video:**
+ 
+*Run from:* `any folder`
+```bat
+python C:\projects\drone_pursuit\drone_pursuit\scripts\demo\vision_pursuit_demo.py --checkpoint C:\projects\drone_pursuit\drone_pursuit\logs\skrl\quadcopter_direct\YOUR-RUN-FOLDER\checkpoints\best_agent.pt --enable_cameras --mode camera --episodes 3 --show_view --record C:\projects\drone_pursuit\drone_pursuit\data\demo_view.mp4
+```
+ 
+Replace `YOUR-RUN-FOLDER` with the same run folder you used in 6.2.
+ 
+As the defender closes in, you should see:
+ 
+- the green box grow and move toward the centre cross,
+- the true distance and the camera estimate fall together. Up close they stay within a few centimetres. Far away (2–3 m) they can differ by 20–30%, because the box is only a few pixels wide there and one pixel changes the estimate a lot,
+- the time-to-contact drop, and the box turn red with "CAMERA SAYS: CAPTURED" at the end of a chase,
+- the grey "NOT seen" line whenever the attacker leaves the picture.
+The view slows the run down a little, so use it for short runs and leave it off for the 50-chase runs in Step 2. When the run ends, the video is in `C:\projects\drone_pursuit\drone_pursuit\data\demo_view.mp4`. That is the video for Checkpoint 6.2.
+ 
+If you see `[6.3] cannot open a window`, your environment has the window-less version of OpenCV, which often comes with other packages. The video is still recorded; open the .mp4 file afterwards.
+ 
+</details>
+### Step 2 — Run the camera round under three conditions
+ 
+<details>
+<summary>Expand Step 2</summary>
+> **Environment:** `env_drone`
+ 
+Each run below uses `--mode camera` (only the camera round) and 50 chases, about 10 minutes each.
+ 
+*Run from:* `any folder`
+```bat
+conda activate env_drone
+ 
+:: Condition 1 — small attacker (about 8 cm)
+python C:\projects\drone_pursuit\drone_pursuit\scripts\demo\vision_pursuit_demo.py --checkpoint C:\projects\drone_pursuit\drone_pursuit\logs\skrl\quadcopter_direct\YOUR-RUN-FOLDER\checkpoints\best_agent.pt --enable_cameras --mode camera --episodes 50 --attacker_scale 0.6
+ 
+:: Condition 2 — large attacker (about 33 cm)
+python C:\projects\drone_pursuit\drone_pursuit\scripts\demo\vision_pursuit_demo.py --checkpoint C:\projects\drone_pursuit\drone_pursuit\logs\skrl\quadcopter_direct\YOUR-RUN-FOLDER\checkpoints\best_agent.pt --enable_cameras --mode camera --episodes 50 --attacker_scale 2.5
+ 
+:: Condition 3 — normal size, random lighting
+python C:\projects\drone_pursuit\drone_pursuit\scripts\demo\vision_pursuit_demo.py --checkpoint C:\projects\drone_pursuit\drone_pursuit\logs\skrl\quadcopter_direct\YOUR-RUN-FOLDER\checkpoints\best_agent.pt --enable_cameras --mode camera --episodes 50 --light_random
+```
+ 
+To see a condition through the defender's eyes first, run it once with `--episodes 3 --show_view` before the full run. The attacker should look clearly smaller or bigger, or the picture should change brightness between chases.
+ 
+At the start of each run, check the `[6.3]` line:
+ 
+- Conditions 1 and 2 print `[6.3] attacker rendered x0.6: …` (or `x2.5`) with the attacker's setting name. If the run stops with "no attacker config with a spawn scale was found," list the attacker settings with `findstr /n "attacker" C:\projects\drone_pursuit\drone_pursuit\source\drone_pursuit\drone_pursuit\tasks\direct\quadcopter\quadcopter_env.py`. The attacker's setting must have "attacker" in its name or prim path, and a `spawn` with a `scale`.
+- Condition 3 prints `[6.3] random lighting on N light(s)`. N must be at least 1.
+After each run, copy the `6.3 [...]` line it prints into `C:\projects\drone_pursuit\drone_pursuit\project_notes.txt`, under your 6.2 line.
+ 
+</details>
+### Step 3 — Compare the conditions with 6.2
+ 
+<details>
+<summary>Expand Step 3</summary>
+> **Environment:** none — you are reading the lines you saved.
+ 
+Put your four lines side by side. Your 6.2 camera round is the baseline. The author's baseline:
+ 
+```
+6.2 baseline (x1)    : camera capture 98% | crashes 2 | camera saw 51% | confirmed 45/98 | nearly 69/98
+6.3 [attacker x0.6]  : ...
+6.3 [attacker x2.5]  : ...
+6.3 [random light]   : ...
+```
+ 
+**Pass marks.** These are suggested values, chosen for this project:
+ 
+| Check | Pass | Why it matters |
+|---|---|---|
+| Camera capture rate in every condition | ≥ 80% | The chase still works when the picture changes. |
+| Crashes in every condition | ≤ 3 of 50 | Crashes usually mean false or stale detections steering the defender. |
+| "Confirmed" share, x0.6 and x2.5 versus baseline | within about 15 points of the baseline (about 46%) | Time-to-contact should not depend on size. A big difference means it does in rendered pictures. |
+ 
+**If a condition fails, what it points to:**
+ 
+- **x0.6 fails, and "camera saw" drops a lot:** the detector misses small, far drones. Add more small-drone images to the synthetic data (Chapter 4) and retrain the detector (Chapter 5). The policy needs no change.
+- **x2.5 fails, with crashes or low "confirmed":** up close, the big drone overflows the picture and its box gets cut off at the edges, so the size and growth readings go wrong. For the real flight, rely on the larger time-to-contact threshold (Chapter 7), which stops the defender before the attacker fills the picture.
+- **Random lighting fails:** the detector learned the arena's lighting too well. Add brightness and colour randomization to the synthetic images (Chapter 4) and retrain the detector.
+- **"Confirmed" differs a lot between x0.6 and x2.5:** the detector draws boxes that are tighter or looser depending on the drone's size, so the time-to-contact estimate shifts with size. Note it, and re-check the threshold against the real detector in Chapter 7.4.
+A failure here does **not** mean retraining the policy. Every fix above is on the detector side, or in the flight script's stop rule.
+ 
+</details>
+> ✅ **Checkpoint 6.3**
+> 1. The **Defender camera** view (or `demo_view.mp4`) shows the detector's box following the attacker, and the camera estimate following the true distance.
+> 2. Each condition run printed its `[6.3]` line, and the change was visible in the view.
+> 3. Camera capture rate ≥ 80% and crashes ≤ 3 of 50 in all three conditions.
+> 4. The "confirmed" share for x0.6 and x2.5 is within about 15 points of the 6.2 baseline.
+> 5. All four lines are saved in `project_notes.txt`.
+ 
+</details>
+
+---
+
+## 6.4 Review What Is Complete and Choose the Next Extension
 
 <details>
 <summary>Expand 6.3</summary>
