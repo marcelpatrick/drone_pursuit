@@ -7458,7 +7458,8 @@ class CameraReadingBridge:
         self.img_w, self.img_h = img_w, img_h
         self.bx = self.by = self.asz = 0.0
         self.has_seen = False
-        self._growth = deque(maxlen=4)   # last 4 size changes while visible, to smooth detector jitter
+        self._growth = deque(maxlen=4)   # last 4 size changes between CONSECUTIVE sightings, to smooth jitter
+        self._was_visible = False        # was the attacker seen in the previous picture?
 
     def update(self, bbox):
         prev = (self.bx, self.by, self.asz)
@@ -7468,10 +7469,14 @@ class CameraReadingBridge:
             self.by = (y_c - self.img_h / 2) / (self.img_h / 2)     # −1 … +1
             self.asz = w / self.img_w                               #  0 … 1
             self.has_seen = True
-            self._growth.append(self.asz - prev[2])                 # how much it grew this step
+            if self._was_visible:                                   # growth only between two real sightings:
+                self._growth.append(self.asz - prev[2])             # the jump from "nothing" to a first box is not growth
+            self._was_visible = True
             visible = 1.0
         else:
             visible = 0.0                                           # values stay frozen
+            self._was_visible = False
+            self._growth.clear()                                    # a gap breaks the step-by-step growth series
         d = (self.bx - prev[0], self.by - prev[1], self.asz - prev[2])
         return np.array([self.bx, self.by, self.asz, d[0], d[1], d[2], visible],
                         dtype=np.float32)
@@ -7484,12 +7489,16 @@ class CameraReadingBridge:
         """Seconds until the drones meet at the current closing speed: size ÷ growth per second.
         Needs no attacker width — a bigger drone looks bigger AND grows faster, so the width cancels.
         dt = seconds between control steps (0.05 at 20 decisions per second)."""
-        if not self.has_seen or len(self._growth) < 2:
+        if len(self._growth) < 2:                                   # needs 3 consecutive sightings
             return float("inf")
+        n = len(self._growth)
         growth_per_s = float(np.mean(self._growth)) / dt
         if growth_per_s <= 0:
             return float("inf")                                     # not closing → no contact coming
-        return self.asz / growth_per_s
+        # Averaging n steps measures growth as it was ~n steps ago, which adds n×dt to the
+        # result. Training's 3.3 Step 4 measured over ONE step (adds 1×dt), so remove the
+        # extra (n−1)×dt to stay on the same scale as capture_ttc_s.
+        return self.asz / growth_per_s - (n - 1) * dt
 
     def captured_ttc(self, ttc_threshold_s, dt):
         """Camera-only victory condition that works for any attacker size (3.3 Step 4's capture_ttc_s)."""
@@ -7800,7 +7809,7 @@ The comparison tells you:
 #   round 2 "camera"    : splice ON  — the policy gets the readings measured from the camera picture
 # Then it prints a summary table and PASS/FAIL checks.
 #
-#   --episodes                    chases per round (default 100)
+#   --episodes                    chases per round 
 #   --mode both|calculated|camera    which rounds to run (default both)
 #   --print_steps                    also print one line per control step
 
@@ -7829,6 +7838,7 @@ from vision_bridge import DroneDetector, CameraReadingBridge
 BASELINE_MIN = 0.80     # calculated round must capture ≥ 80% (same bar as Checkpoint 3.3)
 CAMERA_MIN = 0.60       # camera round must capture ≥ 60%
 MAX_GAP = 0.25          # camera may be at most 25 percentage points below calculated
+SKIP_FRAMES = 2         # pictures ignored after each reset: they can still show the PREVIOUS chase
 NEAR_FACTOR = 1.25      # camera "nearly confirms" a capture if its lowest time-to-contact got within 1.25x the threshold
 
 TASK = "Template-Drone-Pursuit-Direct-v0"
@@ -7858,6 +7868,7 @@ def run_round(splice):
     res = {"captures": 0, "crashes": 0, "timeouts": 0, "confirmed": 0, "near": 0,
            "steps": 0, "seen": 0, "jitter": []}
     obs, _ = env.reset()
+    raw_env.episode_length_buf.zero_()                      # full time for every chase (see note below)
     bridge = CameraReadingBridge()
     ep = {"steps": 0, "seen": 0, "min_ttc": float("inf"), "last_dist": 0.0,
           "cam_says": False, "jitter": []}
@@ -7866,8 +7877,13 @@ def run_round(splice):
 
     while app.is_running() and done_eps < args.episodes:
         # 1) SEE — this step's rendered frame, (1, H, W, 3) uint8 → numpy HWC
-        rgb = raw_env._camera.data.output["rgb"][0].cpu().numpy()
-        readings = bridge.update(detector.detect(rgb))     # 7 numbers
+        # The first pictures after a reset are rendered before the scene moved, so they still
+        # show the end of the previous chase. Treat them as "nothing seen".
+        if ep["steps"] < SKIP_FRAMES:
+            readings = bridge.update(None)
+        else:
+            rgb = raw_env._camera.data.output["rgb"][0].cpu().numpy()
+            readings = bridge.update(detector.detect(rgb))     # 7 numbers
 
         # 2) SPLICE — the camera replaces exactly the slots it owns
         if splice:
@@ -7922,6 +7938,10 @@ def run_round(splice):
             res["seen"] += ep["seen"]
             res["jitter"].append(jit)
             bridge = CameraReadingBridge()                   # fresh memory for the next chase
+            # With one environment, every reset is a reset of ALL environments, and the quadcopter
+            # template then gives each chase a RANDOM amount of time left (to spread resets out
+            # in training). Give every chase its full time instead.
+            raw_env.episode_length_buf.zero_()
             ep = {"steps": 0, "seen": 0, "min_ttc": float("inf"), "last_dist": 0.0,
                   "cam_says": False, "jitter": []}
             prev_action = None
