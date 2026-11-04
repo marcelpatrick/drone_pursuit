@@ -7389,7 +7389,7 @@ C:\projects\drone_pursuit\drone_pursuit\scripts\demo\vision_pursuit_demo.py   �
 
 ### What the converter has to do
 
-The detector hands you a rectangle: a centre point and a size, both in pixels. The policy wants the seven readings from §0.4. The whole translation is division by the image dimensions:
+The detector hands you a rectangle: a centre point and a size, both in pixels. The policy wants the seven readings - where the drone is in the x,y axis (2), drone size (1), how those are changing - deltas (3), and whether it is seen (1) - from §0.4. The whole translation is division by the image dimensions:
 
 ```
    the 640-wide camera image
