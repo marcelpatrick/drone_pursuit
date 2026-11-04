@@ -7814,13 +7814,14 @@ The comparison tells you:
 #   round 2 "camera"    : splice ON  — the policy gets the readings measured from the camera picture
 # Then it prints a summary table and PASS/FAIL checks.
 #
-#   --episodes 20                    chases per round (default 20)
+#   --episodes                 chases per round  
 #   --mode both|calculated|camera    which rounds to run (default both)
 #   --print_steps                    also print one line per control step
 #   --attacker_scale 2.5             render the attacker this many times its normal size (6.3)
 #   --light_random                   new random light brightness and tint at every chase (6.3)
 #   --show_view                      live window: the defender's camera, the detector's box, distances (6.3)
 #   --record view.mp4                save that same view as a video file (6.3)
+#   --results_json out.json          also save the results as a file, for run_robustness.py (6.3)
 
 import argparse, torch
 import numpy as np
@@ -7828,12 +7829,13 @@ from isaaclab.app import AppLauncher
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--checkpoint", type=str, required=True)   # your Ch.3 best_agent.pt
-parser.add_argument("--episodes", type=int, default=20)
+parser.add_argument("--episodes", type=int, default=100)
 parser.add_argument("--mode", choices=["both", "calculated", "camera"], default="both")
 parser.add_argument("--attacker_scale", type=float, default=1.0)   # 6.3: 0.6 ≈ 8 cm, 2.5 ≈ 33 cm
 parser.add_argument("--light_random", action="store_true")          # 6.3: random brightness + tint per chase
 parser.add_argument("--show_view", action="store_true")             # 6.3: live window of the defender's camera
 parser.add_argument("--record", type=str, default="")               # 6.3: save the view as an .mp4 file
+parser.add_argument("--results_json", type=str, default="")         # 6.3: save results for run_robustness.py
 parser.add_argument("--print_steps", action="store_true")   # one line per control step (--verbose is taken by AppLauncher)
 AppLauncher.add_app_launcher_args(parser)
 args = parser.parse_args()
@@ -8146,6 +8148,15 @@ if len(rounds) == 2:
           f"camera {100*rounds['camera']['rate']:.0f}% | gap "
           f"{100*(rounds['calculated']['rate'] - rounds['camera']['rate']):.0f} points")
 
+if args.results_json:                                       # 6.3: machine-readable results
+    import json
+    keep = ("episodes", "rate", "captures", "crashes", "timeouts", "confirmed", "near", "seen_share", "jitter_mean")
+    with open(args.results_json, "w", encoding="utf-8") as f:
+        json.dump({"condition": CONDITION, "attacker_scale": args.attacker_scale,
+                   "light_random": args.light_random, "all_checks_ok": all_ok,
+                   "rounds": {k: {x: v[x] for x in keep} for k, v in rounds.items()}}, f, indent=2)
+    print(f"[6.3] results saved: {args.results_json}")
+
 if VIEW:
     if view_state["writer"] is not None:
         view_state["writer"].release()
@@ -8226,7 +8237,7 @@ What this shows: the defender catches the attacker almost as well with its camer
 <summary>Expand 6.3</summary>
 > **Why this subchapter is needed:** In 6.2 the defender caught the attacker almost every time using only its camera. But every one of those chases used the same 13 cm Crazyflie under the same light. In training (3.2B) the attacker's width varied from 8 to 35 cm, and the capture rule from 3.3 Step 4, time-to-contact, was chosen precisely because it should work for any size. Until now that rule has only been checked with calculated readings, never with rendered pictures of different-sized drones. If the detector or the capture rule breaks for another size or lighting, finding out here costs a few minutes of simulation. On the Tello it would cost a crash.
 >
-> **What this subchapter does:** You first watch the chase through the defender's own camera, with the detector's box drawn on each picture. Then you run the camera round under three conditions (a small attacker, a large attacker, and changing light) and compare each with your 6.2 result. All of this uses options already built into the 6.2 script, so there is no new code to write.
+> **What this subchapter does:** You first watch the chase through the defender's own camera, with the detector's box drawn on each picture. Then a new script, `run_robustness.py`, runs the 6.2 test again plus three new conditions (a small attacker, a large attacker, and changing light) one after another, and prints a table that marks each check PASS or FAIL. The changes in size and light are options already built into the 6.2 script.
  
 ### What changes and what stays the same
  
@@ -8295,75 +8306,276 @@ The view slows the run down a little, so use it for short runs and leave it off 
 If you see `[6.3] cannot open a window`, your environment has the window-less version of OpenCV, which often comes with other packages. The video is still recorded; open the .mp4 file afterwards.
  
 </details>
-### Step 2 — Run the camera round under three conditions
+### Step 2 — Run all four conditions in a row
  
 <details>
 <summary>Expand Step 2</summary>
-> **Environment:** `env_drone`
+> **Environment:** none needed to create the file; `env_drone` to run it.
  
-Each run below uses `--mode camera` (only the camera round) and 50 chases, about 10 minutes each.
+Running each condition by hand means four long commands, then copying four result lines and comparing them yourself. In this step you create a new script, `run_robustness.py`, that does it for you. It runs `vision_pursuit_demo.py` four times, once per condition, and then prints one table with every check marked PASS or FAIL.
+ 
+| # | Condition | Rounds | Why |
+|---|---|---|---|
+| 1 | **baseline**: normal size, normal light | calculated + camera | the 6.2 test, repeated so all four use the same number of chases |
+| 2 | **small**: attacker ×0.6 (about 8 cm) | camera | small, far drones |
+| 3 | **large**: attacker ×2.5 (about 33 cm) | camera | big drones, boxes cut off up close |
+| 4 | **light**: normal size, random lighting | camera | unfamiliar lighting |
+ 
+Each condition is a separate run of the demo, because the attacker's size is fixed at the moment the scene is built. The script shows the chase lines of each run as they happen, and saves everything in a new dated folder, `C:\projects\drone_pursuit\drone_pursuit\data\robustness\<date-time>\`: one log and one results file per condition, plus `summary.txt`.
+ 
+*File to CREATE (new, empty file):* `C:\projects\drone_pursuit\drone_pursuit\scripts\demo\run_robustness.py`
+ 
+```python
+# ── FILE: C:\projects\drone_pursuit\drone_pursuit\scripts\demo\run_robustness.py
+# ── NEW file — the whole content, nothing to insert into.
+# ── Runs   : vision_pursuit_demo.py (6.2), in this SAME folder, once per condition
+# ── Writes : C:\projects\drone_pursuit\drone_pursuit\data\robustness\<date-time>\
+#            one log + one results file per condition, and summary.txt
+# ── NOTE   : no Isaac Lab here. Each condition is a separate run of the demo script,
+#            because the attacker's size is fixed when the scene is built.
+#
+# Conditions, in order:
+#   1. baseline      normal size, normal light, BOTH rounds (the 6.2 test)
+#   2. small         attacker x0.6 (about 8 cm),  camera round only
+#   3. large         attacker x2.5 (about 33 cm), camera round only
+#   4. light         normal size, random lighting, camera round only
+#
+#   --checkpoint ...   your Ch.3 best_agent.pt (required)
+#   --episodes 50      chases per round (default 50)
+#   --headless         no Isaac Sim window (faster; the camera still renders)
+#   --only small,large run only some conditions (baseline is always included)
+ 
+import argparse, json, subprocess, sys
+from datetime import datetime
+from pathlib import Path
+ 
+HERE = Path(__file__).resolve().parent
+DEMO = HERE / "vision_pursuit_demo.py"
+ROOT = Path(r"C:\projects\drone_pursuit\drone_pursuit")
+ 
+# ── Pass marks from 6.2 Step 2 and 6.3 Step 3 (suggested values for this project) ─
+BASELINE_CALC_MIN = 0.80    # 6.2: calculated round captures ≥ 80%
+BASELINE_CAM_MIN = 0.60     # 6.2: camera round captures ≥ 60%
+BASELINE_MAX_GAP = 0.25     # 6.2: camera at most 25 points below calculated
+COND_CAM_MIN = 0.80         # 6.3: every condition captures ≥ 80%
+COND_CRASH_MAX = 0.06       # 6.3: crashes ≤ 3 of 50 chases (6%)
+CONFIRM_MAX_DIFF = 0.15     # 6.3: size conditions' "confirmed" share within 15 points of the baseline
+ 
+CONDITIONS = [
+    ("baseline", "normal size, normal light", ["--mode", "both"]),
+    ("small",    "attacker x0.6 (about 8 cm)", ["--mode", "camera", "--attacker_scale", "0.6"]),
+    ("large",    "attacker x2.5 (about 33 cm)", ["--mode", "camera", "--attacker_scale", "2.5"]),
+    ("light",    "normal size, random lighting", ["--mode", "camera", "--light_random"]),
+]
+ 
+parser = argparse.ArgumentParser()
+parser.add_argument("--checkpoint", type=str, required=True)
+parser.add_argument("--episodes", type=int, default=50)
+parser.add_argument("--headless", action="store_true")
+parser.add_argument("--only", type=str, default="", help="e.g. small,light (baseline always runs)")
+args = parser.parse_args()
+ 
+wanted = {"baseline"} | {x.strip() for x in args.only.split(",") if x.strip()} if args.only else None
+conditions = [c for c in CONDITIONS if wanted is None or c[0] in wanted]
+ 
+out_dir = ROOT / "data" / "robustness" / datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+out_dir.mkdir(parents=True, exist_ok=True)
+print(f"Results folder: {out_dir}\n")
+ 
+ 
+def run(key, label, extra):
+    """Run the demo once, show its output live, save it to a log, return its results (or None)."""
+    results_file = out_dir / f"{key}.json"
+    cmd = [sys.executable, str(DEMO), "--checkpoint", args.checkpoint, "--enable_cameras",
+           "--episodes", str(args.episodes), "--results_json", str(results_file)] + extra
+    if args.headless:
+        cmd.append("--headless")
+    print("=" * 90)
+    print(f"CONDITION '{key}': {label}")
+    print("  " + " ".join(cmd))
+    print("=" * 90, flush=True)
+    with open(out_dir / f"{key}.log", "w", encoding="utf-8") as log:
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                text=True, encoding="utf-8", errors="replace")
+        for line in proc.stdout:
+            log.write(line)
+            # show only the lines that matter, so the console stays readable
+            if line.startswith(("chase", "──", "[6.3]", "RESULT", "Traceback", "  [", "Error")) \
+                    or "Error" in line[:40]:
+                print(line, end="", flush=True)
+        proc.wait()
+    if proc.returncode != 0 or not results_file.exists():
+        print(f"\n!! Condition '{key}' did not finish (exit code {proc.returncode}). "
+              f"See {out_dir / (key + '.log')}\n")
+        return None
+    return json.loads(results_file.read_text(encoding="utf-8"))
+ 
+ 
+results = {key: run(key, label, extra) for key, label, extra in conditions}
+ 
+# ── SUMMARY ───────────────────────────────────────────────────────────────────
+lines = []
+def say(s=""):
+    print(s)
+    lines.append(s)
+ 
+def pct(x):
+    return f"{100 * x:.0f}%"
+ 
+say("\n" + "=" * 90)
+say(f"6.3 ROBUSTNESS SUMMARY   ({args.episodes} chases per round, checkpoint {Path(args.checkpoint).parent.parent.name})")
+say("=" * 90)
+say(f"{'condition':<12}{'capture':>9}{'crashes':>9}{'time-outs':>11}{'camera saw':>12}"
+    f"{'confirmed':>11}{'nearly':>9}{'jitter':>8}")
+cam = {}
+for key, label, _ in conditions:
+    r = results[key]
+    if r is None:
+        say(f"{key:<12}{'did not finish':>40}")
+        continue
+    c = r["rounds"]["camera"]
+    cam[key] = c
+    n = max(c["captures"], 1)
+    say(f"{key:<12}{pct(c['rate']):>9}{c['crashes']:>9}{c['timeouts']:>11}{pct(c['seen_share']):>12}"
+        f"{pct(c['confirmed'] / n):>11}{pct(c['near'] / n):>9}{c['jitter_mean']:>8.3f}")
+if results.get("baseline") and "calculated" in results["baseline"]["rounds"]:
+    calc = results["baseline"]["rounds"]["calculated"]
+    say(f"{'(calculated)':<12}{pct(calc['rate']):>9}{calc['crashes']:>9}{calc['timeouts']:>11}"
+        f"{'':>12}{'':>11}{'':>9}{calc['jitter_mean']:>8.3f}")
+say("confirmed / nearly = share of captures the camera alone confirmed (fully / within 1.25x the threshold)")
+ 
+say("\nCHECKS")
+checks = []
+def check(ok, text):
+    checks.append(ok)
+    say(f"  [{'PASS' if ok else 'FAIL'}] {text}")
+ 
+b = results.get("baseline")
+if b is None:
+    check(False, "baseline (6.2) finished")
+else:
+    calc, bc = b["rounds"]["calculated"], b["rounds"]["camera"]
+    check(calc["rate"] >= BASELINE_CALC_MIN, f"baseline: calculated capture ≥ {pct(BASELINE_CALC_MIN)}   ({pct(calc['rate'])})")
+    check(bc["rate"] >= BASELINE_CAM_MIN, f"baseline: camera capture ≥ {pct(BASELINE_CAM_MIN)}       ({pct(bc['rate'])})")
+    gap = calc["rate"] - bc["rate"]
+    check(gap <= BASELINE_MAX_GAP, f"baseline: gap ≤ {100 * BASELINE_MAX_GAP:.0f} points               ({100 * gap:.0f} points)")
+base_conf = cam["baseline"]["confirmed"] / max(cam["baseline"]["captures"], 1) if "baseline" in cam else None
+ 
+for key, label, _ in conditions[1:]:
+    if results[key] is None:
+        check(False, f"{key}: finished")
+        continue
+    c = cam[key]
+    check(c["rate"] >= COND_CAM_MIN, f"{key}: camera capture ≥ {pct(COND_CAM_MIN)}           ({pct(c['rate'])})")
+    check(c["crashes"] / max(c["episodes"], 1) <= COND_CRASH_MAX,
+          f"{key}: crashes ≤ {COND_CRASH_MAX * args.episodes:.0f} of {args.episodes}             ({c['crashes']})")
+    if key in ("small", "large") and base_conf is not None:
+        conf = c["confirmed"] / max(c["captures"], 1)
+        check(abs(conf - base_conf) <= CONFIRM_MAX_DIFF,
+              f"{key}: confirmed within {100 * CONFIRM_MAX_DIFF:.0f} points of baseline  "
+              f"({pct(conf)} vs {pct(base_conf)})")
+ 
+say("\nIF A CHECK FAILS (details in 6.3 Step 3):")
+say("  baseline calculated   → the checkpoint is the problem, not the camera")
+say("  small                 → detector misses small, far drones: more small-drone images (Ch.4), retrain detector (Ch.5)")
+say("  large                 → box cut off up close: rely on the larger stop threshold in Chapter 7")
+say("  light                 → add brightness/colour randomization to the synthetic images (Ch.4), retrain detector")
+say("  confirmed differs     → time-to-contact shifts with size in rendered boxes: re-check it in 7.4")
+ 
+say(f"\nRESULT: {'PASS' if checks and all(checks) else 'FAIL'}")
+ 
+say("\nCopy these lines into project_notes.txt:")
+for key, label, _ in conditions:
+    if key in cam:
+        c = cam[key]
+        say(f"6.3 [{key}: {label}] ({args.episodes} chases): camera capture {pct(c['rate'])} | crashes {c['crashes']} | "
+            f"camera saw {pct(c['seen_share'])} | confirmed {c['confirmed']}/{c['captures']} | "
+            f"nearly {c['near']}/{c['captures']} | jitter {c['jitter_mean']:.3f}")
+ 
+(out_dir / "summary.txt").write_text("\n".join(lines), encoding="utf-8")
+print(f"\nSummary saved: {out_dir / 'summary.txt'}")
+```
+ 
+**Run it.** Use the same checkpoint as in 6.2. With 50 chases per round, the four conditions take about an hour in total. `--headless` hides the Isaac Sim window, which makes it faster; the camera still renders.
  
 *Run from:* `any folder`
 ```bat
 conda activate env_drone
- 
-:: Condition 1 — small attacker (about 8 cm)
-python C:\projects\drone_pursuit\drone_pursuit\scripts\demo\vision_pursuit_demo.py --checkpoint C:\projects\drone_pursuit\drone_pursuit\logs\skrl\quadcopter_direct\YOUR-RUN-FOLDER\checkpoints\best_agent.pt --enable_cameras --mode camera --episodes 50 --attacker_scale 0.6
- 
-:: Condition 2 — large attacker (about 33 cm)
-python C:\projects\drone_pursuit\drone_pursuit\scripts\demo\vision_pursuit_demo.py --checkpoint C:\projects\drone_pursuit\drone_pursuit\logs\skrl\quadcopter_direct\YOUR-RUN-FOLDER\checkpoints\best_agent.pt --enable_cameras --mode camera --episodes 50 --attacker_scale 2.5
- 
-:: Condition 3 — normal size, random lighting
-python C:\projects\drone_pursuit\drone_pursuit\scripts\demo\vision_pursuit_demo.py --checkpoint C:\projects\drone_pursuit\drone_pursuit\logs\skrl\quadcopter_direct\YOUR-RUN-FOLDER\checkpoints\best_agent.pt --enable_cameras --mode camera --episodes 50 --light_random
+python C:\projects\drone_pursuit\drone_pursuit\scripts\demo\run_robustness.py --checkpoint C:\projects\drone_pursuit\drone_pursuit\logs\skrl\quadcopter_direct\YOUR-RUN-FOLDER\checkpoints\best_agent.pt --episodes 50 --headless
 ```
  
-To see a condition through the defender's eyes first, run it once with `--episodes 3 --show_view` before the full run. The attacker should look clearly smaller or bigger, or the picture should change brightness between chases.
+Replace `YOUR-RUN-FOLDER` with the same run folder you used in 6.2, for example `2026-09-30_13-27-20_ppo_torch`.
  
-At the start of each run, check the `[6.3]` line:
+While it runs, check the `[6.3]` line at the start of each condition:
  
-- Conditions 1 and 2 print `[6.3] attacker rendered x0.6: …` (or `x2.5`) with the attacker's setting name. If the run stops with "no attacker config with a spawn scale was found," list the attacker settings with `findstr /n "attacker" C:\projects\drone_pursuit\drone_pursuit\source\drone_pursuit\drone_pursuit\tasks\direct\quadcopter\quadcopter_env.py`. The attacker's setting must have "attacker" in its name or prim path, and a `spawn` with a `scale`.
-- Condition 3 prints `[6.3] random lighting on N light(s)`. N must be at least 1.
-After each run, copy the `6.3 [...]` line it prints into `C:\projects\drone_pursuit\drone_pursuit\project_notes.txt`, under your 6.2 line.
+- **small** and **large** print `[6.3] attacker rendered x0.6: …` (or `x2.5`) with the attacker's setting name. If a condition stops with "no attacker config with a spawn scale was found," the summary shows it as "did not finish." List the attacker settings with `findstr /n "attacker" C:\projects\drone_pursuit\drone_pursuit\source\drone_pursuit\drone_pursuit\tasks\direct\quadcopter\quadcopter_env.py`. The attacker's setting must have "attacker" in its name or prim path, and a `spawn` with a `scale`.
+- **light** prints `[6.3] random lighting on N light(s)`. N must be at least 1.
+To repeat only some conditions later, add `--only`, for example `--only large,light`. The baseline always runs, because the other checks compare against it.
  
 </details>
-### Step 3 — Compare the conditions with 6.2
+### Step 3 — Read the summary
  
 <details>
 <summary>Expand Step 3</summary>
-> **Environment:** none — you are reading the lines you saved.
+> **Environment:** none — you are reading the output, or `summary.txt` in the results folder.
  
-Put your four lines side by side. Your 6.2 camera round is the baseline. The author's baseline:
+The summary has three parts: a table, the checks, and lines to copy into your notes. An example (illustrative numbers):
  
 ```
-6.2 baseline (x1)    : camera capture 98% | crashes 2 | camera saw 51% | confirmed 45/98 | nearly 69/98
-6.3 [attacker x0.6]  : ...
-6.3 [attacker x2.5]  : ...
-6.3 [random light]   : ...
+==========================================================================================
+6.3 ROBUSTNESS SUMMARY   (50 chases per round, checkpoint 2026-09-30_13-27-20_ppo_torch)
+==========================================================================================
+condition     capture  crashes  time-outs  camera saw  confirmed   nearly  jitter
+baseline          98%        1          0         51%        46%      70%   0.673
+small             94%        2          1         38%        44%      66%   0.690
+large             90%        3          2         58%        39%      61%   0.702
+light             96%        1          1         49%        45%      69%   0.680
+(calculated)     100%        0          0                                  0.599
+ 
+CHECKS
+  [PASS] baseline: calculated capture ≥ 80%   (100%)
+  [PASS] baseline: camera capture ≥ 60%       (98%)
+  [PASS] baseline: gap ≤ 25 points               (2 points)
+  [PASS] small: camera capture ≥ 80%           (94%)
+  ...
+RESULT: PASS
 ```
  
-**Pass marks.** These are suggested values, chosen for this project:
+**The columns:**
+ 
+- **capture:** share of chases the simulator counted as captures.
+- **crashes / time-outs:** chases that ended in a crash, or ran out of time.
+- **camera saw:** share of steps on which the detector found a box.
+- **confirmed / nearly:** share of captures the camera alone confirmed in time, fully or within 1.25× the threshold. Near 50% is expected for "confirmed", because 0.24 s is the median (see 6.2).
+- **jitter:** how much the policy's command changes from step to step.
+**The checks and their pass marks** (suggested values for this project; change them at the top of `run_robustness.py`):
  
 | Check | Pass | Why it matters |
 |---|---|---|
-| Camera capture rate in every condition | ≥ 80% | The chase still works when the picture changes. |
-| Crashes in every condition | ≤ 3 of 50 | Crashes usually mean false or stale detections steering the defender. |
-| "Confirmed" share, x0.6 and x2.5 versus baseline | within about 15 points of the baseline (about 46%) | Time-to-contact should not depend on size. A big difference means it does in rendered pictures. |
+| Baseline: calculated capture | ≥ 80% | The checkpoint still works (6.2). |
+| Baseline: camera capture | ≥ 60% | The camera loop works at all (6.2). |
+| Baseline: gap | ≤ 25 points | The camera costs little (6.2). |
+| Each new condition: camera capture | ≥ 80% | The chase still works when the picture changes. |
+| Each new condition: crashes | ≤ 3 of 50 | Crashes usually mean false or stale detections steering the defender. |
+| small and large: "confirmed" | within 15 points of the baseline | Time-to-contact should not depend on size. A big difference means it does in rendered pictures. |
  
-**If a condition fails, what it points to:**
+**If a check fails, what it points to:**
  
-- **x0.6 fails, and "camera saw" drops a lot:** the detector misses small, far drones. Add more small-drone images to the synthetic data (Chapter 4) and retrain the detector (Chapter 5). The policy needs no change.
-- **x2.5 fails, with crashes or low "confirmed":** up close, the big drone overflows the picture and its box gets cut off at the edges, so the size and growth readings go wrong. For the real flight, rely on the larger time-to-contact threshold (Chapter 7), which stops the defender before the attacker fills the picture.
-- **Random lighting fails:** the detector learned the arena's lighting too well. Add brightness and colour randomization to the synthetic images (Chapter 4) and retrain the detector.
-- **"Confirmed" differs a lot between x0.6 and x2.5:** the detector draws boxes that are tighter or looser depending on the drone's size, so the time-to-contact estimate shifts with size. Note it, and re-check the threshold against the real detector in Chapter 7.4.
+- **small fails, and "camera saw" drops a lot:** the detector misses small, far drones. Add more small-drone images to the synthetic data (Chapter 4) and retrain the detector (Chapter 5). The policy needs no change.
+- **large fails, with crashes or low "confirmed":** up close, the big drone overflows the picture and its box gets cut off at the edges, so the size and growth readings go wrong. For the real flight, rely on the larger time-to-contact threshold (Chapter 7), which stops the defender before the attacker fills the picture.
+- **light fails:** the detector learned the arena's lighting too well. Add brightness and colour randomization to the synthetic images (Chapter 4) and retrain the detector.
+- **"confirmed" differs a lot between small and large:** the detector draws boxes that are tighter or looser depending on the drone's size, so the time-to-contact estimate shifts with size. Note it, and re-check the threshold against the real detector in Chapter 7.4.
+- **baseline fails:** go back to 6.2 before reading anything else; the other conditions are compared against it.
 A failure here does **not** mean retraining the policy. Every fix above is on the detector side, or in the flight script's stop rule.
+ 
+Finally, copy the four `6.3 [...]` lines printed at the end into `C:\projects\drone_pursuit\drone_pursuit\project_notes.txt`.
  
 </details>
 > ✅ **Checkpoint 6.3**
 > 1. The **Defender camera** view (or `demo_view.mp4`) shows the detector's box following the attacker, and the camera estimate following the true distance.
-> 2. Each condition run printed its `[6.3]` line, and the change was visible in the view.
-> 3. Camera capture rate ≥ 80% and crashes ≤ 3 of 50 in all three conditions.
-> 4. The "confirmed" share for x0.6 and x2.5 is within about 15 points of the 6.2 baseline.
-> 5. All four lines are saved in `project_notes.txt`.
+> 2. `run_robustness.py` finished all four conditions, and **small**, **large** and **light** each printed their `[6.3]` line.
+> 3. The summary ends with `RESULT: PASS`.
+> 4. The four `6.3 [...]` lines are saved in `project_notes.txt`.
  
 </details>
 
