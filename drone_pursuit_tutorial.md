@@ -8167,7 +8167,7 @@ app.close()
 *Run from:* `any folder`
 ```bat
 conda activate env_drone
-python C:\projects\drone_pursuit\drone_pursuit\scripts\demo\vision_pursuit_demo.py --checkpoint C:\projects\drone_pursuit\drone_pursuit\logs\skrl\quadcopter_direct\YOUR-RUN-FOLDER\checkpoints\best_agent.pt --enable_cameras --episodes 100
+python C:\projects\drone_pursuit\drone_pursuit\scripts\demo\vision_pursuit_demo.py --checkpoint C:\projects\drone_pursuit\drone_pursuit\logs\skrl\quadcopter_direct\<folder of your best checkpoint>\checkpoints\best_agent.pt --enable_cameras --episodes 100
 ```
  
 Replace `YOUR-RUN-FOLDER` with the run folder of your best Chapter 3 checkpoint, for example `2026-09-30_13-27-20_ppo_torch`. To list all saved checkpoints, run `dir /s /b C:\projects\drone_pursuit\drone_pursuit\logs\skrl\best_agent.pt`. Never type the `< >` of a placeholder: Windows reads `<` as a special symbol.
