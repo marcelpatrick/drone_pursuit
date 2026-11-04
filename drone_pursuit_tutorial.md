@@ -7427,6 +7427,7 @@ mkdir C:\projects\drone_pursuit\drone_pursuit\scripts\demo
 # ── Reads : C:\projects\drone_pursuit\drone_pursuit\models\drone_detector.onnx
 # ── Imported by: vision_pursuit_demo.py (6.2) and fly_real.py (7.2)
 
+from collections import deque
 import numpy as np, onnxruntime as ort
 
 
@@ -7457,6 +7458,7 @@ class CameraReadingBridge:
         self.img_w, self.img_h = img_w, img_h
         self.bx = self.by = self.asz = 0.0
         self.has_seen = False
+        self._growth = deque(maxlen=4)   # last 4 size changes while visible, to smooth detector jitter
 
     def update(self, bbox):
         prev = (self.bx, self.by, self.asz)
@@ -7466,6 +7468,7 @@ class CameraReadingBridge:
             self.by = (y_c - self.img_h / 2) / (self.img_h / 2)     # −1 … +1
             self.asz = w / self.img_w                               #  0 … 1
             self.has_seen = True
+            self._growth.append(self.asz - prev[2])                 # how much it grew this step
             visible = 1.0
         else:
             visible = 0.0                                           # values stay frozen
@@ -7476,6 +7479,21 @@ class CameraReadingBridge:
     def captured(self, threshold):
         """Camera-only victory condition, using the value calibrated in Chapter 3.3."""
         return self.has_seen and self.asz > threshold
+
+    def time_to_contact(self, dt):
+        """Seconds until the drones meet at the current closing speed: size ÷ growth per second.
+        Needs no attacker width — a bigger drone looks bigger AND grows faster, so the width cancels.
+        dt = seconds between control steps (0.05 at 20 decisions per second)."""
+        if not self.has_seen or len(self._growth) < 2:
+            return float("inf")
+        growth_per_s = float(np.mean(self._growth)) / dt
+        if growth_per_s <= 0:
+            return float("inf")                                     # not closing → no contact coming
+        return self.asz / growth_per_s
+
+    def captured_ttc(self, ttc_threshold_s, dt):
+        """Camera-only victory condition that works for any attacker size (3.3 Step 4's capture_ttc_s)."""
+        return self.time_to_contact(dt) < ttc_threshold_s
 ```
 
 </details>
@@ -7782,7 +7800,7 @@ The comparison tells you:
 #   round 2 "camera"    : splice ON  — the policy gets the readings measured from the camera picture
 # Then it prints a summary table and PASS/FAIL checks.
 #
-#   --episodes 100                    chases per round (default 100)
+#   --episodes                    chases per round (default 100)
 #   --mode both|calculated|camera    which rounds to run (default both)
 #   --print_steps                    also print one line per control step
 
@@ -7811,7 +7829,7 @@ from vision_bridge import DroneDetector, CameraReadingBridge
 BASELINE_MIN = 0.80     # calculated round must capture ≥ 80% (same bar as Checkpoint 3.3)
 CAMERA_MIN = 0.60       # camera round must capture ≥ 60%
 MAX_GAP = 0.25          # camera may be at most 25 percentage points below calculated
-CONFIRM_SHARE = 0.85    # camera "nearly confirms" a capture if its largest size reached 85% of the threshold
+NEAR_FACTOR = 1.25      # camera "nearly confirms" a capture if its lowest time-to-contact got within 1.25x the threshold
 
 TASK = "Template-Drone-Pursuit-Direct-v0"
 env_cfg = load_cfg_from_registry(TASK, "env_cfg_entry_point")
@@ -7827,7 +7845,8 @@ runner.agent.load(args.checkpoint)
 runner.agent.set_running_mode("eval")
 
 detector = DroneDetector(r"C:\projects\drone_pursuit\drone_pursuit\models\drone_detector.onnx")
-THRESH = raw_env.cfg.capture_ang_size     # camera capture threshold, measured in Chapter 3.3 Step 4
+TTC = raw_env.cfg.capture_ttc_s           # camera capture threshold in seconds, measured in Chapter 3.3 Step 4
+DT = raw_env.step_dt                      # seconds between control steps
 RADIUS = raw_env.cfg.capture_radius       # simulator capture distance in metres, set in Chapter 2.1
 
 
@@ -7835,12 +7854,12 @@ def run_round(splice):
     """Run args.episodes chases. splice=True → camera readings replace slots 6..12."""
     name = "camera" if splice else "calculated"
     print(f"\n── Round '{name}': splice {'ON' if splice else 'OFF'}, {args.episodes} chases "
-          f"(camera threshold {THRESH:.3f}, capture radius {RADIUS:.2f} m) ──")
+          f"(camera time-to-contact threshold {TTC:.2f} s, capture radius {RADIUS:.2f} m) ──")
     res = {"captures": 0, "crashes": 0, "timeouts": 0, "confirmed": 0, "near": 0,
            "steps": 0, "seen": 0, "jitter": []}
     obs, _ = env.reset()
     bridge = CameraReadingBridge()
-    ep = {"steps": 0, "seen": 0, "max_size": 0.0, "last_size": 0.0, "last_dist": 0.0,
+    ep = {"steps": 0, "seen": 0, "min_ttc": float("inf"), "last_dist": 0.0,
           "cam_says": False, "jitter": []}
     prev_action = None
     done_eps = 0
@@ -7859,13 +7878,13 @@ def run_round(splice):
         ep["last_dist"] = raw_env._dist[0].item()
         if readings[6] == 1.0:                              # "camera saw it" = detector found a box
             ep["seen"] += 1
-            ep["last_size"] = float(readings[2])
-            ep["max_size"] = max(ep["max_size"], float(readings[2]))
-        if bridge.captured(THRESH):
+        ttc = bridge.time_to_contact(DT)
+        ep["min_ttc"] = min(ep["min_ttc"], ttc)
+        if bridge.captured_ttc(TTC, DT):
             ep["cam_says"] = True
         if args.print_steps:
             print(f"   true dist {ep['last_dist']:5.2f} m | seen {readings[6]:.0f} | size {readings[2]:.3f} "
-                  f"| camera says captured: {bridge.captured(THRESH)}")
+                  f"| time-to-contact {ttc:5.2f} s | camera says captured: {bridge.captured_ttc(TTC, DT)}")
 
         # 3) ACT
         with torch.no_grad():
@@ -7887,7 +7906,7 @@ def run_round(splice):
                 result = "CAPTURE "
                 res["captures"] += 1
                 res["confirmed"] += ep["cam_says"]
-                res["near"] += ep["max_size"] >= CONFIRM_SHARE * THRESH
+                res["near"] += ep["min_ttc"] <= NEAR_FACTOR * TTC
             elif bool(terminated.any()):
                 result = "CRASH   "
                 res["crashes"] += 1
@@ -7897,13 +7916,13 @@ def run_round(splice):
             jit = float(np.mean(ep["jitter"])) if ep["jitter"] else 0.0
             print(f"chase {done_eps:2d}: {result} | last true dist {ep['last_dist']:.2f} m "
                   f"| camera saw it {ep['seen']:3d}/{ep['steps']:3d} steps "
-                  f"| max size {ep['max_size']:.3f} / threshold {THRESH:.3f} "
+                  f"| min time-to-contact {ep['min_ttc']:.2f} s / threshold {TTC:.2f} s "
                   f"| camera says captured: {ep['cam_says']} | jitter {jit:.3f}")
             res["steps"] += ep["steps"]
             res["seen"] += ep["seen"]
             res["jitter"].append(jit)
             bridge = CameraReadingBridge()                   # fresh memory for the next chase
-            ep = {"steps": 0, "seen": 0, "max_size": 0.0, "last_size": 0.0, "last_dist": 0.0,
+            ep = {"steps": 0, "seen": 0, "min_ttc": float("inf"), "last_dist": 0.0,
                   "cam_says": False, "jitter": []}
             prev_action = None
 
@@ -7954,7 +7973,7 @@ for ok, text in checks:
 if "camera" in rounds:
     c = rounds["camera"]
     print(f"  [INFO] camera nearly confirmed {c['near']} of {c['captures']} captures "
-          f"(largest size reached {100*CONFIRM_SHARE:.0f}% of {THRESH:.3f}).")
+          f"(lowest time-to-contact within {NEAR_FACTOR:.2f}x of {TTC:.2f} s).")
     print("         Most of them → the simulator just ends the chase one step before the camera's threshold. Harmless.")
     print("         Few of them  → the detector loses the attacker up close. Look at 'camera saw it' near the end.")
 if len(rounds) == 2:
