@@ -7742,11 +7742,9 @@ out-of-view check: PASS
 <details>
 <summary>Expand 6.2</summary>
 
->Why this subchapter is needed: So far each piece has been tested on its own. The policy learned to chase with perfect readings calculated by the simulator. The detector learned to find drones in pictures. In 6.1 the converter turned saved pictures into the right seven readings, one at a time. In a real chase the pieces feed each other in a circle: the defender moves, the next picture changes, the detector draws a new box, and the policy reacts. Small errors, such as a box a few pixels off or a missed detection, can add up inside that circle. If you skipped this test, the first full chase would happen on the real Tello, where a failure could come from any piece and could cost a crash.
-
->What this subchapter does: In this step you create a new script, vision_pursuit_demo.py, that runs the same chases twice. In the calculated round the policy gets its seven readings from the simulator's math, as in training. In the camera round the readings come from the rendered camera picture, through the detector and the converter. Everything else is the same. Comparing the two rounds tells you how much catching ability the camera costs. The defender's own speed and tilt come from the simulator in both rounds, as they will come from the Tello's own sensors in Chapter 7.
-
-> A real chase is different, because the pieces feed each other in a circle. The defender moves, the next picture changes, the detector draws a new box, and the policy reacts to it. Small errors that looked harmless in 6.1 can add up inside that circle. A box that is a few pixels off, or a missed detection at 3 m, can make the defender turn the wrong way, lose sight, and never find the attacker again. This subchapter answers one question: **does the defender still catch the attacker when its only source of information is the camera?**
+> **Why this subchapter is needed:** So far each piece has been tested on its own. The policy learned to chase with perfect readings calculated by the simulator. The detector learned to find drones in pictures. In 6.1 the converter turned saved pictures into the right seven readings, one at a time. In a real chase the pieces feed each other in a circle: the defender moves, the next picture changes, the detector draws a new box, and the policy reacts. Small errors, such as a box a few pixels off or a missed detection, can add up inside that circle. If you skipped this test, the first full chase would happen on the real Tello, where a failure could come from any piece and could cost a crash.
+>
+> **What this subchapter does:** In this step you create a new script, `vision_pursuit_demo.py`, that runs the same chases twice. In the **calculated** round the policy gets its seven readings from the simulator's math, as in training. In the **camera** round the readings come from the rendered camera picture, through the detector and the converter. Everything else is the same. Comparing the two rounds tells you how much catching ability the camera costs. The defender's own speed and tilt come from the simulator in both rounds, as they will come from the Tello's own sensors in Chapter 7.
 
 ```
 Training (Ch. 3):  simulator's exact positions → perfect 7 readings → policy → flies
@@ -7814,7 +7812,7 @@ The comparison tells you:
 #   round 2 "camera"    : splice ON  — the policy gets the readings measured from the camera picture
 # Then it prints a summary table and PASS/FAIL checks.
 #
-#   --episodes                 chases per round  
+#   --episodes 20                    chases per round (default 20)
 #   --mode both|calculated|camera    which rounds to run (default both)
 #   --print_steps                    also print one line per control step
 #   --attacker_scale 2.5             render the attacker this many times its normal size (6.3)
@@ -7829,7 +7827,7 @@ from isaaclab.app import AppLauncher
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--checkpoint", type=str, required=True)   # your Ch.3 best_agent.pt
-parser.add_argument("--episodes", type=int, default=100)
+parser.add_argument("--episodes", type=int, default=20)
 parser.add_argument("--mode", choices=["both", "calculated", "camera"], default="both")
 parser.add_argument("--attacker_scale", type=float, default=1.0)   # 6.3: 0.6 ≈ 8 cm, 2.5 ≈ 33 cm
 parser.add_argument("--light_random", action="store_true")          # 6.3: random brightness + tint per chase
@@ -8154,7 +8152,8 @@ if args.results_json:                                       # 6.3: machine-reada
     with open(args.results_json, "w", encoding="utf-8") as f:
         json.dump({"condition": CONDITION, "attacker_scale": args.attacker_scale,
                    "light_random": args.light_random, "all_checks_ok": all_ok,
-                   "rounds": {k: {x: v[x] for x in keep} for k, v in rounds.items()}}, f, indent=2)
+                   "rounds": {k: {x: v[x] for x in keep} for k, v in rounds.items()}}, f, indent=2,
+                  default=lambda o: o.item() if hasattr(o, "item") else str(o))   # numpy numbers → plain
     print(f"[6.3] results saved: {args.results_json}")
 
 if VIEW:
@@ -8178,7 +8177,7 @@ app.close()
 *Run from:* `any folder`
 ```bat
 conda activate env_drone
-python C:\projects\drone_pursuit\drone_pursuit\scripts\demo\vision_pursuit_demo.py --checkpoint C:\projects\drone_pursuit\drone_pursuit\logs\skrl\quadcopter_direct\<folder of your best checkpoint>\checkpoints\best_agent.pt --enable_cameras --episodes 100
+python C:\projects\drone_pursuit\drone_pursuit\scripts\demo\vision_pursuit_demo.py --checkpoint C:\projects\drone_pursuit\drone_pursuit\logs\skrl\quadcopter_direct\YOUR-RUN-FOLDER\checkpoints\best_agent.pt --enable_cameras --episodes 100
 ```
  
 Replace `YOUR-RUN-FOLDER` with the run folder of your best Chapter 3 checkpoint, for example `2026-09-30_13-27-20_ppo_torch`. To list all saved checkpoints, run `dir /s /b C:\projects\drone_pursuit\drone_pursuit\logs\skrl\best_agent.pt`. Never type the `< >` of a placeholder: Windows reads `<` as a special symbol.
@@ -8188,6 +8187,8 @@ The run takes about 20 minutes and stops by itself. Useful options:
 - `--mode calculated` or `--mode camera` runs only one round.
 - `--episodes 20` gives a quicker, rougher result.
 - `--print_steps` prints one line per control step, for debugging.
+Keep the Isaac Sim window open: don't add `--headless`. On Windows, a headless run sometimes starts with a camera that never shows the attacker, and every chase of that run then reads "camera saw it 0/…". The same command can work one time and go blind the next; with the window open this does not happen.
+ 
 **One line per chase.** For example:
  
 ```
