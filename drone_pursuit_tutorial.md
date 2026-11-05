@@ -8577,6 +8577,13 @@ Finally, copy the four `6.3 [...]` lines printed at the end into `C:\projects\dr
 > 2. `run_robustness.py` finished all four conditions, and **small**, **large** and **light** each printed their `[6.3]` line.
 > 3. The summary ends with `RESULT: PASS`.
 > 4. The four `6.3 [...]` lines are saved in `project_notes.txt`.
+
+**RESULTS**:
+
+<img width="1240" height="343" alt="image" src="https://github.com/user-attachments/assets/8607e94d-f954-435f-b305-2611ee29cb64" />
+
+<img width="2003" height="1006" alt="image" src="https://github.com/user-attachments/assets/2b457622-0284-4b89-a3c8-fad5153dd775" />
+
  
 </details>
 
