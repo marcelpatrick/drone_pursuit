@@ -15,7 +15,7 @@
 
 **One training run, not two.** Chapter 1.4 measures the Tello *before* Chapter 3 designs the policy, so the policy is built around your actual drone from the start. This is the main reason the chapters are ordered as they are.
 
----f
+---
 
 ## How this tutorial is organised: seven blocks
 
