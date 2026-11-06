@@ -6749,11 +6749,13 @@ from isaaclab.sensors import TiledCamera, TiledCameraCfg
 
 # ── SECTION: class QuadcopterEnv, method _setup_scene ───────────────────────
 
+    # Builds the world once, before the simulation starts. It creates the drone from the recipe, 
+    # adds a floor and a light, and then duplicates the whole arrangement thousands of times
     def _setup_scene(self):
-        self._robot = Articulation(self.cfg.robot)            # ← EXISTING
-        self._attacker = Articulation(self.cfg.attacker)      # ← EXISTING, from 2.1
+        self._robot = Articulation(self.cfg.robot)
+        self._attacker = Articulation(self.cfg.attacker)               # NEW: register the attacker on the scene
 
-        # ▼▼▼ INSERT HERE! — BEFORE clone_environments ▼▼▼
+        # ▼▼▼ NEW! - adding a camera to the defender drone, ONLY when the run asked for cameras ▼▼▼
         # Isaac Lab sets "/isaaclab/cameras_enabled" when a script starts with --enable_cameras
         # (capture_arena_frames.py and vision_pursuit_demo.py always do). Without it, no camera
         # is built, so training, play.py and the demos can run any number of arenas.
@@ -6769,8 +6771,20 @@ from isaaclab.sensors import TiledCamera, TiledCameraCfg
             self.scene.sensors["camera"] = self._camera
         # ▲▲▲ END OF INSERT ▲▲▲
 
-        self.scene.articulations["robot"] = self._robot       # ← EXISTING
-        # ... rest unchanged ...
+        self.scene.articulations["robot"] = self._robot
+        self.scene.articulations["attacker"] = self._attacker          # NEW: register the attacker on the scene
+
+        self.cfg.terrain.num_envs = self.scene.cfg.num_envs
+        self.cfg.terrain.env_spacing = self.scene.cfg.env_spacing
+        self._terrain = self.cfg.terrain.class_type(self.cfg.terrain)
+        # clone and replicate
+        self.scene.clone_environments(copy_from_source=False)
+        # we need to explicitly filter collisions for CPU simulation
+        if self.device == "cpu":
+            self.scene.filter_collisions(global_prim_paths=[self.cfg.terrain.prim_path])
+        # add lights
+        light_cfg = sim_utils.DomeLightCfg(intensity=2000.0, color=(0.75, 0.75, 0.75))
+        light_cfg.func("/World/Light", light_cfg)
 ```
 The camera is built only when the run starts with `--enable_cameras`, so training and the earlier chapters keep running many arenas.
 
