@@ -6709,6 +6709,18 @@ mkdir C:\projects\drone_pursuit\drone_pursuit\data\arena_frames
 # ── FILE: ...\tasks\direct\quadcopter\quadcopter_env.py ─────────────────────
 # ── SECTION: the imports at the top of the file ─────────────────────────────
 
+from __future__ import annotations                  # ← EXISTING
+
+# ▼▼▼ INSERT HERE! ▼▼▼
+import carb                 # reads whether Isaac Sim started with --enable_cameras
+# ▲▲▲ END OF INSERT ▲▲▲
+import gymnasium as gym                             # ← EXISTING
+import math                                         # ← EXISTING
+import torch                                        # ← EXISTING
+
+# ... other existing imports ...
+from isaaclab.utils.math import subtract_frame_transforms, quat_apply   # ← EXISTING, from 3.1
+
 # ▼▼▼ INSERT HERE! ▼▼▼
 from isaaclab.sensors import TiledCamera, TiledCameraCfg
 # ▲▲▲ END OF INSERT ▲▲▲
@@ -6742,16 +6754,29 @@ from isaaclab.sensors import TiledCamera, TiledCameraCfg
         self._attacker = Articulation(self.cfg.attacker)      # ← EXISTING, from 2.1
 
         # ▼▼▼ INSERT HERE! — BEFORE clone_environments ▼▼▼
-        self._camera = TiledCamera(self.cfg.tiled_camera)
-        self.scene.sensors["camera"] = self._camera
+        # Isaac Lab sets "/isaaclab/cameras_enabled" when a script starts with --enable_cameras
+        # (capture_arena_frames.py and vision_pursuit_demo.py always do). Without it, no camera
+        # is built, so training, play.py and the demos can run any number of arenas.
+        if carb.settings.get_settings().get("/isaaclab/cameras_enabled"):
+            # The camera works with ONE arena only: the other arenas are copied in Fabric
+            # (clone_in_fabric=True), where the camera cannot find them.
+            if self.cfg.scene.num_envs > 1:
+                raise ValueError(
+                    f"The defender's camera works with ONE arena only, but num_envs = "
+                    f"{self.cfg.scene.num_envs}. Use --num_envs 1, or run without --enable_cameras."
+                )
+            self._camera = TiledCamera(self.cfg.tiled_camera)
+            self.scene.sensors["camera"] = self._camera
         # ▲▲▲ END OF INSERT ▲▲▲
 
         self.scene.articulations["robot"] = self._robot       # ← EXISTING
         # ... rest unchanged ...
 ```
+The camera is built only when the run starts with `--enable_cameras`, so training and the earlier chapters keep running many arenas.
 
 **Why the camera reads `cam_focal_mm`, `cam_aperture_mm`, `cam_width` and `cam_height` instead of typing numbers.** The policy was trained on readings calculated with those four values (3.1 Part E). If the rendered camera used different ones, the same attacker would appear at a different size and position in the image than the policy expects, and Chapter 6.1 Step 2 would report a constant-factor disagreement. Linking them means that if you change a value in 3.1 Part E after measuring your Tello, the rendering camera changes with it. This only works because the camera block sits below those four lines in the same class. Python reads a class from top to bottom, so placing it above them gives a `NameError`.
 
+Nothing else in 5.2 Step 1 changes: the `mkdir` line, the *File to edit* line and the `tiled_camera` config section stay as they are.
 
 </details>
 
