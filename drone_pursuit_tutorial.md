@@ -1821,7 +1821,39 @@ You should see attackers sweeping circles at different starting angles and in bo
 </details>
 
 </details>
+---
+# 🏁 MILESTONE 1 — The Attacker Drone Joins the Scene and Flies a Random Path
 
+<details>
+<summary>Expand Milestone 1 — what was achieved and how to demo it</summary>
+
+**What was achieved**
+
+Started from Isaac Lab's built-in Crazyflie hover task and added a second drone, the attacker, to every parallel arena. The attacker is not flown by physics: the code writes its position directly on every physics tick, moving it around a 3 m circle while bobbing up and down. Each new episode gives it a random starting point and direction. The simulation shows a grid of arenas, each with a blue defender and a grey attacker gliding smoothly with still rotors. In this demo the defender's controls are held at zero, so it just hovers.
+
+**Scripts behind it**
+
+| File | Role |
+|---|---|
+| `source\drone_pursuit\drone_pursuit\tasks\direct\quadcopter\quadcopter_env.py` | Spawns the attacker (`_setup_scene`), moves it (`_move_attacker`), re-randomises its path (`_reset_idx`) |
+| `source\drone_pursuit\drone_pursuit\tasks\direct\quadcopter\__init__.py` | Registers the task `Template-Drone-Pursuit-Direct-v0` |
+| `scripts\zero_agent.py` | Isaac Lab's standard script that sends all-zero commands every step |
+
+**Run the demo**
+
+> **Environment:** `env_drone` · **Run from:** `C:\projects\drone_pursuit\drone_pursuit`
+
+```bat
+conda activate env_drone
+cd C:\projects\drone_pursuit\drone_pursuit
+python scripts\zero_agent.py --task Template-Drone-Pursuit-Direct-v0 --num_envs 4 --enable_cameras
+```
+
+**What the audience sees:** 4 arenas. In each, the blue defender hovers almost still, and the grey attacker circles it, rising and falling, rotors not spinning. Every 10 s the episode restarts and each attacker starts from a new point, some clockwise, some anticlockwise. The drones are about 10 cm wide: in the **Stage** panel, click `/World/envs/env_0/Attacker`, then hover over the viewport and press **F** to zoom in on it. Close the window to stop.
+
+</details>
+
+---
 ---
 # ██ BLOCK C — Train the Reinforcement Learning Policy That Flies the Chase ██
 
