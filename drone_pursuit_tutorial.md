@@ -1824,7 +1824,7 @@ You should see attackers sweeping circles at different starting angles and in bo
 
 ---
 
-# 🏁 MILESTONE 1 — The Attacker Drone Joins the Scene and Flies a Random Path
+# 🏁 MILESTONE 1 — Attacker Drone Added to the Simulation and Flies a Random Path
 
 <details>
 <summary>Expand Milestone 1 — what was achieved and how to demo it</summary>
