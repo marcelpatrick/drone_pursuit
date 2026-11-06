@@ -1821,7 +1821,9 @@ You should see attackers sweeping circles at different starting angles and in bo
 </details>
 
 </details>
+
 ---
+
 # 🏁 MILESTONE 1 — The Attacker Drone Joins the Scene and Flies a Random Path
 
 <details>
