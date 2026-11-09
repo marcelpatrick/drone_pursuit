@@ -7500,41 +7500,82 @@ drone_detector.onnx runs inside env_drone
 
 **What was achieved**
 
-YOLOv8-nano, a small pre-trained detector, was fine-tuned on the synthetic photos (model `drone_v4`). On 1,210 validation images it never trained on, it finds 97% of drones (mAP50 0.979, precision 0.979, recall 0.953). It was then tested on 200 frames from the defender's own camera during chases, which look different from its training photos. It found the attacker in 95% of frames within 2 m and 82% at 2–5 m, with 1 false alarm in 85 empty frames. It was exported as `drone_detector.onnx` for the chase loop.
+YOLOv8-nano, a small detector that draws a box wherever it sees a drone, was fine-tuned on the synthetic photos (model `drone_v4`). On 1,210 photos it never trained on, it found 97% of the drones. On 200 new pictures from the defender's own camera during chases, it found the attacker 95% of the time within 2 m and 82% at 2–5 m, with 1 false alarm in 85 pictures without a drone. It was exported as `drone_detector.onnx` for the chase loop.
 
-**Scripts and files behind it**
+**How the test works: the detector's guess vs the answer key**
+
+| | **The detector's box** (its guess) | **The true box** (the answer key) |
+|---|---|---|
+| Drawn by | The YOLO model, from the picture's colours and shapes alone | Isaac Sim, which built the scene and knows exactly which pixels show the attacker |
+| Can be wrong? | Yes: it can miss the drone or box something else | No |
+| Saved in | `runs\detect\arena_v4\` (pictures with its boxes) | `data\arena_frames\readings.csv` (box positions), and as green boxes in `data\arena_frames_check\` |
+
+A picture counts as **found** when the detector's box lands on the true box, **missed** when no box lands there, and a **false alarm** when the detector boxes something in a picture with no attacker.
+
+**Files behind it**
 
 | File | Role |
 |---|---|
 | `runs\detect\drone_v4\weights\best.pt` | The trained detector |
-| `scripts\demo\capture_arena_frames.py` | Recorded the 200 chase frames from the defender's camera (`data\arena_frames\`) |
-| `scripts\demo\score_arena_frames.py` | Grades the detector on those frames, by distance |
+| `scripts\demo\capture_arena_frames.py` | Recorded the 200 defender-camera pictures and their answer key (5.2 Step 2) |
+| `scripts\demo\score_arena_frames.py` | Grades the detector against the answer key |
 | `models\drone_detector.onnx` | The exported detector, used by Milestone 6 |
+
+**Run the demo**
+
+> **Environment:** `drone_vision` · **Run from:** `C:\projects\drone_pursuit\drone_pursuit`
+>
+> Every command below only reads the project's results, or rewrites identical copies. Nothing is lost by running them again.
+
+```bat
+conda activate drone_vision
+cd C:\projects\drone_pursuit\drone_pursuit
+```
+
+**1. Grade the detector live (about 1 minute)**
+
+```bat
+python scripts\demo\score_arena_frames.py
+```
+
+The detector looks at all 200 chase pictures while the audience watches, and its boxes are compared with the answer key. It prints a report card: the share of pictures where it found the attacker at 0–2 m, 2–5 m and over 5 m, plus false alarms. It draws no pictures and changes no files. **Demo point:** the detector's performance in numbers.
+
+**2. Show the detector's boxes**
+
+```bat
+explorer runs\detect\arena_v4
+```
+
+Opens the 200 chase pictures with the detector's box and confidence score (0 to 1) drawn wherever it found the attacker. Pictures with no box are misses, or pictures where the attacker was out of view. **Demo point:** what the defender "sees".
+
+**3. Show the answer key next to it**
+
+```bat
+explorer data\arena_frames_check
+```
+
+Opens the same 200 pictures with Isaac Sim's true box in green. Open the same frame number in both windows to compare guess and truth. (The red box is an older camera-setup check; ignore it.) **Demo point:** proof the detector's boxes are right.
+
+**Optional — re-run the detector on all 200 pictures live (about 1 minute)**
+
+```bat
+yolo predict model=C:\projects\drone_pursuit\drone_pursuit\runs\detect\drone_v4\weights\best.pt source=C:\projects\drone_pursuit\drone_pursuit\data\arena_frames save=True conf=0.4 name=arena_v4 exist_ok=True
+```
+
+Rebuilds the pictures in `runs\detect\arena_v4\` (identical to the ones already there). The terminal prints one line per picture, such as `1 drone, 8.2ms`. **Demo point:** speed, a few milliseconds per picture, which matters for a drone that must react quickly.
 
 **Metrics to show** (all in `C:\projects\drone_pursuit\drone_pursuit\runs\detect\drone_v4\`)
 
 | File | What it shows |
 |---|---|
 | `results.png` | Training error falls and flattens, with no overfitting |
-| `confusion_matrix_normalized.png` | Share of drones found vs missed |
+| `confusion_matrix_normalized.png` | Share of drones found vs missed on the validation photos |
 | `BoxPR_curve.png` | Precision vs recall: an almost square curve |
-| `val_batch0_labels.jpg` vs `val_batch0_pred.jpg` | True boxes vs the detector's boxes on unseen images |
-
-**Run the demo**
-
-> **Environment:** `drone_vision` · **Run from:** `C:\projects\drone_pursuit\drone_pursuit`
-
-```bat
-conda activate drone_vision
-cd C:\projects\drone_pursuit\drone_pursuit
-python scripts\demo\score_arena_frames.py
-yolo predict model=C:\projects\drone_pursuit\drone_pursuit\runs\detect\drone_v4\weights\best.pt source=C:\projects\drone_pursuit\drone_pursuit\data\arena_frames save=True conf=0.4 name=arena_v4 exist_ok=True
-explorer runs\detect\arena_v4
-```
-
-**What the audience sees:** first, the score table: the share of frames where the attacker was found, at 0–2 m, 2–5 m and beyond 5 m, plus the false-alarm count. Then a folder of the 200 chase frames with the detector's box and confidence drawn wherever it found the drone. To show where the attacker really was, open the same frame in `data\arena_frames_check\`.
+| `val_batch0_labels.jpg` vs `val_batch0_pred.jpg` | True boxes vs the detector's boxes on validation photos |
 
 </details>
+
+---
 
 ---
 # ██ BLOCK F — Connect the Detector to the Policy and Run the Whole Loop in Simulation ██
