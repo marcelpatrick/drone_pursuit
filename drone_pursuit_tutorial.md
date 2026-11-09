@@ -1863,6 +1863,8 @@ python scripts\zero_agent.py --task Template-Drone-Pursuit-Direct-v0 --num_envs 
 
 </details>
 
+</details>
+
 ---
 # ██ BLOCK C — Train the Reinforcement Learning Policy That Flies the Chase ██
 
@@ -2072,7 +2074,7 @@ python scripts\random_agent.py --task Template-Drone-Pursuit-Direct-v0 --num_env
 ---
 
 <details>
-<summary>Expand Continuation Block C</summary>
+<summary>Expand Continuation Block B</summary>
 
 ### Part B — Set the control rate to the value you measured in 1.4
 
