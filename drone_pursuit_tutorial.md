@@ -6533,7 +6533,7 @@ explorer data\demo_preview
      
 </details>
 
-
+</details>
 ---
 
 # ██ BLOCK E — Train the Object Detection Model That Finds the Drone ██
