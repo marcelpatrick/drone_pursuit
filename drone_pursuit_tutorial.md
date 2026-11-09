@@ -1824,7 +1824,7 @@ You should see attackers sweeping circles at different starting angles and in bo
 
 ---
 
-# 🏁 MILESTONE 1 — Attacker Drone Added to the Simulation and Flies a Random Path
+# 🏁 MILESTONE 1 — The Attacker Drone Joins the Scene and Flies a Random Path
 
 <details>
 <summary>Expand Milestone 1 — what was achieved and how to demo it</summary>
@@ -1848,14 +1848,13 @@ Started from Isaac Lab's built-in Crazyflie hover task and added a second drone,
 ```bat
 conda activate env_drone
 cd C:\projects\drone_pursuit\drone_pursuit
-python scripts\zero_agent.py --task Template-Drone-Pursuit-Direct-v0 --num_envs 4 --enable_cameras
+python scripts\zero_agent.py --task Template-Drone-Pursuit-Direct-v0 --num_envs 4
 ```
 
 **What the audience sees:** 4 arenas. In each, the blue defender hovers almost still, and the grey attacker circles it, rising and falling, rotors not spinning. Every 10 s the episode restarts and each attacker starts from a new point, some clockwise, some anticlockwise. The drones are about 10 cm wide: in the **Stage** panel, click `/World/envs/env_0/Attacker`, then hover over the viewport and press **F** to zoom in on it. Close the window to stop.
 
 </details>
 
----
 ---
 # ██ BLOCK C — Train the Reinforcement Learning Policy That Flies the Chase ██
 
@@ -2028,9 +2027,40 @@ The real Tello's autopilot also keeps the drone level before any command arrives
 
 **Why approximate rather than model the real stabiliser.** The Tello's control law is undocumented, so no amount of effort reproduces it exactly. What must match is the *interface* — four normalised numbers in, roughly velocity-like behaviour out. Section 3.3's randomisation of mass, thrust and drift covers the remaining gap, and 7.4 narrows `vel_gain` using real flight logs.
 
-**After this change the simulated airframe stops being a Crazyflie** in any meaningful sense. It is a generic hovering body that responds to velocity commands, which is what a Tello is from your code's point of view.
+</details>
+
+---
+# 🏁 MILESTONE 2 — The Defender Is Flown With the Same Four Stick Commands as a Real Tello
+
+<details>
+<summary>Expand Milestone 2 — what was achieved and how to demo it</summary>
+
+**What was achieved**
+
+Isaac Lab's drone is normally pushed with raw motor forces, which a real Tello does not accept. The defender's controls were replaced with the four stick commands a Tello takes: forward/back, left/right, up/down and turn. A small stand-in autopilot in the environment turns each command into forces and keeps the drone level, like the Tello's own. Nothing is trained yet: this demo sends random stick commands 20 times per second. The defender darts in random directions but stays upright and within speed limits.
+
+**Scripts behind it**
+
+| File | Role |
+|---|---|
+| `source\drone_pursuit\drone_pursuit\tasks\direct\quadcopter\quadcopter_env.py` | `_pre_physics_step`: turns the 4 stick commands into a desired speed and turn rate · `_apply_action`: the stand-in autopilot that keeps the drone level · `QuadcopterEnvCfg`: `max_speed`, `max_yaw_rate`, `decimation` (20 commands per second) |
+| `scripts\random_agent.py` | Isaac Lab's standard script that sends random commands between −1 and 1 every step |
+
+**Run the demo**
+
+> **Environment:** `env_drone` · **Run from:** `C:\projects\drone_pursuit\drone_pursuit`
+
+```bat
+conda activate env_drone
+cd C:\projects\drone_pursuit\drone_pursuit
+python scripts\random_agent.py --task Template-Drone-Pursuit-Direct-v0 --num_envs 4
+```
+
+**What the audience sees:** before the window opens, the terminal prints the two interfaces: `Gym action space: Box(-inf, inf, (4, 4), float32)` (4 arenas × the four sticks) and `Gym observation space: Box(-inf, inf, (4, 17), float32)` (4 arenas × the 17 numbers the future policy will receive). In the viewport, each blue defender jerks in a new direction many times per second but never tips over or spins out of control, because the autopilot holds it level. The attacker keeps circling. Close the window to stop.
 
 </details>
+
+---
 
 ### Part B — Set the control rate to the value you measured in 1.4
 
@@ -3657,7 +3687,7 @@ In simulation, a capture is declared when the true distance between the drones d
 - **Frame share at capture** (`ang_size`, reading 3 of the seven): how much of the frame width the attacker fills. It is proportional to the attacker's width, so it only works as a capture rule when you know that width.
 - **Time-to-contact at capture:** distance ÷ closing speed, i.e. how many seconds until the drones meet at the current speed. The camera can estimate it as `ang_size ÷ (d_ang_size × 20)` without knowing the attacker's width, but it depends on how fast the defender is closing.
 
-Right now is the only point in the project where the true distance and the camera readings exist at the same moment, which is why this measurement happens here rather than in Chapter 6. The results are stored as fixed numbers in the config, because Chapter 6 reads them from there and Chapter 7's flight script, which runs without Isaac Lab, needs them written down.
+Right now is the only point in the project where the **true distance and the camera readings exist at the same moment**, which is why this measurement happens here rather than in Chapter 6. The results are stored as fixed numbers in the config, because Chapter 6 reads them from there and Chapter 7's flight script, which runs without Isaac Lab, needs them written down.
 
 This step assumes 3.2B is done, so every episode's attacker has a random width.
 
@@ -3814,7 +3844,7 @@ Watch for the *lead*: a well-trained defender cuts the corner toward where the a
 
 </details>
 
-> ✅ **Checkpoint 3.3 — MILESTONE: Problem 1 (control) SOLVED**
+> ✅ **Checkpoint 3.3: Problem 1 (control) SOLVED**
 > 1. Capture rate > 80% at `attacker_speed` ≥ 0.6
 > 2. Play shows visible interception (corner-cutting), not just tail-chasing
 > 3. Best checkpoint path recorded in `project_notes.txt` — Chapters 6 and 7 both need it
@@ -3826,6 +3856,62 @@ Watch for the *lead*: a well-trained defender cuts the corner toward where the a
 
 </details>
 
+---
+# 🏁 MILESTONE 3 — The Defender Learns to Catch the Attacker With Reinforcement Learning
+
+<details>
+<summary>Expand Milestone 3 — what was achieved and how to demo it</summary>
+
+**What was achieved**
+
+A reward function pays the defender for flying toward the attacker, staying close, and capturing it (closer than 0.35 m), and penalises crashes and jerky commands. PPO trained a policy across 2,048 arenas, first against a slow attacker (0.3 m/s), then a faster one (0.6 m/s). The best checkpoint captures the attacker in over 80% of chases and cuts corners to intercept it. Caveat: its "camera" readings are calculated from the simulator's exact attacker position, which a real drone would never know.
+
+**Scripts and files behind it**
+
+| File | Role |
+|---|---|
+| `source\drone_pursuit\drone_pursuit\tasks\direct\quadcopter\quadcopter_env.py` | `_get_observations` (the 17 inputs), `_get_rewards` (the reward), `_get_dones` (capture / crash / time-out) |
+| `source\drone_pursuit\drone_pursuit\tasks\direct\quadcopter\agents\skrl_ppo_cfg.yaml` | PPO training settings |
+| `scripts\skrl\train.py` / `scripts\skrl\play.py` | Train a policy / play a trained one |
+| `logs\skrl\quadcopter_direct\2026-09-30_13-27-20_ppo_torch\checkpoints\best_agent.pt` | The best checkpoint (attacker at 0.6 m/s, 400 iterations) |
+
+**Demo A — show the training curves (Chapter 3.3, Step 3)**
+
+> **Environment:** `env_drone` · **Run from:** `C:\projects\drone_pursuit\drone_pursuit`
+
+```bat
+conda activate env_drone
+cd C:\projects\drone_pursuit\drone_pursuit
+tensorboard --logdir logs\skrl\quadcopter_direct
+```
+
+Open `http://localhost:6006`. In the run list on the left, tick only `2026-09-30_13-27-20_ppo_torch`, and optionally `2026-09-26_14-33-37_ppo_torch` (the slow-attacker stage it resumed from). Show three charts:
+
+| Chart | What it proves |
+|---|---|
+| **Info / Metrics/capture_rate** | Share of chases that end in a capture; ends at 0.8 or higher |
+| **Info / Episode_Termination/captured** vs **died** | Captures far outnumber crashes |
+| **Episode / Total timesteps (mean)** | Chases get shorter: the defender catches the attacker sooner |
+
+Best run, for slides:
+
+<img width="2612" height="706" alt="PPO training curves of the best run" src="https://github.com/user-attachments/assets/1734c0c0-32f3-4035-afe8-a163b32c1e05" />
+
+**Demo B — play the trained policy in 16 arenas at once**
+
+> **Environment:** `env_drone` · **Run from:** `C:\projects\drone_pursuit\drone_pursuit`
+
+```bat
+conda activate env_drone
+cd C:\projects\drone_pursuit\drone_pursuit
+python scripts\skrl\play.py --task Template-Drone-Pursuit-Direct-v0 --num_envs 16 --real-time --checkpoint C:\projects\drone_pursuit\drone_pursuit\logs\skrl\quadcopter_direct\2026-09-30_13-27-20_ppo_torch\checkpoints\best_agent.pt
+```
+
+**What the audience sees:** a 4 × 4 grid of arenas. In each one, a blue defender takes off and flies straight at its grey attacker. The good chases cut across the circle toward where the attacker is *going*, rather than following behind it. Whenever a defender gets within 0.35 m, that arena resets and a new chase starts. `--real-time` plays at real speed, so the audience can follow. Close the window to stop.
+
+</details>
+
+---
 ---
 # ██ BLOCK D — Generate Labelled Synthetic Images of a Drone ██
 
@@ -6296,6 +6382,59 @@ Open `C:\projects\drone_pursuit\drone_pursuit\data\yolo_check\`. Every green rec
 
 </details>
 
+---
+
+# 🏁 MILESTONE 4 — 9,500 Labelled Synthetic Drone Photos Generated in Isaac Sim
+
+<details>
+<summary>Expand Milestone 4 — what was achieved and how to demo it</summary>
+
+**What was achieved**
+
+Isaac Sim's Replicator photographed drones and labelled each one automatically: the renderer knows which pixels belong to the drone, so every photo comes with an exact box. Each frame varied drone models, sizes and colours, sky photos, floor and wall materials, trees, light, and camera distance and angle, plus distractor shapes and birds. The final set has 9,500 frames (ground-view and small-drone batches were added during Chapter 5's detector rounds). 8,069 were kept in YOLO format: 6,859 for training, 1,210 for validation.
+
+**Scripts behind it**
+
+| File | Role |
+|---|---|
+| `scripts\sdg\generate_drone_data.py` | Builds the randomised scene, takes the photos, saves each photo's box |
+| `scripts\sdg\merge_raw_batches.py` | Merges extra batches (birds, ground view, small drones) into `data\raw` |
+| `scripts\sdg\convert_to_yolo.py` | Filters frames, converts boxes to YOLO format, splits train / val |
+| `scripts\sdg\preview_boxes.py` | Draws the saved boxes on copies of the photos, for checking by eye |
+| `scripts\sdg\check_yolo_labels.py` | Draws the converted YOLO boxes back onto copies of 10 training photos |
+| `data\yolo\drone.yaml` | The dataset's table of contents for YOLO |
+
+**Where to open the images already made**
+
+| Folder | What's in it |
+|---|---|
+| `C:\projects\drone_pursuit\drone_pursuit\data\raw\` | All 9,500 raw photos (`rgb_XXXX.png`) |
+| `C:\projects\drone_pursuit\drone_pursuit\data\yolo\images\train\` and `...\val\` | The 8,069 photos kept for training and validation |
+| `C:\projects\drone_pursuit\drone_pursuit\data\yolo_check\` | 10 training photos with their green label box drawn on |
+| `C:\projects\drone_pursuit\drone_pursuit\runs\detect\drone_v4\train_batch0.jpg` | A grid of 16 training photos with their labels, made by YOLO |
+
+**Run the demo — generate 20 fresh labelled photos live**
+
+This writes to a separate `demo_raw` folder, so the real dataset in `data\raw` is not touched.
+
+> **Environment:** `env_drone` · **Run from:** `C:\projects\drone_pursuit\drone_pursuit`
+
+```bat
+conda activate env_drone
+cd C:\projects\drone_pursuit\drone_pursuit
+if exist data\demo_raw rmdir /s /q data\demo_raw
+if exist data\demo_preview rmdir /s /q data\demo_preview
+python scripts\sdg\generate_drone_data.py --num_frames 20 --headless --out_dir C:\projects\drone_pursuit\drone_pursuit\data\demo_raw
+python scripts\sdg\preview_boxes.py --raw data\demo_raw --out data\demo_preview --every 1
+explorer data\demo_preview
+```
+
+**What the audience sees:** the terminal counts `frame 1/20` … `frame 20/20`, each line naming the drone model and its size in pixels, then `done`. The folder that opens holds two images per photo. `preview_XXXX.png` is the full photo with a red box on the drone and yellow boxes on distractors. `zoom_XXXX.png` is an 8× close-up showing the red box hugging the drone. Every photo has a different sky, floor, light, drone and viewpoint. It takes a few minutes, mostly start-up.
+
+</details>
+
+---
+
 ## Output handover (if working on 2 separate machines):
 
 <details>
@@ -7422,6 +7561,50 @@ drone_detector.onnx runs inside env_drone
 </details>
 
 </details>
+---
+
+# 🏁 MILESTONE 5 — An Object Detector That Finds the Drone in Images It Has Never Seen
+
+<details>
+<summary>Expand Milestone 5 — what was achieved and how to demo it</summary>
+
+**What was achieved**
+
+YOLOv8-nano, a small pre-trained detector, was fine-tuned on the synthetic photos (model `drone_v4`). On 1,210 validation images it never trained on, it finds 97% of drones (mAP50 0.979, precision 0.979, recall 0.953). It was then tested on 200 frames from the defender's own camera during chases, which look different from its training photos. It found the attacker in 95% of frames within 2 m and 82% at 2–5 m, with 1 false alarm in 85 empty frames. It was exported as `drone_detector.onnx` for the chase loop.
+
+**Scripts and files behind it**
+
+| File | Role |
+|---|---|
+| `runs\detect\drone_v4\weights\best.pt` | The trained detector |
+| `scripts\demo\capture_arena_frames.py` | Recorded the 200 chase frames from the defender's camera (`data\arena_frames\`) |
+| `scripts\demo\score_arena_frames.py` | Grades the detector on those frames, by distance |
+| `models\drone_detector.onnx` | The exported detector, used by Milestone 6 |
+
+**Metrics to show** (all in `C:\projects\drone_pursuit\drone_pursuit\runs\detect\drone_v4\`)
+
+| File | What it shows |
+|---|---|
+| `results.png` | Training error falls and flattens, with no overfitting |
+| `confusion_matrix_normalized.png` | Share of drones found vs missed |
+| `BoxPR_curve.png` | Precision vs recall: an almost square curve |
+| `val_batch0_labels.jpg` vs `val_batch0_pred.jpg` | True boxes vs the detector's boxes on unseen images |
+
+**Run the demo**
+
+> **Environment:** `drone_vision` · **Run from:** `C:\projects\drone_pursuit\drone_pursuit`
+
+```bat
+conda activate drone_vision
+cd C:\projects\drone_pursuit\drone_pursuit
+python scripts\demo\score_arena_frames.py
+yolo predict model=C:\projects\drone_pursuit\drone_pursuit\runs\detect\drone_v4\weights\best.pt source=C:\projects\drone_pursuit\drone_pursuit\data\arena_frames save=True conf=0.4 name=arena_v4 exist_ok=True
+explorer runs\detect\arena_v4
+```
+
+**What the audience sees:** first, the score table: the share of frames where the attacker was found, at 0–2 m, 2–5 m and beyond 5 m, plus the false-alarm count. Then a folder of the 200 chase frames with the detector's box and confidence drawn wherever it found the drone. To show where the attacker really was, open the same frame in `data\arena_frames_check\`.
+
+</details>
 
 ---
 # ██ BLOCK F — Connect the Detector to the Policy and Run the Whole Loop in Simulation ██
@@ -8300,6 +8483,52 @@ What this shows: the defender catches the attacker almost as well with its camer
 1. “Camera confirmed” is about 50%, and that is expected. The 0.24 s threshold is the median of the camera’s estimate at capture, and by definition about half of the captures sit below the median and half above. So at the exact moment the simulator says “captured,” the camera agrees only about half the time. In the other half it would agree a step or two later, slightly closer, but the simulator had already ended the chase. This is one more reason to use a larger threshold, such as 0.5 s, for the real flight, so the camera’s stop reliably comes before 0.35 m.
 
 2. The camera saw the attacker in only about 50% of steps, yet the defender still caught it 98% of the time. The policy copes well with losing sight: it holds the last reading and finds the attacker again. That’s encouraging for the real world, where the detector will miss more often.
+
+</details>
+
+---
+
+# 🏁 MILESTONE 6 — The Defender Chases the Attacker Using Only Its Camera
+
+<details>
+<summary>Expand Milestone 6 — what was achieved and how to demo it</summary>
+
+**What was achieved**
+
+The chase now runs on vision alone. At each step, the defender's camera renders a picture, the detector draws a box around the attacker, and a converter turns that box into the seven attacker readings the policy was trained on. The simulator's exact attacker position is never given to the policy. Compared with Milestone 3's calculated readings, the camera version catches the attacker almost as often (about 98% of chases), even though the detector sees it in only about half of the steps.
+
+**Scripts and files behind it**
+
+| File | Role |
+|---|---|
+| `scripts\demo\vision_bridge.py` | Runs the detector and converts its box into the 7 readings |
+| `scripts\demo\vision_pursuit_demo.py` | Runs the chases: `calculated` round (simulator readings) vs `camera` round (detector readings) |
+| `models\drone_detector.onnx` | The detector from Milestone 5 |
+| `logs\skrl\quadcopter_direct\2026-09-30_13-27-20_ppo_torch\checkpoints\best_agent.pt` | The policy from Milestone 3, unchanged |
+
+**Demo A — watch a chase through the defender's eyes (about 1 minute)**
+
+> **Environment:** `env_drone` · **Run from:** `C:\projects\drone_pursuit\drone_pursuit` · needs OpenCV: `python -c "import cv2"` must not error
+>
+> The camera works with one arena only. This script always uses one arena and switches cameras on.
+
+```bat
+conda activate env_drone
+cd C:\projects\drone_pursuit\drone_pursuit
+python scripts\demo\vision_pursuit_demo.py --checkpoint C:\projects\drone_pursuit\drone_pursuit\logs\skrl\quadcopter_direct\2026-09-30_13-27-20_ppo_torch\checkpoints\best_agent.pt --enable_cameras --mode camera --episodes 3 --show_view --record C:\projects\drone_pursuit\drone_pursuit\data\demo_view.mp4
+```
+
+**What the audience sees:** a **Defender camera** window. A green box sits on the attacker and grows as the defender closes in, with a yellow line from the centre cross to the box (the direction the policy steers by). It also shows the true distance next to the camera's estimate, and the time-to-contact. The box turns red with **CAMERA SAYS: CAPTURED** at the end of each chase. The same view is saved to `data\demo_view.mp4` for slides. Don't add `--headless`: on Windows, headless runs sometimes render a blind camera.
+
+**Demo B — the proof in numbers: camera vs calculated readings (about 5 minutes)**
+
+```bat
+python scripts\demo\vision_pursuit_demo.py --checkpoint C:\projects\drone_pursuit\drone_pursuit\logs\skrl\quadcopter_direct\2026-09-30_13-27-20_ppo_torch\checkpoints\best_agent.pt --enable_cameras --episodes 20
+```
+
+**What the audience sees:** one line per chase, then a summary comparing the two rounds' capture rates, ending in `RESULT: PASS` (calculated ≥ 80%, camera ≥ 60%, gap ≤ 25 points). The full 100-chase result from Chapter 6.2:
+
+<img width="1627" height="568" alt="6.2 summary: calculated vs camera rounds" src="https://github.com/user-attachments/assets/4bd54dd9-6de8-44ca-8e02-02a5f51e29e8" />
 
 </details>
 
