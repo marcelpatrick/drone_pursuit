@@ -8418,52 +8418,6 @@ What this shows: the defender catches the attacker almost as well with its camer
 
 ---
 
-# 🏁 MILESTONE 6 — The Defender Chases the Attacker Using Only Its Camera
-
-<details>
-<summary>Expand Milestone 6 — what was achieved and how to demo it</summary>
-
-**What was achieved**
-
-The chase now runs on vision alone. At each step, the defender's camera renders a picture, the detector draws a box around the attacker, and a converter turns that box into the seven attacker readings the policy was trained on. The simulator's exact attacker position is never given to the policy. Compared with Milestone 3's calculated readings, the camera version catches the attacker almost as often (about 98% of chases), even though the detector sees it in only about half of the steps.
-
-**Scripts and files behind it**
-
-| File | Role |
-|---|---|
-| `scripts\demo\vision_bridge.py` | Runs the detector and converts its box into the 7 readings |
-| `scripts\demo\vision_pursuit_demo.py` | Runs the chases: `calculated` round (simulator readings) vs `camera` round (detector readings) |
-| `models\drone_detector.onnx` | The detector from Milestone 5 |
-| `logs\skrl\quadcopter_direct\2026-09-30_13-27-20_ppo_torch\checkpoints\best_agent.pt` | The policy from Milestone 3, unchanged |
-
-**Demo A — watch a chase through the defender's eyes (about 1 minute)**
-
-> **Environment:** `env_drone` · **Run from:** `C:\projects\drone_pursuit\drone_pursuit` · needs OpenCV: `python -c "import cv2"` must not error
->
-> The camera works with one arena only. This script always uses one arena and switches cameras on.
-
-```bat
-conda activate env_drone
-cd C:\projects\drone_pursuit\drone_pursuit
-python scripts\demo\vision_pursuit_demo.py --checkpoint C:\projects\drone_pursuit\drone_pursuit\logs\skrl\quadcopter_direct\2026-09-30_13-27-20_ppo_torch\checkpoints\best_agent.pt --enable_cameras --mode camera --episodes 3 --show_view --record C:\projects\drone_pursuit\drone_pursuit\data\demo_view.mp4
-```
-
-**What the audience sees:** a **Defender camera** window. A green box sits on the attacker and grows as the defender closes in, with a yellow line from the centre cross to the box (the direction the policy steers by). It also shows the true distance next to the camera's estimate, and the time-to-contact. The box turns red with **CAMERA SAYS: CAPTURED** at the end of each chase. The same view is saved to `data\demo_view.mp4` for slides. Don't add `--headless`: on Windows, headless runs sometimes render a blind camera.
-
-**Demo B — the proof in numbers: camera vs calculated readings (about 5 minutes)**
-
-```bat
-python scripts\demo\vision_pursuit_demo.py --checkpoint C:\projects\drone_pursuit\drone_pursuit\logs\skrl\quadcopter_direct\2026-09-30_13-27-20_ppo_torch\checkpoints\best_agent.pt --enable_cameras --episodes 20
-```
-
-**What the audience sees:** one line per chase, then a summary comparing the two rounds' capture rates, ending in `RESULT: PASS` (calculated ≥ 80%, camera ≥ 60%, gap ≤ 25 points). The full 100-chase result from Chapter 6.2:
-
-<img width="1627" height="568" alt="6.2 summary: calculated vs camera rounds" src="https://github.com/user-attachments/assets/4bd54dd9-6de8-44ca-8e02-02a5f51e29e8" />
-
-</details>
-
----
-
 ## 6.3 Test the Camera Loop with Different Attacker Sizes and Lighting (≤1h)
  
 <details>
@@ -8842,6 +8796,52 @@ Each of these builds on what you now have, ordered by effort:
 </details>
 
 </details>
+
+</details>
+
+---
+
+# 🏁 MILESTONE 6 — The Defender Chases the Attacker Using Only Its Camera
+
+<details>
+<summary>Expand Milestone 6 — what was achieved and how to demo it</summary>
+
+**What was achieved**
+
+The chase now runs on vision alone. At each step, the defender's camera renders a picture, the detector draws a box around the attacker, and a converter turns that box into the seven attacker readings the policy was trained on. The simulator's exact attacker position is never given to the policy. Compared with Milestone 3's calculated readings, the camera version catches the attacker almost as often (about 98% of chases), even though the detector sees it in only about half of the steps.
+
+**Scripts and files behind it**
+
+| File | Role |
+|---|---|
+| `scripts\demo\vision_bridge.py` | Runs the detector and converts its box into the 7 readings |
+| `scripts\demo\vision_pursuit_demo.py` | Runs the chases: `calculated` round (simulator readings) vs `camera` round (detector readings) |
+| `models\drone_detector.onnx` | The detector from Milestone 5 |
+| `logs\skrl\quadcopter_direct\2026-09-30_13-27-20_ppo_torch\checkpoints\best_agent.pt` | The policy from Milestone 3, unchanged |
+
+**Demo A — watch a chase through the defender's eyes (about 1 minute)**
+
+> **Environment:** `env_drone` · **Run from:** `C:\projects\drone_pursuit\drone_pursuit` · needs OpenCV: `python -c "import cv2"` must not error
+>
+> The camera works with one arena only. This script always uses one arena and switches cameras on.
+
+```bat
+conda activate env_drone
+cd C:\projects\drone_pursuit\drone_pursuit
+python scripts\demo\vision_pursuit_demo.py --checkpoint C:\projects\drone_pursuit\drone_pursuit\logs\skrl\quadcopter_direct\2026-09-30_13-27-20_ppo_torch\checkpoints\best_agent.pt --enable_cameras --mode camera --episodes 3 --show_view --record C:\projects\drone_pursuit\drone_pursuit\data\demo_view.mp4
+```
+
+**What the audience sees:** a **Defender camera** window. A green box sits on the attacker and grows as the defender closes in, with a yellow line from the centre cross to the box (the direction the policy steers by). It also shows the true distance next to the camera's estimate, and the time-to-contact. The box turns red with **CAMERA SAYS: CAPTURED** at the end of each chase. The same view is saved to `data\demo_view.mp4` for slides. Don't add `--headless`: on Windows, headless runs sometimes render a blind camera.
+
+**Demo B — the proof in numbers: camera vs calculated readings (about 5 minutes)**
+
+```bat
+python scripts\demo\vision_pursuit_demo.py --checkpoint C:\projects\drone_pursuit\drone_pursuit\logs\skrl\quadcopter_direct\2026-09-30_13-27-20_ppo_torch\checkpoints\best_agent.pt --enable_cameras --episodes 20
+```
+
+**What the audience sees:** one line per chase, then a summary comparing the two rounds' capture rates, ending in `RESULT: PASS` (calculated ≥ 80%, camera ≥ 60%, gap ≤ 25 points). The full 100-chase result from Chapter 6.2:
+
+<img width="1627" height="568" alt="6.2 summary: calculated vs camera rounds" src="https://github.com/user-attachments/assets/4bd54dd9-6de8-44ca-8e02-02a5f51e29e8" />
 
 </details>
 
