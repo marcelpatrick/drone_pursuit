@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import carb                 # reads whether Isaac Sim started with --enable_cameras
 import gymnasium as gym
 import math
 import torch
@@ -283,9 +284,20 @@ class QuadcopterEnv(DirectRLEnv):
         self._robot = Articulation(self.cfg.robot)
         self._attacker = Articulation(self.cfg.attacker)               # NEW: register the attacker on the scene
 
-        # ▼▼▼ NEW! - adding a camera to the defender drone ▼▼▼
-        self._camera = TiledCamera(self.cfg.tiled_camera)
-        self.scene.sensors["camera"] = self._camera
+        # ▼▼▼ NEW! - adding a camera to the defender drone, ONLY when the run asked for cameras ▼▼▼
+        # Isaac Lab sets "/isaaclab/cameras_enabled" when a script starts with --enable_cameras
+        # (capture_arena_frames.py and vision_pursuit_demo.py always do). Without it, no camera
+        # is built, so training, play.py and the demos can run any number of arenas.
+        if carb.settings.get_settings().get("/isaaclab/cameras_enabled"):
+            # The camera works with ONE arena only: the other arenas are copied in Fabric
+            # (clone_in_fabric=True), where the camera cannot find them.
+            if self.cfg.scene.num_envs > 1:
+                raise ValueError(
+                    f"The defender's camera works with ONE arena only, but num_envs = "
+                    f"{self.cfg.scene.num_envs}. Use --num_envs 1, or run without --enable_cameras."
+                )
+            self._camera = TiledCamera(self.cfg.tiled_camera)
+            self.scene.sensors["camera"] = self._camera
         # ▲▲▲ END OF INSERT ▲▲▲
 
         self.scene.articulations["robot"] = self._robot
