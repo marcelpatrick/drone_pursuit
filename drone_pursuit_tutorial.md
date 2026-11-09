@@ -7510,8 +7510,6 @@ YOLOv8-nano, a small detector that draws a box wherever it sees a drone, was fin
 | Can be wrong? | Yes: it can miss the drone or box something else | No |
 | Saved in | `runs\detect\arena_v4\` (pictures with its boxes) | `data\arena_frames\readings.csv` (box positions), and as green boxes in `data\arena_frames_check\` |
 
-A picture counts as **found** when the detector's box lands on the true box, **missed** when no box lands there, and a **false alarm** when the detector boxes something in a picture with no attacker.
-
 **Files behind it**
 
 | File | Role |
@@ -7572,6 +7570,12 @@ Rebuilds the pictures in `runs\detect\arena_v4\` (identical to the ones already 
 | `confusion_matrix_normalized.png` | Share of drones found vs missed on the validation photos |
 | `BoxPR_curve.png` | Precision vs recall: an almost square curve |
 | `val_batch0_labels.jpg` vs `val_batch0_pred.jpg` | True boxes vs the detector's boxes on validation photos |
+
+A picture counts as **found** when the detector's box lands on the true box, **missed** when no box lands there, and a **false alarm** when the detector boxes something in a picture with no attacker.
+
+**How well the boxes fit: IoU and mAP50.** Finding the drone is one question; drawing a box that fits it is another. Box fit is measured with **IoU (intersection over union)**: lay the detector's box over the true box and divide the area they share by the total area they cover together. 1.0 is a perfect fit and 0 means no overlap. On the 1,210 validation photos, YOLO counts a box as correct only when its IoU with the true box is at least 0.5, and summarises the result as **mAP50 = 0.979**: almost every drone was boxed with at least half-overlap, and almost no boxes were drawn where there was no drone. (The stricter **mAP50-95 = 0.754** repeats the test at tighter overlaps, up to 95%.) The arena test above uses a box-centre rule instead, because many arena drones are only 10–30 pixels wide, and a few pixels' offset would fail them on overlap even when the detector clearly found them. 
+
+To show the mAP50 score, run `start runs\detect\drone_v4\BoxPR_curve.png` from `C:\projects\drone_pursuit\drone_pursuit`: the legend reads **all classes 0.979 mAP@0.5**, and the curve hugging the top-right corner shows the detector stays accurate even while finding nearly every drone.
 
 </details>
 
