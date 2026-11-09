@@ -2997,8 +2997,6 @@ Expected result: `RESULT: Checkpoint 3.1 passed`, with one `[??]` under item 4 w
 > 5. Running train.py without --headless must show the blue drones staying upright and level, not flipping.
 > In the env 0 table printed above the report, a step-0 sighting at 4.12 m followed by `visible 0` is normal. The attacker starts at its spawn point, then moves onto its circle, often outside the camera's view.
 
-</details>
-
 ---
 
 ## 3.2 Write the Reward Function and the Episode-Ending Conditions (≤1.5h)
