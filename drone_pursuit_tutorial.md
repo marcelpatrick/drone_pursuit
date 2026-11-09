@@ -1868,10 +1868,10 @@ python scripts\zero_agent.py --task Template-Drone-Pursuit-Direct-v0 --num_envs 
 ---
 # ██ BLOCK C — Train the Reinforcement Learning Policy That Flies the Chase ██
 
-> > 💻 **NO HARDWARE — simulation only.** The drone stays in its box. This block needs the three measurements from 🔌 subchapter 1.4 in `project_notes.txt`. **If you do not have the drone yet**, create the file with the estimates below, marked as estimates, and replace them after 1.4. Every number in 3.1 is built from this file, and the 3.1 checker reads it.
-
 <details>
 <summary>Expand Block C</summary>
+
+ 💻 **NO HARDWARE — simulation only.** The drone stays in its box. This block needs the three measurements from 🔌 subchapter 1.4 in `project_notes.txt`. **If you do not have the drone yet**, create the file with the estimates below, marked as estimates, and replace them after 1.4. Every number in 3.1 is built from this file, and the 3.1 checker reads it.
 
 **What this block produces:** `best_agent.pt`, a skrl checkpoint holding a neural network that takes 17 numbers describing the defender's own motion and what its camera reports, and emits 4 stick commands that close on the attacker. It also produces one measured constant, `capture_ang_size`, which Block F needs to declare a capture without a simulator.
 
