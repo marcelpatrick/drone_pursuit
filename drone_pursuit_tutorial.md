@@ -2029,6 +2029,7 @@ The real Tello's autopilot also keeps the drone level before any command arrives
 
 </details>
 
+</details>
 ---
 # 🏁 MILESTONE 2 — The Defender Is Flown With the Same Four Stick Commands as a Real Tello
 
@@ -2061,6 +2062,9 @@ python scripts\random_agent.py --task Template-Drone-Pursuit-Direct-v0 --num_env
 </details>
 
 ---
+
+<details>
+<summary>Expand Continuation Block C</summary>
 
 ### Part B — Set the control rate to the value you measured in 1.4
 
@@ -3849,6 +3853,8 @@ Watch for the *lead*: a well-trained defender cuts the corner toward where the a
 > 2. Play shows visible interception (corner-cutting), not just tail-chasing
 > 3. Best checkpoint path recorded in `project_notes.txt` — Chapters 6 and 7 both need it
 > 4. `capture_ang_size` measured and written into the cfg
+
+</details>
 
 </details>
 
