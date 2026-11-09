@@ -1,4 +1,10 @@
 # 🛩️ Drone Pursuit: A Sim-to-Real Follow-Along Tutorial
+
+# Intro
+
+</details>
+<summary>Expand</summary>
+
 ### Teaching one drone to see, find, and chase another — in Isaac Sim + Isaac Lab, on Windows
 
 **The goal: a sim-to-real test.** You train a policy entirely in NVIDIA Isaac Sim and Isaac Lab, then fly it on a real DJI Tello that chases a real drone using a real camera. The simulation is the means; the flight is the point.
@@ -39,6 +45,8 @@ The project is seven self-contained pieces of work. Each block below produces on
 | 💻 **NO HARDWARE — simulation only** | Runs entirely on your laptop; the drone can stay in its box |
 
 Blocks C and D/E are independent of each other — if a training run is cooking overnight, start Block D in a second terminal. Block F is the first point that needs both.
+
+</details>
 
 ---
 
