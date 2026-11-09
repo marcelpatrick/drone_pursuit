@@ -2043,6 +2043,7 @@ The real Tello's autopilot also keeps the drone level before any command arrives
 
 </details>
 
+</details>
 ---
 
 # 🏁 MILESTONE 2 — The Defender Is Flown With the Same Four Stick Commands as a Real Tello
