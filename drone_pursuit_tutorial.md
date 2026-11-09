@@ -2040,7 +2040,11 @@ The real Tello's autopilot also keeps the drone level before any command arrives
 </details>
 
 </details>
+
+</details>
+
 ---
+
 # 🏁 MILESTONE 2 — The Defender Is Flown With the Same Four Stick Commands as a Real Tello
 
 <details>
@@ -2074,7 +2078,7 @@ python scripts\random_agent.py --task Template-Drone-Pursuit-Direct-v0 --num_env
 ---
 
 <details>
-<summary>Expand Continuation Block B</summary>
+<summary>Expand Continuation Block C</summary>
 
 ### Part B — Set the control rate to the value you measured in 1.4
 
