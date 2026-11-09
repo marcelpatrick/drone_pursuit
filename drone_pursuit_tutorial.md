@@ -3881,6 +3881,10 @@ Watch for the *lead*: a well-trained defender cuts the corner toward where the a
 
 </details>
 
+</details>
+
+</details>
+
 ---
 # 🏁 MILESTONE 3 — The Defender Learns to Catch the Attacker With Reinforcement Learning
 
