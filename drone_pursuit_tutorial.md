@@ -3,7 +3,7 @@
 # Intro
 
 </details>
-<summary>Expand</summary>
+<summary> Expand intro </summary>
 
 ### Teaching one drone to see, find, and chase another — in Isaac Sim + Isaac Lab, on Windows
 
