@@ -8820,7 +8820,106 @@ Finally, copy the four `6.3 [...]` lines printed at the end into `C:\projects\dr
 
 ---
 
-## 6.4 Review What Is Complete and Choose the Next Extension
+## 6.4 Test the Detector on Real Photos (≤1.5h)
+
+> **What / Why / How it contributes:** Every test so far has shown the detector rendered images. This subchapter shows it real photos it has never seen: real drones, real lighting, real cameras. It is the first measurement of the sim-to-real gap for perception, it needs no hardware, and the result decides whether you fix the synthetic data now or go straight to Chapter 7.
+
+### Why test before flying
+
+The 5.2 arena test and the 6.2 full loop both use Isaac Sim renders, so they cannot reveal what the renders get wrong about reality. A detector that fails on real photos will also fail in flight. Finding that out now costs an hour; finding it out in flight costs a flight session, and possibly a drone.
+
+This test also checks the generalisation goal from Chapter 4.2B. Almost none of the drones in these photos are models the detector trained on, so finding them means it learned what a drone looks like in general, not just the models it saw.
+
+### Step 1 — Collect two sets of photos
+
+Create two folders and fill them with photos downloaded from the internet:
+
+```bat
+conda activate drone_vision
+cd C:\projects\drone_pursuit\drone_pursuit
+mkdir data\real_test\drones
+mkdir data\real_test\no_drones
+```
+
+- **`drones`** — about 50 photos of drones **in flight**: many models, distances, backgrounds and lighting conditions. Prefer real flight shots over product photos, which show a large, sharp drone on a plain background.
+- **`no_drones`** — 10–20 photos of things a drone camera could mistake for a drone: birds, empty sky, people, city lights, trees.
+
+Four rules for both folders:
+
+- **Real photos only.** Leave out AI-generated and heavily edited images. They don't show what a real camera sees, which is the whole point of this test.
+- **No duplicates.** The same photo saved twice counts its result twice.
+- **Never train on these photos.** Once the detector trains on them, they stop being a fair test.
+- **Don't commit them to git.** Most internet photos are copyrighted. Add `data/real_test/` to your `.gitignore` and tell readers to collect their own.
+
+> 💡 If YOLO prints `WARNING Image Read Error` for a file, it is usually a WebP image or a web page that the browser saved under a `.jpg` name. Open it in an image viewer and save it again as PNG or JPG.
+
+### Step 2 — Run the detector on both folders
+
+```bat
+yolo detect predict model=C:\projects\drone_pursuit\drone_pursuit\runs\detect\drone_v4\weights\best.pt source=C:\projects\drone_pursuit\drone_pursuit\data\real_test\drones save=True project=C:\projects\drone_pursuit\drone_pursuit\runs\detect name=real_test_drones_v4
+yolo detect predict model=C:\projects\drone_pursuit\drone_pursuit\runs\detect\drone_v4\weights\best.pt source=C:\projects\drone_pursuit\drone_pursuit\data\real_test\no_drones save=True project=C:\projects\drone_pursuit\drone_pursuit\runs\detect name=real_test_no_drones_v4
+```
+
+`project=` keeps the results inside your project folder no matter which folder you run the command from. The images with boxes drawn on them are saved in `runs\detect\real_test_drones_v4` and `runs\detect\real_test_no_drones_v4`.
+
+### Step 3 — Count by eye
+
+Open both result folders in Explorer and count three things:
+
+- **Drones folder, hits and misses:** an image is a **hit** only if a box sits on a drone. An image with no box, or with a box only on something else, is a **miss**.
+- **Drones folder, extra boxes:** count the images that have a box on something that is *not* a drone, even if the drone was also found.
+- **No-drones folder, false alarms:** any image with a box is a **false alarm**.
+
+Don't count from the terminal output. A line like `1 drone` only means YOLO drew one box somewhere; it does not say the box is on the drone.
+
+### Our results (drone_v4)
+
+| Measure | Result |
+|---|---|
+| Drones found | 45 of 53 photos, **about 85%** |
+| Drone photos with an extra box on a non-drone | 4 of 53 |
+| False alarms on bird photos | 3 of 14, **about 21%** |
+
+The detector also found a DJI Tello, the drone used as the defender in Chapter 7, flying in a school gym.
+
+What the errors had in common:
+
+| Pattern | What happened |
+|---|---|
+| **Backlit silhouettes** | Drones against a sunset or bright sky became black shapes with no colour or surface detail. This was the most common cause of misses. |
+| **Large, close drones** | Drones filling a big share of the photo were missed, while small, distant drones in the same photos were often found. |
+| **Unusual views and shapes** | A hexacopter seen from directly above, and drones with raised or folding arms, were missed more often than flat four-arm drones seen from the side. |
+| **Small, low-contrast drone indoors** | A small drone flying level with the camera in a busy gym was missed. |
+| **False boxes on people and objects** | People near drones did not stop the detector finding the drone, but some people and objects got boxes of their own: a basketball player seen from above (0.90), the edge of a person's head (0.49), a small object on a gym floor (0.77). |
+| **Birds** | Small, dark birds with spread wings against the sky got boxes at 0.30–0.72 confidence, even though bird photos were included in training. |
+| **Out of scope** | A drone sitting on snow was missed. The defender only chases flying drones, so this miss does not matter. |
+
+### What the results mean
+
+**For a detector trained only on rendered images, about 85% is a strong result.** It confirms that the variety built into Chapter 4.2B carries over from renders to reality.
+
+**False boxes are the weaker side, and they matter more for a chase.** A missed frame makes the defender lose the target briefly. A false box can steer it toward the wrong object. A false box on something that doesn't move, like the object on the gym floor, is the most dangerous kind: it appears in every frame, so a rule that waits for several readings in a row will not filter it out.
+
+**Birds are partly an unavoidable limit.** A small, distant bird and a small, distant drone are both a few dark pixels with something sticking out on each side. Training on bird photos reduces these errors, but at long range no detector can tell them apart reliably from shape alone.
+
+**Remember that these photos are sharper than Tello video.** Expect the real-flight detection rate to be lower than 85% until the Chapter 7 fine-tune.
+
+### The decision
+
+The detector is good enough for Chapter 7, where the Tello fine-tune closes the biggest remaining gap: the camera.
+
+If you are still waiting for hardware, use the time for one targeted synthetic batch aimed at the patterns above: drones lit from behind, drones close enough to fill a large share of the frame, views from above, and human characters as distractors. Train a new detector with the batch added, rerun this test with the same photos, and compare.
+
+> ✅ **Checkpoint 6.4**
+> 1. Two test folders exist with real photos only, no duplicates, excluded from git and from all training
+> 2. Detection rate, extra-box count and false-alarm rate recorded for drone_v4
+> 3. Failure patterns written down
+>
+> Rerun this exact test after every change to the detector and compare against these numbers. A change that improves the simulation results but lowers these is a step backwards.
+
+---
+
+## 6.5 Review What Is Complete and Choose the Next Extension
 
 <details>
 <summary>Expand 6.3</summary>
